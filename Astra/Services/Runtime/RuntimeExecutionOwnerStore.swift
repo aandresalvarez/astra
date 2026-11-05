@@ -85,7 +85,9 @@ final class RuntimeExecutionOwnerStore {
             guard try RuntimeExecutionOwnerStore.read(legacyURL) == legacy else { throw Failure.unreadable }
             var bound = legacy
             bound.taskOwnerID = taskOwnerID
-            try save(bound, at: legacyURL)
+            // Reading an already-attributed legacy receipt must preserve its
+            // change time: recovery uses that as evidence it predates boot.
+            if bound != legacy { try save(bound, at: legacyURL) }
             recordURL = legacyURL
         }
 
@@ -143,6 +145,12 @@ final class RuntimeExecutionOwnerStore {
             // not rewrite or invalidate that immutable, still-unattributed copy.
             var attributed = existing
             if attributed.taskOwnerID == nil { attributed.taskOwnerID = record.taskOwnerID }
+            // A read-only verification can also arrive after a crash archived
+            // this generation. It expires with the current generation and need
+            // not be written into its already immutable predecessor.
+            if attributed.legacyProviderReadObservation == nil {
+                attributed.legacyProviderReadObservation = record.legacyProviderReadObservation
+            }
             guard attributed == record else { throw Failure.unreadable }
             return
         }

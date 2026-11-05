@@ -1,11 +1,174 @@
+import Darwin
 import Foundation
 import Testing
 import ASTRACore
+import ASTRAModels
 @testable import ASTRA
 
 @Suite("Provider reservation migration preserves authority", .serialized)
 @MainActor
 struct ProviderSharedStateMigrationTests {
+    @Test("A second task may read a legacy writer's settings only after verified local settlement and reboot",
+          arguments: ["settled", "legacyFilename", "missingPointerJournal", "sameBoot", "unknownBoot", "unknownEnvironment", "missingHistory",
+                      "unsettled", "unboundRun", "zeroLaunches", "missingLaunchCount", "contradictoryUsage"])
+    func historicalReader(fixture: String) async throws {
+        // This fixture deliberately retains a provider-wide legacy claim. Use
+        // a real on-disk journal visible only to the gates that opt into it,
+        // so concurrently running provider suites cannot inherit its claim.
+        let h = try HeadlessChatHarness()
+        defer { h.cleanup() }
+        let holder = h.makeTask(runtime: .antigravityCLI, goal: "Previous writer", model: "test")
+        let store = RuntimeExecutionOwner.store(in: h.context)
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        let blocked = h.makeTask(runtime: .antigravityCLI, goal: "New reader", model: "test")
+        let independent = h.rootURL.appendingPathComponent("reader-workspace")
+        try FileManager.default.createDirectory(at: independent, withIntermediateDirectories: true)
+        blocked.workspace?.primaryPath = independent.path
+        let reader = try #require(RuntimeExecutionOwner.acquire(task: blocked, context: h.context, maxRunSeconds: 60))
+        defer { reader.finish() }
+        let key = try AgentRuntimeSharedStateKey(runtime: .antigravityCLI, fileURL: h.rootURL.appendingPathComponent("new/settings.json"))
+        try reader.waitingForProviderState(key)
+        func completedRun(_ runtime: AgentRuntimeID, secondsAgo: TimeInterval) -> TaskRun {
+            let run = TaskRun(task: holder)
+            run.runtimeID = runtime.rawValue
+            run.startedAt = Date().addingTimeInterval(-secondsAgo)
+            run.completedAt = run.startedAt.addingTimeInterval(1)
+            run.status = .completed
+            run.typedStopReason = .completed
+            run.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(.host)
+            h.context.insert(run)
+            return run
+        }
+        let original = completedRun(.antigravityCLI, secondsAgo: 20)
+        if fixture == "unknownEnvironment" { original.executionEnvironmentSnapshotJSON = nil }
+        let oldKey = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: h.rootURL.path + "/old/settings.json")
+        var writer = try RuntimeRecoveryTestReceipt.install(task: holder, run: original, context: h.context, toolsStopped: false)
+        writer.providerSharedStateKey = oldKey.rawValue
+        writer.providerSharedStateReleased = false
+        writer.resourcesReleased = false
+        writer.settlementInProgress = false
+        writer.settlementLocalWorkStopped = true
+        writer.settlementToolsStopped = fixture != "unsettled"
+        writer.inheritedToolUncertainty = true
+        if fixture == "unboundRun" { writer.runID = UUID() }
+        var history = [writer]
+        if ["zeroLaunches", "missingLaunchCount", "contradictoryUsage"].contains(fixture) {
+            let stopped = completedRun(.antigravityCLI, secondsAgo: 15)
+            stopped.status = .cancelled
+            stopped.typedStopReason = .cancelled
+            stopped.tokensUsed = fixture == "contradictoryUsage" ? 100 : 0
+            var preparation = writer
+            preparation.executionID = UUID()
+            preparation.runID = stopped.id
+            preparation.state = .notStarted
+            preparation.providerLaunchCount = fixture == "missingLaunchCount" ? nil : 0
+            preparation.providerProcess = nil
+            preparation.stopProof = nil
+            preparation.providerSharedStateKey = nil
+            preparation.providerSharedStateReleased = nil
+            preparation.retainedProviderSharedStateKeys = [oldKey.rawValue]
+            preparation.retainedExecutionHead = writer.executionID
+            history.append(preparation)
+        }
+        let last = completedRun(.copilotCLI, secondsAgo: 10)
+        holder.status = .completed
+        try h.context.save()
+        var current = writer
+        current.executionID = UUID()
+        current.runID = last.id
+        current.state = .finished
+        current.runtime = AgentRuntimeID.copilotCLI.rawValue
+        current.providerSharedStateKey = nil
+        current.providerSharedStateReleased = nil
+        current.retainedExecutionHead = history.last?.executionID
+        current.retainedProviderSharedStateKeys = [oldKey.rawValue]
+        current.stopProof = .init(executionID: current.executionID, process: try #require(current.providerProcess),
+            reaped: true, processGroupEmpty: true, toolsStopped: false, remoteWorkExcluded: true, capturedAt: Date())
+        do {
+            let lease = try store.acquire(taskID: holder.id, taskOwnerID: holder.persistentModelID)
+            try lease.save(writer)
+            let lock = try await ProviderSharedStateProcessLock.acquire(oldKey, root: h.providerLockRoot)
+            try lock.handoff(oldKey, reference: .init(journalRoot: store.root.path, taskID: holder.id,
+                ownerID: writer.ownerID, taskOwnerID: holder.persistentModelID)) {}
+            if fixture != "missingHistory" { for execution in history { try store.retain(execution) } }
+            try lease.save(current)
+            if fixture == "settled" { try store.retain(current) }
+        }
+        if fixture == "missingPointerJournal" {
+            // A separate writer's pointer survives even when its store disappears.
+            let other = h.makeTask(runtime: .antigravityCLI, goal: "Orphaned writer", model: "test")
+            let key = AgentRuntimeSharedStateKey(runtime: .antigravityCLI, identifier: h.rootURL.path + "/lost/settings.json")
+            var orphan = try RuntimeRecoveryTestReceipt.install(task: other, run: nil, context: h.context)
+            orphan.providerSharedStateKey = key.rawValue
+            let lease = try store.acquire(taskID: other.id, taskOwnerID: other.persistentModelID)
+            try lease.save(orphan)
+            let lock = try await ProviderSharedStateProcessLock.acquire(key, root: h.providerLockRoot)
+            try lock.handoff(key, reference: .init(journalRoot: store.root.path, taskID: other.id, ownerID: orphan.ownerID)) {}
+            try FileManager.default.removeItem(at: lease.recordURL)
+        }
+        let boot: Date?
+        if fixture == "legacyFilename" {
+            // Already-attributed journals may still use the pre-upgrade filename.
+            // Put the boot boundary in the past so acquisition cannot rewrite
+            // identical bytes and accidentally make the journal post-boot.
+            let legacyURL = store.root.appendingPathComponent(holder.id.uuidString + ".json")
+            do {
+                let lease = try store.acquire(taskID: holder.id, taskOwnerID: holder.persistentModelID)
+                try FileManager.default.moveItem(at: lease.recordURL, to: legacyURL)
+            }
+            var info = stat()
+            try #require(lstat(legacyURL.path, &info) == 0)
+            let boundary = Date(timeIntervalSince1970: TimeInterval(info.st_ctimespec.tv_sec) + 1)
+            try await Task.sleep(nanoseconds: UInt64((max(0, boundary.timeIntervalSinceNow) + 0.05) * 1_000_000_000))
+            try #require(boundary < Date())
+            boot = boundary
+        } else {
+            boot = fixture == "unknownBoot" ? nil : Date().addingTimeInterval(fixture == "sameBoot" ? -30 : 5)
+        }
+        let gate = AgentRuntimeSharedStateGate(processLockRoot: h.providerLockRoot, registeredStoreRoots: [store.root], hostBootTime: { boot })
+        await #expect(throws: RuntimeProviderResourceRegistry.Block.self) { try await gate.waitForPreviousWriter(key) }
+        if ["settled", "legacyFilename", "zeroLaunches", "missingPointerJournal"].contains(fixture) {
+            if fixture != "missingPointerJournal" {
+                try await gate.waitForPreviousWriter(key, owner: reader)
+                let cold = AgentRuntimeSharedStateGate(processLockRoot: h.providerLockRoot, registeredStoreRoots: [])
+                try await cold.waitForPreviousWriter(key)
+            } else {
+                await #expect(throws: ProviderSharedStateCompatibility.UnreadableReservation.self) {
+                    try await gate.waitForPreviousWriter(key, owner: reader)
+                }
+            }
+            let saved = try #require(try RuntimeTaskOwnerJournal.read(task: holder, context: h.context))
+            let observation = try #require(saved.legacyProviderReadObservation)
+            #expect(observation.executionID == current.executionID && observation.legacyKey == oldKey.rawValue)
+            current.legacyProviderReadObservation = observation
+            #expect(saved == current && !saved.canReplace)
+            #expect(try store.retainedExecutions(of: saved) == Array(history.reversed()))
+            #expect(TaskHistoryRead.events(for: holder, ofTypes: [TaskEventTypes.System.legacyProviderReaderVerified.rawValue]).count == 1)
+            if fixture == "settled" {
+                let lease = try store.acquire(taskID: holder.id, taskOwnerID: holder.persistentModelID)
+                try store.retain(saved)
+                withExtendedLifetime(lease) {}
+            }
+        } else {
+            await #expect(throws: RuntimeProviderResourceRegistry.Block.self) { try await gate.waitForPreviousWriter(key, owner: reader) }
+            #expect(try store.read(taskID: holder.id, taskOwnerID: holder.persistentModelID) == current)
+        }
+        await #expect(throws: RuntimeProviderResourceRegistry.Block.self) { try await gate.acquire(key) }
+    }
+
+    @Test("A protected remote job registration precludes a reboot observation for its owner")
+    func protectedRemoteRegistration() throws {
+        let h = try HeadlessChatHarness()
+        defer { h.cleanup() }
+        let store = RuntimeExecutionOwnerStore(root: h.rootURL.appendingPathComponent("runtime-owners"))
+        let taskID = UUID()
+        #expect(ProviderSharedStateReadObservation.noRemoteRegistrations(for: taskID, store: store))
+        let jobs = h.rootURL.appendingPathComponent("remote-jobs/" + taskID.uuidString)
+        try FileManager.default.createDirectory(at: jobs, withIntermediateDirectories: true)
+        #expect(!ProviderSharedStateReadObservation.noRemoteRegistrations(for: taskID, store: store))
+        #expect(ProviderSharedStateReadObservation.noRemoteRegistrations(for: UUID(), store: store))
+    }
+
     @Test("Legacy current and retained claims block a new identity without rewriting the journal", arguments: [false, true])
     func oldClaims(retained: Bool) async throws {
         let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }

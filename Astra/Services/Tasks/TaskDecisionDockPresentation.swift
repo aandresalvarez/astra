@@ -59,6 +59,7 @@ struct TaskDecisionDockAction: Equatable, Identifiable {
     var payload: String?
     var help: String?
     var isEnabled: Bool = true
+    var providerRetryRunID: UUID? = nil
 }
 
 struct TaskDecisionDockMetric: Equatable, Identifiable {
@@ -78,6 +79,11 @@ struct TaskDecisionDockDetail: Equatable, Identifiable {
 }
 
 struct TaskDecisionDockPresentation: Equatable {
+    struct ProviderRecoveryAlternative: Equatable {
+        let runtime: AgentRuntimeID
+        let blockedRunID: UUID
+    }
+
     struct Context: Equatable {
         var status: TaskStatus
         var isClosed: Bool
@@ -132,6 +138,7 @@ struct TaskDecisionDockPresentation: Equatable {
         var visibleThreadAffordances: Set<TaskThreadAffordance> = []
         var recoveryBlockMessage: String? = nil
         var timeoutRecoveryRunID: UUID? = nil
+        var providerRecoveryAlternative: ProviderRecoveryAlternative? = nil
 
         /// Auto allows a connector's credentials for the task without asking, so
         /// a credential card reaches an Auto task only when that grant could not
@@ -200,7 +207,9 @@ struct TaskDecisionDockPresentation: Equatable {
                 metrics: metrics(context), details: details(context),
                 primaryAction: context.canRetry ? (context.timeoutRecoveryRunID.map(checkTimedOutRun)
                     ?? action(.retry, title: "Check again", systemImage: "arrow.clockwise")) : nil,
-                secondaryActions: [], overflowActions: closeOverflowActions(context, closeTitle: nil),
+                secondaryActions: [runtimeSwitchAction(context.providerRecoveryAlternative?.runtime, canRetry: context.canRetry,
+                    blockedRunID: context.providerRecoveryAlternative?.blockedRunID)].compactMap { $0 },
+                overflowActions: closeOverflowActions(context, closeTitle: nil),
                 prefersExpandedDetails: false
             )
         }
@@ -581,16 +590,20 @@ struct TaskDecisionDockPresentation: Equatable {
         // Gated on canRetry like the adjacent .retry action — without a
         // handler to actually run the switched task, offering this button
         // would silently no-op when tapped.
-        guard context.canRetry,
-              let rawID = context.launchBlock?.suggestedRuntimeID,
-              let runtime = AgentRuntimeID(rawValue: rawID) else { return nil }
-        return action(
+        runtimeSwitchAction(context.launchBlock?.suggestedRuntimeID.flatMap(AgentRuntimeID.init(rawValue:)), canRetry: context.canRetry)
+    }
+
+    private static func runtimeSwitchAction(_ runtime: AgentRuntimeID?, canRetry: Bool, blockedRunID: UUID? = nil) -> TaskDecisionDockAction? {
+        guard canRetry, let runtime else { return nil }
+        var result = action(
             .switchRuntime,
             title: "Switch to \(runtime.displayName)",
             systemImage: "arrow.triangle.2.circlepath",
-            payload: rawID,
+            payload: runtime.rawValue,
             help: "Switch this task to \(runtime.displayName) and retry."
         )
+        result.providerRetryRunID = blockedRunID
+        return result
     }
 
     private static func queuedPresentation(_ context: Context) -> TaskDecisionDockPresentation {

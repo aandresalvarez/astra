@@ -46,7 +46,7 @@ struct RuntimeProviderOwnershipReference: Codable, Equatable, Sendable {
 
             guard sameJournalOwner || record.resourcesReleased == true
                     || record.providerSharedStateReleased == true || record.canRecoverPreparation else {
-                throw RuntimeProviderResourceRegistry.Block(key: key, record: record)
+                throw RuntimeProviderResourceRegistry.Block(key: key, record: record, journalRoot: previous.journalRoot)
             }
         }
         try prepare()
@@ -80,7 +80,7 @@ struct RuntimeProviderOwnershipReference: Codable, Equatable, Sendable {
         let store = reading ? RuntimeExecutionOwnerStore(root: URL(fileURLWithPath: previous.journalRoot)) : nil
         if missingClaims || RuntimeProviderResourceRegistry.conflicts(key, record: record,
             checkingHistoryIn: store, requireExactWriter: requireExactWriter) {
-            throw RuntimeProviderResourceRegistry.Block(key: key, record: record, missingClaims: missingClaims)
+            throw RuntimeProviderResourceRegistry.Block(key: key, record: record, journalRoot: previous.journalRoot, missingClaims: missingClaims)
         }
     }
 

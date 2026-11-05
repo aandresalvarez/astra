@@ -93,6 +93,7 @@ enum TaskDecisionDockContextBuilder {
         var extraDetails: [TaskDecisionDockDetail]
         var recoveryBlockMessage: String? = nil
         var timeoutRecoveryRunID: UUID? = nil
+        var providerRecoveryAlternative: TaskDecisionDockPresentation.ProviderRecoveryAlternative? = nil
     }
 
     struct ExtraDetailsInput {
@@ -173,7 +174,8 @@ enum TaskDecisionDockContextBuilder {
                 isPlanCanvasVisible: input.isPlanCanvasVisible
             ),
             recoveryBlockMessage: input.recoveryBlockMessage,
-            timeoutRecoveryRunID: input.timeoutRecoveryRunID
+            timeoutRecoveryRunID: input.timeoutRecoveryRunID,
+            providerRecoveryAlternative: input.providerRecoveryAlternative
         )
     }
 

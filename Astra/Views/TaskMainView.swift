@@ -3586,8 +3586,15 @@ struct TaskMainView: View {
             artifactPaths: taskDecisionArtifactPaths,
             extraDetails: taskDecisionExtraDetails,
             recoveryBlockMessage: recoveryBlockMessage,
-            timeoutRecoveryRunID: timeoutRecoveryRunID
+            timeoutRecoveryRunID: timeoutRecoveryRunID,
+            providerRecoveryAlternative: recoveryBlockMessage == nil ? nil : providerRecoveryAlternative
         ))
+    }
+
+    private var providerRecoveryAlternative: TaskDecisionDockPresentation.ProviderRecoveryAlternative? {
+        TaskComposerCoordinator.providerRecoveryAlternative(
+            for: task, context: modelContext, latestRun: latestRun,
+            recentRuns: currentThreadSnapshot.sortedRuns, readinessStates: runtimeReadinessStates)
     }
 
     /// Cached: `body` resolves the decision dock once per pass, including the
@@ -3950,7 +3957,8 @@ struct TaskMainView: View {
             toggleTaskDoneFromDecisionDock()
         case .switchRuntime:
             guard let runtime = action.payload else { return }
-            TaskComposerCoordinator.requestDockRuntimeSwitch(to: runtime, task: task, cache: runtimeModelCache, prompt: sensitiveDataSwitchPrompt) {
+            TaskComposerCoordinator.requestDockRuntimeSwitch(to: runtime, task: task, cache: runtimeModelCache,
+                prompt: sensitiveDataSwitchPrompt, blockedRunID: action.providerRetryRunID) {
                 onRetryTask?(task)
             }
         }

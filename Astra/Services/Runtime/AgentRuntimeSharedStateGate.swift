@@ -28,9 +28,12 @@ actor AgentRuntimeSharedStateGate {
 
     private let processLockRoot: URL?
     private let registeredStoreRoots: [URL]?
-    init(processLockRoot: URL? = nil, registeredStoreRoots: [URL]? = nil) {
+    private let hostBootTime: @Sendable () -> Date?
+    init(processLockRoot: URL? = nil, registeredStoreRoots: [URL]? = nil,
+         hostBootTime: @escaping @Sendable () -> Date? = { ProviderSharedStateReadObservation.hostBootTime() }) {
         self.processLockRoot = processLockRoot
         self.registeredStoreRoots = registeredStoreRoots
+        self.hostBootTime = hostBootTime
     }
 
     private func checkAvailability(_ key: AgentRuntimeSharedStateKey, reference: RuntimeProviderOwnershipReference?, reading: Bool) throws {
@@ -47,19 +50,33 @@ actor AgentRuntimeSharedStateGate {
 
     @discardableResult
     func acquire(_ key: AgentRuntimeSharedStateKey, owner: RuntimeExecutionOwner? = nil, timeoutSeconds: TimeInterval = 120) async throws -> AgentRuntimeSharedStateLease {
-        try await acquire(key, owner: owner, timeoutSeconds: timeoutSeconds, checkingPreviousWriter: false)
+        try await acquire(key, owner: owner, deadline: Self.deadline(after: timeoutSeconds), checkingPreviousWriter: false)
     }
 
     /// A session-local override needs no writer claim. Respect locks and journals from
     /// older ASTRA versions at admission, without publishing a new owner for this file.
     func waitForPreviousWriter(_ key: AgentRuntimeSharedStateKey, owner: RuntimeExecutionOwner? = nil, timeoutSeconds: TimeInterval = 120) async throws {
-        let lease = try await acquire(key, owner: owner, timeoutSeconds: timeoutSeconds, checkingPreviousWriter: true)
-        release(lease)
+        let deadline = Self.deadline(after: timeoutSeconds)
+        var reviewed = Set<UUID>()
+        while true {
+            do {
+                let lease = try await acquire(key, owner: owner, deadline: deadline, checkingPreviousWriter: true)
+                release(lease)
+                return
+            } catch let block as RuntimeProviderResourceRegistry.Block {
+                guard block.legacyIdentity, let owner, reviewed.insert(block.ownerID).inserted,
+                      ContinuousClock.now < deadline, !Task.isCancelled,
+                      (try? await owner.recheckLegacyProviderReader(block, bootedAt: hostBootTime())) == true else { throw block }
+            }
+        }
     }
 
-    private func acquire(_ key: AgentRuntimeSharedStateKey, owner: RuntimeExecutionOwner?, timeoutSeconds: TimeInterval,
+    private static func deadline(after seconds: TimeInterval) -> ContinuousClock.Instant {
+        ContinuousClock.now.advanced(by: .seconds(seconds.isFinite ? max(0, seconds) : 120))
+    }
+
+    private func acquire(_ key: AgentRuntimeSharedStateKey, owner: RuntimeExecutionOwner?, deadline: ContinuousClock.Instant,
                          checkingPreviousWriter: Bool) async throws -> AgentRuntimeSharedStateLease {
-        let deadline = ContinuousClock.now.advanced(by: .seconds(timeoutSeconds.isFinite ? max(0, timeoutSeconds) : 120))
         let ownerReference = await owner?.providerOwnershipReference
         if Task.isCancelled {
             throw CancellationError()

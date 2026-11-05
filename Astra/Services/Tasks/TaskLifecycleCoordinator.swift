@@ -183,9 +183,6 @@ final class TaskLifecycleCoordinator {
     private func retryVerifiedTask(_ task: AgentTask) -> Task<Void, Never>? {
         let recoveryDecision = RuntimeExecutionOwner.retryDecision(task: task, context: modelContext)
         if case .blocked = recoveryDecision { return nil }
-        let recoveryMessage: String? = if case .continuation = recoveryDecision {
-            Self.resumeContinuationMessage(for: task)
-        } else { nil }
         // A durable submission leaves the task's terminal status untouched
         // while it waits, so status-gated Retry surfaces can still fire.
         // Starting a second continuation here would race the pending
@@ -207,6 +204,12 @@ final class TaskLifecycleCoordinator {
             ?? Self.latestRetryableFollowUpMessage(for: task, excludingMessageEventIDs: durableMessageEventIDs)
                 .map { RetryLaunchSource.userTurn($0) }
         let retryFollowUpMessage = retrySource?.userTurnMessage
+        // The saved instruction never reached a provider. Bind the replay to
+        // that failed request even if a different provider will receive it.
+        // Never infer an undelivered instruction from earlier chat history.
+        let recoveryMessage: String? = if case .continuation = recoveryDecision {
+            undeliveredProviderMessage(for: retryTurn, task: task) ?? Self.resumeContinuationMessage(for: task)
+        } else { nil }
         // A first run the user (or an ASTRA restart) cut short still has a
         // provider session. Retry continues it rather than relaunching the
         // initial prompt into a brand-new session.
@@ -298,6 +301,18 @@ final class TaskLifecycleCoordinator {
             }
         }
         return Self.resumeContinuationMessage(for: task)
+    }
+
+    private func undeliveredProviderMessage(for request: TaskTurnRequest?, task: AgentTask) -> String? {
+        guard let request, request.state == .failed, request.terminalReason == RuntimeProviderResourceRegistry.Block.stopReason,
+              let run = RuntimeProviderResourceRegistry.unstartedRun(task: task, context: modelContext),
+              request.runID == run.id, let event = TaskHistoryRead.event(id: request.sourceEventID, in: task),
+              event.run == nil || event.run?.id == run.id else { return nil }
+        if request.kind == .followUp, event.type == TaskEventTypes.Conversation.userMessage.rawValue { return event.payload }
+        guard request.kind == .retry, event.type == TaskEventTypes.ExecutionRequest.retry.rawValue,
+              let source = ExecutionRequestSubmissionService.decodeSourcePayload(event),
+              source.launchMode == .continuation else { return nil }
+        return source.message
     }
 
     /// The durable turn Retry may resurrect: the task's newest request, only

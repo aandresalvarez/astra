@@ -296,7 +296,6 @@ struct TaskThreadHistoryConcurrencyTests {
     func oneRowCompactionDoesNotStrandTheDeletedEvent() async throws {
         let (container, context, task) = try fixture()
         defer { _ = container }
-        TaskThreadHistoryInvalidation.resetForTesting()
 
         // Original tool evidence remains alongside the backdated summary.
         let strandedPayload = "tool call retained through summarization"
