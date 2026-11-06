@@ -80,15 +80,18 @@ struct WorkspaceExportMemoryEvidenceTests {
                     switch mode {
                     case "history": break
                     case "direct":
+                        let instrumentedCopy = WorkspaceExportFileIO.copySnapshot
                         try await Task.detached {
-                            try WorkspaceSavedExportSnapshot.read(container: container) { snapshot in
-                                let reader = ModelContext(snapshot)
-                                reader.autosaveEnabled = false
-                                observed.reader(snapshot, reader)
-                                let owner = try #require(reader.fetch(FetchDescriptor<Workspace>(sortBy: [SortDescriptor(\.name)])).first)
-                                let config = try #require(WorkspaceConfigManager.export(workspace: owner, modelContext: reader))
-                                #expect(config.tasks?.count == expectedTasks)
-                                #expect(config.tasks?.reduce(0, { $0 + $1.events.count }) == expectedEvents)
+                            try WorkspaceExportFileIO.$copySnapshot.withValue(instrumentedCopy) {
+                                try WorkspaceSavedExportSnapshot.read(container: container) { snapshot in
+                                    let reader = ModelContext(snapshot)
+                                    reader.autosaveEnabled = false
+                                    observed.reader(snapshot, reader)
+                                    let owner = try #require(reader.fetch(FetchDescriptor<Workspace>(sortBy: [SortDescriptor(\.name)])).first)
+                                    let config = try #require(WorkspaceConfigManager.export(workspace: owner, modelContext: reader))
+                                    #expect(config.tasks?.count == expectedTasks)
+                                    #expect(config.tasks?.reduce(0, { $0 + $1.events.count }) == expectedEvents)
+                                }
                             }
                         }.value
                     case "cleanup":
@@ -158,6 +161,7 @@ struct WorkspaceExportMemoryEvidenceTests {
         #expect(try context.fetchCount(FetchDescriptor<TaskEvent>()) == expectedEvents)
         // Deliberately opt-in failure until the demonstrated lifetime defect is
         // fixed. Keep measuring all blocks before enforcing the contract.
+        if mode != "history" { #expect(!observed.identities.isEmpty) }
         if env["ASTRA_EXPORT_ASSERT_TEARDOWN"] == "1" {
             #expect(openSnapshotDescriptors(observed.identities).isEmpty)
             #expect(observed.liveReaders == 0)

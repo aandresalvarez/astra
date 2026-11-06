@@ -142,7 +142,15 @@ def main():
         seed_env = dict(synthetic_environment(), ASTRA_CHANNEL="dev", ASTRA_EXPORT_EVIDENCE="1", ASTRA_EXPORT_SEED_ONLY="1",
                         ASTRA_EXPORT_FIXTURE_ROOT=str(fixture), ASTRA_EXPORT_SCALE=args.scale)
         with (args.output / "fixture-seed.log").open("w") as stream:
-            subprocess.run(invocation, cwd=REPO, env=seed_env, stdout=stream, stderr=subprocess.STDOUT, check=True, timeout=180)
+            seed = subprocess.Popen(invocation, cwd=REPO, env=seed_env, stdout=stream, stderr=subprocess.STDOUT)
+            try:
+                status = seed.wait(timeout=180)
+            finally:
+                if seed.poll() is None:
+                    seed.send_signal(signal.SIGINT)
+                    seed.wait(timeout=15)  # Let the permission harness reap its own children.
+            if status:
+                raise subprocess.CalledProcessError(status, invocation)
         expand_fixture(fixture, 75000 if args.scale == "representative" else 300)
     manifest["fixture"] = inspect_fixture(fixture, args.scale)
     write_json(args.output / "manifest.json", manifest)

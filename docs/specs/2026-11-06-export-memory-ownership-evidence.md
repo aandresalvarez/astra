@@ -109,10 +109,13 @@ Each row below compares warm-up block 0 with block 6, in MiB.
 | Termination drain | 223.14 → 180.72 | 489.59 → 499.47 | 3.56 → 3.66 |
 
 All 112 small/representative boundaries had zero live observed snapshot
-containers/contexts, snapshot descriptors, unlinked snapshot bytes, pending
+containers/contexts, pending
 obligations, snapshot directories and staging files. The tracker observed seven
 readers per ordinary export/direct/combined/drain mode, and fourteen per shared
-cleanup/failure-retry mode; history-only opened none. Small-control footprint
+cleanup/failure-retry mode; history-only opened none. The original direct runs
+missed descriptor instrumentation because detached tasks do not inherit task
+locals. The corrected direct reruns are recorded separately. The other modes
+reported zero snapshot descriptors and unlinked bytes. Small-control footprint
 increases were at most 0.70 MiB. The representative combined run's 31.87 MiB
 footprint increase accompanies only about 0.06 MiB additional live malloc
 bytes. These endpoints do not establish a sustained trend or attribute all
@@ -151,6 +154,12 @@ An optional `--allocations-seconds 60` run invokes the unchanged guarded
 copy. Capture is capped at 180 seconds. Trace processes are owned and drained
 before the app exits; profiled results are reported separately. Heap probes
 have a 2 GiB per-file limit, and profiling workloads require 12 GiB free disk.
+
+The isolated Dev bundle opened the disposable store. The accessibility wait
+for the first long-thread click timed out before any save. The run recorded
+101.3 MiB of physical footprint and zero open snapshot descriptors at launch.
+It provides no app export measurements. The initial invocation also exposed
+a missing zero file count in the fixture manifest, which is now included.
 
 SwiftPM buffered stdout in the first profiling attempt. Parked-process markers
 now use an atomic file as the attachment boundary.

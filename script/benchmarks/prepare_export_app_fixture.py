@@ -6,7 +6,7 @@ from pathlib import Path
 import sqlite3
 import uuid
 
-from dev_scale_benchmark import preflight_fixture, sha256, write_json
+from dev_scale_benchmark import preflight_fixture, reject_symlinks, sha256, write_json
 
 
 def main():
@@ -15,6 +15,10 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--payload-repeats", type=int, choices=range(36, 257), default=120)
     args = parser.parse_args()
+    reject_symlinks(args.source)
+    wal = args.source / "source.store-wal"
+    if wal.exists() and wal.stat().st_size:
+        parser.error("source has pending WAL data")
     if (args.source / "synthetic-export-fixture.txt").read_text() != "20261106:representative":
         parser.error("source must be the generated representative export fixture")
     if args.output.exists():
@@ -63,7 +67,7 @@ def main():
                       for name, table in [("workspaces", "ZWORKSPACE"), ("tasks", "ZAGENTTASK"),
                                           ("events", "ZTASKEVENT"), ("runs", "ZTASKRUN"), ("artifacts", "ZARTIFACT")]}
     write_json(root / "synthetic-fixture.json", {"format": 1, "seed": 20261106, "profile": "no-files"})
-    write_json(root / "seed-counts.json", {"seed": 20261106, "profile": "no-files", "verified_counts": counts,
+    write_json(root / "seed-counts.json", {"seed": 20261106, "profile": "no-files", "verified_counts": counts, "task_folder_files": 0,
                                          "source_sha256": sha256(args.source / "source.store"), "adapter_sha256": sha256(Path(__file__)),
                                          "payload_repeats": args.payload_repeats, "long_thread_events": 75000})
     preflight_fixture(root, "no-files")
