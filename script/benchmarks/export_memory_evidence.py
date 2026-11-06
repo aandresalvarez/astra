@@ -180,11 +180,16 @@ def main():
         with log.open("w") as stream:
             process = subprocess.Popen(invocation, cwd=REPO, env=env, stdout=stream, stderr=subprocess.STDOUT)
             seen = set()
+            deadline = time.monotonic() + 900
+            timed_out = False
             # SwiftPM can buffer test stdout until test completion. An atomic
             # marker observes the parked child while it is still alive.
             marker = args.output / f"{mode}-ready.json"
             try:
                 while process.poll() is None:
+                    if time.monotonic() >= deadline:
+                        timed_out = True
+                        break
                     if not args.profile or not marker.exists():
                         time.sleep(0.1)
                         continue
@@ -210,11 +215,16 @@ def main():
                             except subprocess.TimeoutExpired:
                                 evidence.write("\nPROFILE_TIMEOUT: evidence incomplete\n")
                                 probes_run.append({"block": int(block), "probe": label, "returncode": "timeout"})
-                returncode = process.wait()
+                if not timed_out:
+                    returncode = process.wait()
             finally:
                 if process.poll() is None:
                     process.send_signal(signal.SIGINT)
                     process.wait(timeout=15)  # The harness owns descendant cleanup.
+        if timed_out:
+            returncode = "timeout"
+            with log.open("a") as stream:
+                stream.write("\nWORKLOAD_TIMEOUT: exceeded 900 seconds\n")
         samples = [json.loads(line.removeprefix("EXPORT_EVIDENCE ")) for line in log.read_text().splitlines()
                    if line.startswith("EXPORT_EVIDENCE {")]
         if args.profile and samples:

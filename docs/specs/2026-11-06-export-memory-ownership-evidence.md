@@ -149,9 +149,10 @@ python3 script/benchmarks/dev_scale_benchmark.py --app 'dist/ASTRA Dev.app' --bu
 `--memory-graphs` adds RSS, per-boundary lsof snapshot device/inode metadata,
 and bounded no-content warm/final heap graphs. Descriptor parsing tests cover
 duplicate descriptors, link counts and exclusion of other store roots.
-An optional `--allocations-seconds 60` run invokes the unchanged guarded
+An optional `--allocations-seconds 60` run invokes the guarded
 `record_memory_trace.sh` on a private, uniquely identified `ASTRA Dev.app`
-copy. Capture is capped at 180 seconds. Trace processes are owned and drained
+copy. Capture is capped at 180 seconds. The runner waits for the Darwin
+notification from xctrace before dispatching workload cycles. Trace processes are owned and drained
 before the app exits; profiled results are reported separately. Heap probes
 have a 2 GiB per-file limit, and profiling workloads require 12 GiB free disk.
 

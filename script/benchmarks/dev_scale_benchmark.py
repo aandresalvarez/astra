@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Opt-in, external full-app benchmark. Never selects or quits an existing app."""
 import argparse
+import ctypes
 from contextlib import closing
 import fcntl
 import hashlib
@@ -83,6 +84,20 @@ def snapshot_descriptors(text, support):
               if row.get("k") == "0" and row.get("D") and row.get("i") and row.get("s", "").isdigit()}
     return {"snapshot_descriptors": len(records), "unlinked_inodes": len(unique),
             "unlinked_bytes": sum(unique.values()), "files": records}
+
+
+def wait_for_trace_recording(process, notify, token, timeout=30):
+    deadline = time.monotonic() + timeout
+    changed = ctypes.c_int()
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError("Allocations tracer exited before workload dispatch")
+        if notify.notify_check(token, ctypes.byref(changed)) != 0:
+            raise RuntimeError("Could not read xctrace readiness notification")
+        if changed.value:
+            return
+        time.sleep(0.1)
+    raise RuntimeError("Timed out waiting for xctrace recording to start")
 
 
 def profile_file_limit():
@@ -495,12 +510,25 @@ def execute_benchmark(args, source, info, output, report):
                     sample("warm-idle")
                     if getattr(args, "allocations_seconds", 0):
                         owned.trace_log = (run_root / "allocations-command.log").open("w")
-                        trace_env = dict(synthetic_environment(), ASTRA_MEMORY_TRACE_PID=str(process.pid),
-                                         ASTRA_MEMORY_TRACE_DURATION=f"{args.allocations_seconds}s",
-                                         ASTRA_MEMORY_TRACE_OUTPUT_DIR=str(run_root / "allocations"))
-                        owned.trace_process = subprocess.Popen([str(REPO / "script/record_memory_trace.sh")],
-                            env=trace_env, stdout=owned.trace_log, stderr=subprocess.STDOUT, start_new_session=True,
-                            preexec_fn=profile_file_limit)
+                        notification = "com.coral.ASTRA.benchmark.trace." + uuid.uuid4().hex
+                        notify = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+                        token = ctypes.c_int()
+                        if notify.notify_register_check(notification.encode(), ctypes.byref(token)) != 0:
+                            raise RuntimeError("Could not register xctrace readiness notification")
+                        try:
+                            # The initial check may report a change without a post.
+                            if notify.notify_check(token, ctypes.byref(ctypes.c_int())) != 0:
+                                raise RuntimeError("Could not initialize xctrace readiness notification")
+                            trace_env = dict(synthetic_environment(), ASTRA_MEMORY_TRACE_PID=str(process.pid),
+                                             ASTRA_MEMORY_TRACE_DURATION=f"{args.allocations_seconds}s",
+                                             ASTRA_MEMORY_TRACE_OUTPUT_DIR=str(run_root / "allocations"),
+                                             ASTRA_MEMORY_TRACE_READY_NOTIFICATION=notification)
+                            owned.trace_process = subprocess.Popen([str(REPO / "script/record_memory_trace.sh")],
+                                env=trace_env, stdout=owned.trace_log, stderr=subprocess.STDOUT, start_new_session=True,
+                                preexec_fn=profile_file_limit)
+                            wait_for_trace_recording(owned.trace_process, notify, token)
+                        finally:
+                            notify.notify_cancel(token)
                         record["allocations_seconds"] = args.allocations_seconds
                     for cycle in range(1, args.cycles + 1):
                         for action in plan["cycle"]:
