@@ -14,12 +14,24 @@ import sqlite3
 from pathlib import Path
 import shutil
 import subprocess
+import tempfile
 import time
 import uuid
 
 from dev_scale_benchmark import REPO, command, reject_symlinks, sha256, synthetic_environment, write_json
 
 MODES = ("history", "export", "combined", "direct", "cleanup", "failure", "cancellation", "termination")
+
+
+def require_capacity(output):
+    # SwiftPM, disposable SwiftData stores and profiling artifacts may live on
+    # different volumes. Resolve the first existing ancestor for a new output.
+    ancestor = output.resolve()
+    while not ancestor.exists():
+        ancestor = ancestor.parent
+    for path in dict.fromkeys((ancestor, REPO, Path(tempfile.gettempdir()).resolve())):
+        if shutil.disk_usage(path).free < 12 * 1024**3:
+            raise RuntimeError(f"Keep at least 12 GiB free on the volume containing {path}")
 
 
 def profile_file_limit():
@@ -111,8 +123,7 @@ def main():
         parser.error("Output must be a new directory")
     if args.fixture and args.output.resolve().is_relative_to(args.fixture.resolve()):
         parser.error("Output must be outside the reusable fixture")
-    if shutil.disk_usage(REPO).free < 12 * 1024**3:
-        parser.error("Keep at least 12 GiB free before running synthetic fixtures")
+    require_capacity(args.output)
     args.output.mkdir(parents=True)
     args.output = args.output.resolve()
     sources = [REPO / "Tests/WorkspaceExportMemoryEvidenceTests.swift",
@@ -156,8 +167,7 @@ def main():
     write_json(args.output / "manifest.json", manifest)
     failures = 0
     for mode in args.modes:
-        if shutil.disk_usage(REPO).free < 12 * 1024**3:
-            raise RuntimeError("Stopped before next fixture: less than 12 GiB free")
+        require_capacity(args.output)
         env = dict(synthetic_environment(), ASTRA_CHANNEL="dev", ASTRA_EXPORT_EVIDENCE="1", ASTRA_EXPORT_MODE=mode,
                    ASTRA_EXPORT_SEED_ONLY="0", ASTRA_EXPORT_FIXTURE_ROOT=str(fixture),
                    ASTRA_EXPORT_SCALE=args.scale, ASTRA_EXPORT_BLOCKS=str(args.blocks),
