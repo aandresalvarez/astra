@@ -11,75 +11,157 @@ import WorkspaceToolSupport
 @MainActor @Observable
 final class RemoteWorkspaceJobMonitor {
     static let shared = RemoteWorkspaceJobMonitor()
-    struct Presentation {
+    struct Presentation: Equatable {
         var jobs: [RemoteWorkspaceJobRecord] = []
         var error: String?
+        /// Check now is running. Automatic passes stay silent.
         var refreshing = false
+        /// Another task's request is waiting on a fresh check of these jobs.
+        var awaited = false
     }
     private struct Key: Hashable { let root: String; let owner: PersistentIdentifier }
     private var presentations: [Key: Presentation] = [:]
     private var inFlight: Set<Key> = []
+    private var forcedAfterPass: Set<Key> = []
 
     func presentation(task: AgentTask, context: ModelContext) -> Presentation {
         guard task.isLive else { return Presentation() }
         return presentations[key(task: task, context: context)] ?? Presentation()
     }
 
-    func refresh(task: AgentTask, context: ModelContext) async {
+    /// Mid-refresh list: jobs already observed, the configuration being read,
+    /// then jobs not reached yet as last seen. Without the last part the list
+    /// empties at every refresh, and the rail drops its rows and their state.
+    /// A completed refresh publishes `observed` alone.
+    nonisolated static func interimJobs(
+        observed: [RemoteWorkspaceJobRecord],
+        current: [RemoteWorkspaceJobRecord],
+        previous: [RemoteWorkspaceJobRecord]
+    ) -> [RemoteWorkspaceJobRecord] {
+        let seen = Set((observed + current).map(\.jobID))
+        return observed + current + previous.filter { !seen.contains($0.jobID) }
+    }
+
+    /// `previous` with one configuration's records swapped in by job ID, in
+    /// place, and its new jobs appended: other configurations' jobs stay listed.
+    nonisolated static func replacingJobs(
+        _ previous: [RemoteWorkspaceJobRecord],
+        with updates: [RemoteWorkspaceJobRecord]
+    ) -> [RemoteWorkspaceJobRecord] {
+        let byID = Dictionary(updates.map { ($0.jobID, $0) }, uniquingKeysWith: { $1 })
+        let known = Set(previous.map(\.jobID))
+        return previous.map { byID[$0.jobID] ?? $0 } + updates.filter { !known.contains($0.jobID) }
+    }
+
+    /// `force` is Check now: every job is checked and the box shows progress.
+    /// An automatic pass contacts the host only for jobs the observation
+    /// policy says are due, and publishes nothing unless a record changed.
+    /// `awaited` comes from the monitor session; nil keeps the last value.
+    func refresh(task: AgentTask, context: ModelContext, force: Bool = false, awaited: Bool? = nil) async {
         guard task.isLive, task.modelContext === context, !Task.isCancelled else { return }
-        let taskID = task.id
         let key = key(task: task, context: context)
-        guard inFlight.insert(key).inserted else { return }
-        defer { inFlight.remove(key); presentations[key]?.refreshing = false }
+        let awaited = awaited ?? presentations[key]?.awaited ?? false
+        guard inFlight.insert(key).inserted else {
+            // Check now during an automatic pass runs in full right after it.
+            if force { forcedAfterPass.insert(key); setRefreshing(true, key) }
+            return
+        }
+        var force = force
+        while true {
+            if force { setRefreshing(true, key) }
+            await observe(task: task, context: context, key: key, force: force, awaited: awaited)
+            guard forcedAfterPass.remove(key) != nil, task.isLive, task.modelContext === context,
+                  !Task.isCancelled else { break }
+            force = true
+        }
+        inFlight.remove(key)
+        forcedAfterPass.remove(key)
+        setRefreshing(false, key)
+    }
+
+    private func observe(task: AgentTask, context: ModelContext, key: Key, force: Bool, awaited: Bool) async {
+        let taskID = task.id
         do {
             let configurations = try RemoteWorkspaceJobRegistration.loadAll(task: task, context: context)
             guard !configurations.isEmpty else {
-                presentations.removeValue(forKey: key)
+                publish(nil, key)
                 return
             }
+            let previous = presentations[key]?.jobs ?? []
             var observed: [RemoteWorkspaceJobRecord] = []
             for config in configurations {
-            let store = RemoteWorkspaceJobStore(rootPath: config.recordRootPath)
-            let before = try store.records()
-            for job in before { try RemoteWorkspaceJobEventReconciler.reconcile(job, task: task, context: context, store: store) }
-            presentations[key] = .init(jobs: observed + before, refreshing: !before.isEmpty)
-            let cancellation = try RuntimeExecutionOwner.existing(task: task, context: context)?.cancellationRequested == true
-            if cancellation {
-                for job in before where !job.status.isTerminal && job.cancellationRequestedAt == nil {
-                    try store.update(jobID: job.jobID) { $0.requestCancellation(at: Date()) }
+                let store = RemoteWorkspaceJobStore(rootPath: config.recordRootPath)
+                var current = try store.records().sorted { $0.createdAt < $1.createdAt }
+                for job in current { try RemoteWorkspaceJobEventReconciler.reconcile(job, task: task, context: context, store: store) }
+                let cancellation = try RuntimeExecutionOwner.existing(task: task, context: context)?.cancellationRequested == true
+                let uncancelled = current.filter { !$0.status.isTerminal && $0.cancellationRequestedAt == nil }
+                if cancellation && !uncancelled.isEmpty {
+                    for job in uncancelled {
+                        try store.update(jobID: job.jobID) { $0.requestCancellation(at: Date()) }
+                    }
+                    current = try store.records().sorted { $0.createdAt < $1.createdAt }
                 }
+                let now = Date()
+                let due = current.filter { force || RemoteWorkspaceJobObservationPolicy.isDue($0, awaited: awaited, now: now) }.map(\.jobID)
+                var after = current
+                if !due.isEmpty {
+                    publish(Self.interimJobs(observed: observed, current: current, previous: previous), awaited: awaited, key)
+                    // Each task has an independent observation worker. A disconnected
+                    // host cannot block unrelated tasks or Swift's cooperative pool.
+                    let result = await BlockingWork.run(qos: .utility) { () -> Result<[RemoteWorkspaceJobRecord], Error> in
+                        let manager = RemoteWorkspaceJobManager(configuration: config)
+                        for jobID in due { _ = manager.status(jobID: jobID) }
+                        return Result { try manager.store.records() }
+                    }
+                    guard task.isLive, task.modelContext === context, !Task.isCancelled else {
+                        publish(nil, key)
+                        return
+                    }
+                    after = try result.get().sorted { $0.createdAt < $1.createdAt }
+                }
+                observed += after
+                publish(Self.interimJobs(observed: observed, current: [], previous: previous), awaited: awaited, key)
+                for job in after { try RemoteWorkspaceJobEventReconciler.reconcile(job, task: task, context: context, store: store) }
             }
-            // Each task has an independent observation worker. A disconnected
-            // host cannot block unrelated tasks or Swift's cooperative pool.
-            let result = await BlockingWork.run(qos: .utility) { () -> Result<[RemoteWorkspaceJobRecord], Error> in
-                let manager = RemoteWorkspaceJobManager(configuration: config)
-                for job in before { _ = manager.status(jobID: job.jobID) }
-                return Result { try manager.store.records() }
-            }
-            guard task.isLive, task.modelContext === context, !Task.isCancelled else {
-                presentations.removeValue(forKey: key)
-                return
-            }
-            let after = try result.get().sorted { $0.createdAt < $1.createdAt }
-            observed += after
-            presentations[key] = .init(jobs: observed)
-            for job in after { try RemoteWorkspaceJobEventReconciler.reconcile(job, task: task, context: context, store: store) }
-            }
+            publish(observed, awaited: awaited, key)
         } catch {
             guard task.isLive, task.modelContext === context, !Task.isCancelled else { return }
             var value = presentations[key] ?? Presentation()
             value.error = "Remote job check failed: \(error.localizedDescription) The task reservation is preserved."
-            presentations[key] = value
+            publish(value, key)
             AppLogger.audit(.workerBlocked, category: "RemoteJobs", taskID: taskID,
                 fields: ["reason": "observation_failed", "error": error.localizedDescription], level: .warning)
         }
+    }
+
+    /// Writes only real changes: every write re-renders each view reading the
+    /// cache, and an automatic pass that changed nothing must not.
+    private func publish(_ value: Presentation?, _ key: Key) {
+        guard presentations[key] != value else { return }
+        presentations[key] = value
+    }
+
+    /// A completed or partial list: clears the last error, keeps `refreshing`.
+    private func publish(_ jobs: [RemoteWorkspaceJobRecord], awaited: Bool, _ key: Key) {
+        var value = presentations[key] ?? Presentation()
+        value.jobs = jobs
+        value.error = nil
+        value.awaited = awaited
+        publish(value, key)
+    }
+
+    private func setRefreshing(_ refreshing: Bool, _ key: Key) {
+        guard (presentations[key]?.refreshing ?? false) != refreshing else { return }
+        var value = presentations[key] ?? Presentation()
+        value.refreshing = refreshing
+        presentations[key] = value
     }
 
     /// Synchronous durable intent, followed by an idempotent asynchronous
     /// delivery. Even a crash between these steps cannot erase cancellation.
     @discardableResult
     func requestCancellation(task: AgentTask, jobID: String? = nil, context: ModelContext,
-        deliver: @escaping @Sendable (RemoteWorkspaceJobConfiguration) async -> Void = RemoteWorkspaceJobCancellationDelivery.deliver) -> Bool {
+        deliver: @escaping @Sendable (RemoteWorkspaceJobConfiguration) async -> Void = { await RemoteWorkspaceJobCancellationDelivery.deliver($0) }) -> Bool {
         guard task.isLive, task.modelContext === context else { return false }
         do {
             let configurations = try RemoteWorkspaceJobRegistration.loadAll(task: task, context: context)
@@ -93,7 +175,10 @@ final class RemoteWorkspaceJobMonitor {
                 let saved = try store.update(jobID: job.jobID) { $0.requestCancellation(at: Date()) }
                 try RemoteWorkspaceJobEventReconciler.reconcile(saved, task: task, context: context, store: store)
             }
-            presentations[key(task: task, context: context)] = .init(jobs: try store.records())
+            let presentationKey = key(task: task, context: context)
+            var value = presentations[presentationKey] ?? Presentation()
+            value.jobs = Self.replacingJobs(value.jobs, with: try store.records())
+            publish(value, presentationKey)
             Task {
                 await deliver(delivery)
                 await refresh(task: task, context: context)
@@ -143,12 +228,22 @@ final class RemoteWorkspaceJobMonitorSession {
             while !Task.isCancelled {
                 do {
                     let tasks = try Self.registeredTasks(context: context)
+                    let awaited = try Self.awaitedTaskIDs(context: context)
+                    // A live task's refresh delivers its own saved cancellations;
+                    // the outbox contacts the host only for jobs nobody refreshes.
+                    let refreshed = Set(tasks.flatMap {
+                        (try? RemoteWorkspaceJobRegistration.loadAll(task: $0, context: context)) ?? []
+                    }.map(\.recordRootPath))
                     let deliveries = try RemoteWorkspaceJobCancellationDelivery.pending(context: context)
                     await withTaskGroup(of: Void.self) { group in
-                        for delivery in deliveries { group.addTask { await RemoteWorkspaceJobCancellationDelivery.deliver(delivery) } }
+                        for delivery in deliveries {
+                            let contactHost = !refreshed.contains(delivery.recordRootPath)
+                            group.addTask { await RemoteWorkspaceJobCancellationDelivery.deliver(delivery, contactHost: contactHost) }
+                        }
                         for task in tasks {
+                            let isAwaited = awaited.contains(task.id)
                             group.addTask { @MainActor in
-                                await RemoteWorkspaceJobMonitor.shared.refresh(task: task, context: context)
+                                await RemoteWorkspaceJobMonitor.shared.refresh(task: task, context: context, awaited: isAwaited)
                             }
                         }
                     }
@@ -160,6 +255,16 @@ final class RemoteWorkspaceJobMonitorSession {
             }
         }
     }
+    /// Tasks holding a workspace that another task's request is waiting for.
+    /// Continuing that workspace needs a recent complete check of the holder's
+    /// jobs, so they stay on the live cadence while the request waits.
+    static func awaitedTaskIDs(context: ModelContext) throws -> Set<UUID> {
+        let waiting = TaskTurnRequestState.waitingForResource.rawValue
+        let requests = try context.fetch(FetchDescriptor<TaskTurnRequest>(
+            predicate: #Predicate { $0.stateRawValue == waiting }))
+        return Set(requests.compactMap(\.blockingTaskID))
+    }
+
     /// Only tasks with a registration in their retained execution lineage can have
     /// remote jobs to observe. Fetching every task every 15 seconds faults all
     /// workspace relationships and retains thousands of unrelated models.

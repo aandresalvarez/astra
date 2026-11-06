@@ -3,6 +3,7 @@ import SwiftData
 import SwiftUI
 import ASTRAModels
 import ASTRAPersistence
+import WorkspaceToolSupport
 
 private let workspaceRightRailScrollCoordinateSpace = "workspaceRightRailScrollCoordinateSpace"
 
@@ -114,10 +115,13 @@ struct WorkspaceRightRailView: View {
     @State private var outputFilesCache: (key: WorkspaceRailOutputPresentation.ReadKey, facts: Rail.OutputFacts)?
     @State private var isLoadingOutputs = false
     @State private var outputsRefreshTick = 0
+    @State private var remoteJobMonitor = RemoteWorkspaceJobMonitor.shared
     @State private var showsTopRailScrollShadow = false
     @State private var showsBottomRailScrollShadow = false
     /// Boxes the user collapsed in this workspace; every box starts expanded.
     @State private var collapsedBoxes: Set<WorkspaceRailSectionPresentation.Section> = []
+    /// The user's Remote jobs choice per task; absent, the box follows its content.
+    @State private var remoteJobsExpansion: [UUID: Bool] = [:]
     @State private var hasGitRepositories = false
     @State private var hasDockerEnvironments = false
 
@@ -496,8 +500,16 @@ struct WorkspaceRightRailView: View {
             environment: environmentFacts,
             context: contextFacts,
             capabilities: capabilityFacts(snapshot.items),
+            remoteJobs: WorkspaceRailRemoteJobPresentation.facts(jobs: remoteJobs.jobs, checkError: remoteJobs.error,
+                awaited: remoteJobs.awaited),
             outputs: outputFacts
         )
+    }
+
+    /// The selected task's SSH jobs: a cache the queue's monitor refreshes.
+    private var remoteJobs: RemoteWorkspaceJobMonitor.Presentation {
+        guard let selectedTask else { return .init() }
+        return remoteJobMonitor.presentation(task: selectedTask, context: modelContext)
     }
 
     // MARK: Outputs
@@ -567,7 +579,7 @@ struct WorkspaceRightRailView: View {
                     addActions: availableAddActions(box.addActions),
                     isBusy: boxIsBusy(box.section),
                     onRefresh: boxRefreshAction(box.section),
-                    onToggle: { toggleBox(box.section) },
+                    onToggle: { toggleBox(box) },
                     onAdd: { perform($0) }
                 )
 
@@ -578,6 +590,9 @@ struct WorkspaceRightRailView: View {
                         ForEach(box.rows) { row in
                             railRow(row, capabilityItems: capabilityItems)
                         }
+                    }
+                    if box.section == .remoteJobs, let error = remoteJobs.error {
+                        RailRemoteJobsFootnote(checkError: error)
                     }
                     if box.section == .context,
                        isMemoryComposerVisible,
@@ -606,7 +621,8 @@ struct WorkspaceRightRailView: View {
                 if !showsDockerEnvironment {
                     RailKeyValueRow(row: row)
                 }
-            case .repository, .branch, .pullRequest, .instructions, .memory, .routines, .capability, .output, .outputsOverflow:
+            case .repository, .branch, .pullRequest, .instructions, .memory, .routines, .capability, .output, .outputsOverflow,
+                 .remoteJob, .remoteJobsCheckFailed:
                 EmptyView()
             }
         }
@@ -640,6 +656,7 @@ struct WorkspaceRightRailView: View {
         switch section {
         case .environment: environmentIsRefreshing
         case .outputs: isLoadingOutputs
+        case .remoteJobs: remoteJobs.refreshing
         case .context, .capabilities: false
         }
     }
@@ -650,6 +667,9 @@ struct WorkspaceRightRailView: View {
         switch section {
         case .environment: return environmentRefreshAction
         case .outputs: return { outputsRefreshTick += 1 }
+        case .remoteJobs:
+            guard let task = selectedTask else { return nil }
+            return { Task { await remoteJobMonitor.refresh(task: task, context: modelContext, force: true) } }
         case .context, .capabilities: return nil
         }
     }
@@ -698,6 +718,12 @@ struct WorkspaceRightRailView: View {
             RailKeyValueRow(row: row, help: path, onTap: { openOutput(path) })
         case .outputsOverflow(_, let firstHiddenPath):
             RailKeyValueRow(row: row, help: "Open the Files shelf", onTap: { onOpenWorkspaceFile?(firstHiddenPath) })
+        case .remoteJob(let id):
+            if let task = selectedTask, let job = remoteJobs.jobs.first(where: { $0.jobID == id }) {
+                RailRemoteJobRow(row: row, task: task, job: job, awaited: remoteJobs.awaited)
+            }
+        case .remoteJobsCheckFailed:
+            RailKeyValueRow(row: row, help: remoteJobs.error)
         case .repository, .branch, .runsIn, .pullRequest:
             RailKeyValueRow(row: row)
         }
@@ -791,10 +817,19 @@ struct WorkspaceRightRailView: View {
     // MARK: Box disclosure
 
     private func isBoxExpanded(_ box: Rail.Box) -> Bool {
-        box.forcesExpansion || !collapsedBoxes.contains(box.section)
+        if box.forcesExpansion { return true }
+        // Remote jobs belong to the selected task: its choice, else its content.
+        if box.section == .remoteJobs { return selectedTask.flatMap { remoteJobsExpansion[$0.id] } ?? !box.startsCollapsed }
+        return !collapsedBoxes.contains(box.section)
     }
 
-    private func toggleBox(_ section: Rail.Section) {
+    private func toggleBox(_ box: Rail.Box) {
+        guard let toggle = Self.disclosureToggle(for: box.section) else {
+            let expanded = isBoxExpanded(box)
+            withAnimation(disclosureAnimation) { selectedTask.map { remoteJobsExpansion[$0.id] = !expanded } }
+            return
+        }
+        let section = box.section
         withAnimation(disclosureAnimation) {
             if collapsedBoxes.contains(section) {
                 collapsedBoxes.remove(section)
@@ -802,18 +837,16 @@ struct WorkspaceRightRailView: View {
                 collapsedBoxes.insert(section)
             }
         }
-        RailDisclosureStore.setBool(
-            !collapsedBoxes.contains(section),
-            workspaceDisclosureID,
-            Self.disclosureToggle(for: section)
-        )
+        RailDisclosureStore.setBool(!collapsedBoxes.contains(section), workspaceDisclosureID, toggle)
     }
 
-    private static func disclosureToggle(for section: Rail.Section) -> RailDisclosureStore.Toggle {
+    /// nil for Remote jobs, which is per task and never persisted per workspace.
+    private static func disclosureToggle(for section: Rail.Section) -> RailDisclosureStore.Toggle? {
         switch section {
         case .environment: .environmentExpanded
         case .context: .contextExpanded
         case .capabilities: .capabilitiesExpanded
+        case .remoteJobs: nil
         case .outputs: .outputsExpanded
         }
     }
@@ -1764,7 +1797,7 @@ struct WorkspaceRightRailView: View {
         // Restore the box expand/collapse choices the user made last time in
         // this workspace, so the rail does not forget its layout every session.
         collapsedBoxes = Set(Rail.sectionOrder.filter { section in
-            !RailDisclosureStore.bool(workspaceDisclosureID, Self.disclosureToggle(for: section), default: true)
+            Self.disclosureToggle(for: section).map { !RailDisclosureStore.bool(workspaceDisclosureID, $0, default: true) } ?? false
         })
     }
 

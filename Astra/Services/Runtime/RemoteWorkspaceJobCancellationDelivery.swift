@@ -59,7 +59,8 @@ enum RemoteWorkspaceJobCancellationDelivery {
             let jobs = try RemoteWorkspaceJobStore(rootPath: configuration.recordRootPath).records()
             // Keep whole-execution intent even with an empty journal: a
             // registration already in flight can become visible after delete.
-            if receipt.cancelExecution || jobs.contains(where: { $0.cancellationRequestedAt != nil && (!$0.status.isTerminal || $0.lastObservation?.outcome != .reachable) }) {
+            // A finished or host-fenced job has nothing left to receive.
+            if receipt.cancelExecution || jobs.contains(where: RemoteWorkspaceJobObservationPolicy.awaitsDelivery) {
                 result.append(configuration)
             }
         }
@@ -78,10 +79,21 @@ enum RemoteWorkspaceJobCancellationDelivery {
     }
 
     nonisolated static func deliver(_ configuration: RemoteWorkspaceJobConfiguration) async {
+        await deliver(configuration, contactHost: true)
+    }
+
+    /// Marks jobs a whole-execution receipt covers, then sends the cancel to
+    /// each job still waiting for it when the observation policy says it is
+    /// due. `contactHost` is false when the task's own refresh sends it.
+    nonisolated static func deliver(_ configuration: RemoteWorkspaceJobConfiguration, contactHost: Bool) async {
         let failure = await BlockingWork.run(qos: .utility) { () -> String? in
-            let manager = RemoteWorkspaceJobManager(configuration: configuration)
             do {
-                for job in try preparePendingCancellation(configuration) {
+                let jobs = try preparePendingCancellation(configuration)
+                guard contactHost else { return nil }
+                let manager = RemoteWorkspaceJobManager(configuration: configuration)
+                let now = Date()
+                for job in jobs where RemoteWorkspaceJobObservationPolicy.awaitsDelivery(job)
+                    && RemoteWorkspaceJobObservationPolicy.isDue(job, awaited: false, now: now) {
                     _ = manager.status(jobID: job.jobID) // cancel marker + probe, never start
                 }
                 return nil

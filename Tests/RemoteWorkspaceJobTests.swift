@@ -207,11 +207,12 @@ struct RemoteWorkspaceJobTests {
         defer { if let launch = started.launch { host.kill(launch) } }
         try host.setUnreachable(true)
         _ = manager.cancel(jobID: started.jobID)
-        #expect(try manager.store.load(jobID: started.jobID).cancellationRequestedAt != nil)
+        let undelivered = try manager.store.load(jobID: started.jobID)
+        #expect(undelivered.cancellationRequestedAt != nil && undelivered.cancellationState == .pending)
         try host.setUnreachable(false)
         let reopened = host.manager()
         let finished = try await settled(reopened, started.jobID)
-        #expect(finished.status == .cancelled)
+        #expect(finished.status == .cancelled && finished.cancellationState == .none)
         #expect(!finished.cleanupVerified)
         let repeated = try #require(record(reopened.start(connectionTarget: "pcornet-backup", command: started.command)))
         #expect(repeated.jobID == started.jobID)
@@ -264,7 +265,7 @@ struct RemoteWorkspaceJobTests {
         let job = try manager.register(connectionTarget: "pcornet-backup", command: "touch should-not-start").record
         let cancelled = try #require(record(manager.cancel(jobID: job.jobID)))
         #expect(cancelled.status == .cancelled && cancelled.launchFence == .cancelledBeforeStart)
-        #expect(cancelled.launchPermit == .withdrawn)
+        #expect(cancelled.launchPermit == .withdrawn && cancelled.cancellationState == .none)
         #expect(throws: (any Error).self) { try manager.authorizeLaunch(jobID: job.jobID) }
         #expect(record(manager.start(connectionTarget: "pcornet-backup", command: job.command))?.status == .cancelled)
         let transport = SSHRemoteWorkspaceJobTransport(sshExecutable: host.ssh.path)
@@ -356,14 +357,18 @@ struct RemoteWorkspaceJobTests {
         job.schemaVersion = 2
         job.remoteClock = .init(bootID: sample.bootID, deadline: sample.monotonic + 10)
         try manager.store.create(job)
-        #expect(try #require(record(manager.status(jobID: job.jobID))).launchFence == nil)
+        let unfenced = try #require(record(manager.status(jobID: job.jobID)))
+        #expect(unfenced.launchFence == nil && unfenced.cancellationState == .none)
         let fenced = try #require(record(manager.cancel(jobID: job.jobID)))
         #expect(fenced.status == .unverified && fenced.launchFence == .legacySealed && !fenced.cleanupVerified)
+        // Nothing is left to deliver, so the job no longer reads as cancellation pending.
+        #expect(fenced.cancellationState == .launchBlocked)
         // The original v2 script requires exclusive mkdir before writing or running a command.
         #expect(transport.run(connection: host.connections[0],
             script: "mkdir \"$HOME/\(job.remoteDirectory)\"", timeoutSeconds: 10).exitCode != 0)
         try host.setUnreachable(true)
-        #expect(try #require(record(manager.status(jobID: job.jobID))).lastObservation?.outcome == .unreachable)
+        let offline = try #require(record(manager.status(jobID: job.jobID)))
+        #expect(offline.lastObservation?.outcome == .unreachable && offline.cancellationState == .launchBlocked)
     }
 
     @Test("An admission that expires during SSH connection never starts its command")

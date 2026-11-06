@@ -350,13 +350,14 @@ struct WorkspaceRailSectionPresentationTests {
 
     @Test("the box order is fixed and never reacts to what is empty")
     func boxOrderIsFixed() {
-        #expect(Rail.sectionOrder == [.environment, .context, .capabilities, .outputs])
+        #expect(Rail.sectionOrder == [.environment, .context, .capabilities, .remoteJobs, .outputs])
         #expect(Rail.Section.allCases == Rail.sectionOrder)
 
         let full = Rail.boxes(
             environment: ownerEnvironment(),
             context: ownerContext(),
             capabilities: ownerCapabilities(),
+            remoteJobs: Rail.RemoteJobFacts(jobs: [Rail.RemoteJob(id: "j1", label: "SAS run", status: "Running")]),
             outputs: Rail.OutputFacts(files: [Rail.OutputFile(path: "/tmp/task/PLAN.md")])
         )
         #expect(full.map(\.section) == Rail.sectionOrder)
