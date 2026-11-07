@@ -99,7 +99,7 @@ enum RuntimeResourceOwnership {
             claim.taskID == task.id && durable.contains { held in
                 held.taskID == task.id && held.resourceKind == claim.resourceKind
                     && held.resourceKey == claim.resourceKey
-                    && (held.accessMode == .write || claim.accessMode == .readOnly)
+                    && held.coversAccess(of: claim)
             }
         }
     }

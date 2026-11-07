@@ -36,15 +36,25 @@ enum TaskIntentLanguagePolicy {
         return false
     }
 
+    /// One spelling per word set. Foundation caches every compiled
+    /// `.regularExpression` pattern for the life of the process, keyed by the
+    /// pattern text. A `Set`'s iteration order varies between instances, so
+    /// ordering by length alone produced a new pattern, and a new permanent
+    /// cache entry (~250 KB), on almost every call. Longer forms still come
+    /// first so alternation prefers "creata" over "creat"; ties sort by text.
+    static func actionPattern(for words: Set<String>) -> String {
+        let forms = words.flatMap { [$0, "\($0)a", "\($0)an"] }
+            .sorted { $0.count != $1.count ? $0.count > $1.count : $0 < $1 }
+            .map(NSRegularExpression.escapedPattern(for:))
+            .joined(separator: "|")
+        return "\\b(?:\(forms))\\b"
+    }
+
     /// Keep an action with its object, rather than borrowing a noun from a
     /// different instruction. Nested verbs stay in that object's description;
     /// an explicit coordinated instruction starts a new action.
     static func affirmativeActionObjects(in text: String, words: Set<String>) -> [(verb: String, object: String)] {
-        let forms = words.flatMap { [$0, "\($0)a", "\($0)an"] }
-            .sorted { $0.count > $1.count }
-            .map(NSRegularExpression.escapedPattern(for:))
-            .joined(separator: "|")
-        let actionPattern = "\\b(?:\(forms))\\b"
+        let actionPattern = actionPattern(for: words)
         let coordination = "\\band\\s+(?=(?:(?:also|please|do|not|never)\\s+)*\(actionPattern))"
         var result: [(verb: String, object: String)] = []
         let instructions = normalizingActionLists(in: text, actionPattern: actionPattern)

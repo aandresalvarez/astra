@@ -265,8 +265,12 @@ assert_targets $'TaskDecisionDockPresentationTests\nFeedbackReportPresentationTe
   "Tests/TaskDecisionDockPresentationTests.swift" \
   "Astra/Services/Tasks/TaskDecisionDockPresentation.swift"
 
-assert_targets $'TaskThreadLiveHistoryTests|TaskPublicationDecisionEvidenceWorkTests|TaskPublicationDecisionEvidenceCommitTests|ImportedTaskHistoryIsolationTests|TaskChatScrollFollowTests|TaskMainViewCrashRegressionTests\nTaskDecisionDockPresentationTests\nFeedbackReportPresentationTests\nComposerAttachmentsTests\nTaskInputContinuityPromptTests\nTaskAttachmentFilesReaderTests' \
+assert_targets $'TaskThreadLiveHistoryTests|TaskPublicationDecisionEvidenceWorkTests|TaskPublicationDecisionEvidenceCommitTests|ImportedTaskHistoryIsolationTests|TaskChatScrollFollowTests|TaskMainViewCrashRegressionTests\nTaskDecisionDockPresentationTests\nFeedbackReportPresentationTests\nComposerAttachmentsTests\nTaskInputContinuityPromptTests\nTaskAttachmentFilesReaderTests\nTaskComposerGoalModeTests\nTaskApprovedPlanRunCommandTests' \
   "Astra/Views/TaskMainView.swift"
+
+assert_targets "TaskComposerGoalModeTests" \
+  "Astra/Views/TaskComposerDraft.swift" \
+  "Tests/TaskComposerGoalModeTests.swift"
 
 assert_targets $'ComposerAttachmentsTests\nTaskInputContinuityPromptTests\nTaskAttachmentFilesReaderTests' \
   "Astra/Views/Components/TaskFilesPopoverView.swift" \
@@ -568,3 +572,51 @@ assert_targets $'WorkspaceCleanupMirrorBatchTests\nWorkspaceCleanupEvidenceAdmis
   Tests/TaskThreadLiveHistoryTests.swift \
   Tests/TaskChatScrollFollowTests.swift \
   Tests/WorkspaceCleanupMirrorBatchTests.swift
+
+assert_targets "WorkspaceConsultationHistoryTests|TaskTurnRequestAdmissionTests|RuntimeTurnSettlementTests|RequestUsageBudgetTests|ImportedTaskHistoryIsolationTests
+AppSemanticFitnessTests" \
+  "Astra/Models/TaskRunRequestAssociationPayload.swift" \
+  "Astra/Models/TaskTurnRequestOwnership.swift" \
+  "Astra/Models/TaskEventTypes.swift" \
+  "Astra/Services/Persistence/TaskRunRequestAssociation.swift" \
+  "Astra/Services/Tasks/PersistedTurnRuntimeEventLinker.swift" \
+  "Tests/WorkspaceConsultationHistoryTests.swift"
+
+assert_targets "WorkspaceConsultationTests|WorkspaceConsultationRuntimeTests|WorkspaceConsultationSubmissionTests|WorkspaceConsultationHistoryTests|NewTaskWorktreeConsultationTests|GlobalResourceBrokerTests|TaskExecutionResourceClaimResolverTests|SharedWorkspaceExecutionBoundaryTests
+TaskComposerGoalModeTests" \
+  "Astra/Models/TaskTurnRequest.swift" \
+  "Astra/Services/Tasks/TaskWorkspaceConsultationPolicy.swift" \
+  "Astra/Services/Tasks/TaskExecutionResourceClaimResolver.swift" \
+  "Astra/Services/Runtime/RuntimeWorkspaceConsultationGate.swift" \
+  "Astra/Views/ChatPanelView.swift" \
+  "Astra/Views/ChatPanelViewWorktreeCreation.swift" \
+  "Astra/Views/NewTaskWorktreeComposerFlow.swift" \
+  "Tests/WorkspaceConsultationSubmissionTests.swift" \
+  "Tests/WorkspaceConsultationTests.swift" \
+  "Tests/WorkspaceConsultationRuntimeTests.swift"
+
+assert_targets "WorkspaceCommandServiceTests|RuntimeModelAvailabilityTests
+WorkspaceConsultationTests|WorkspaceConsultationRuntimeTests|WorkspaceConsultationSubmissionTests|WorkspaceConsultationHistoryTests|NewTaskWorktreeConsultationTests|GlobalResourceBrokerTests|TaskExecutionResourceClaimResolverTests|SharedWorkspaceExecutionBoundaryTests" \
+  "Astra/Services/Tasks/WorkspaceCommandService.swift" \
+  "Tests/WorkspaceCommandServiceTests.swift"
+
+assert_targets "WorkspaceConsultationTests|WorkspaceConsultationRuntimeTests|WorkspaceConsultationSubmissionTests|WorkspaceConsultationHistoryTests|NewTaskWorktreeConsultationTests|GlobalResourceBrokerTests|TaskExecutionResourceClaimResolverTests|SharedWorkspaceExecutionBoundaryTests
+RuntimeWorkspaceContinuation.*Tests|RuntimeCompletedUserTurnContinuationTests|RuntimeHostNoToolReceiptReconciliationTests|RemoteWorkspaceJobPersistenceTests|TaskDecisionDock
+ClaudeSessionUsageAccounting|claudeSessionSnapshotsAcrossRequests|RuntimeUsage|requestBudget|CumulativeSessionUsage|ProviderSessionUsageEpoch|CopilotSessionDiscovery|TaskThreadHistory|TaskThreadSnapshot|AntigravityStreamEventParser|OpenCodeStreamAccounting
+RuntimeCancellation|RuntimeSettlementCancellationTests|TaskQueueWedgedWorkerReleaseTests|RuntimeTurnSettlementTests|LaunchSnapshotDisciplineTests|QueueLockTests|RuntimeSettlementRecoveryFollowupTests|RuntimeProvider|RuntimeCleanupAuthorizationTests|OpenCode
+RuntimeRecovery
+RuntimeSupervision" \
+  "Astra/Services/Runtime/RuntimeExecutionAdmission.swift"
+
+assert_targets "WorkspaceConsultationTests|WorkspaceConsultationRuntimeTests|WorkspaceConsultationSubmissionTests|WorkspaceConsultationHistoryTests|NewTaskWorktreeConsultationTests|GlobalResourceBrokerTests|TaskExecutionResourceClaimResolverTests|SharedWorkspaceExecutionBoundaryTests
+RuntimeCancellation|RuntimeSettlementCancellationTests|TaskQueueWedgedWorkerReleaseTests|RuntimeTurnSettlementTests|LaunchSnapshotDisciplineTests|QueueLockTests|RuntimeSettlementRecoveryFollowupTests|RuntimeProvider|RuntimeCleanupAuthorizationTests|OpenCode" \
+  "Astra/Services/Runtime/RuntimeFinalPlanSettlement.swift"
+
+assert_targets "WorkspaceConsultationTests|WorkspaceConsultationRuntimeTests|WorkspaceConsultationSubmissionTests|WorkspaceConsultationHistoryTests|NewTaskWorktreeConsultationTests|GlobalResourceBrokerTests|TaskExecutionResourceClaimResolverTests|SharedWorkspaceExecutionBoundaryTests
+TaskOutputDiscoveryTests
+AgentRuntimeRunPersistenceTests" \
+  "Astra/Services/Persistence/TaskOutputWorkspaceDiscovery.swift"
+
+assert_targets "TaskApprovedPlanRunCommandTests" \
+  "Astra/Services/Tasks/TaskApprovedPlanRunCommand.swift" \
+  "Tests/TaskApprovedPlanRunCommandTests.swift"

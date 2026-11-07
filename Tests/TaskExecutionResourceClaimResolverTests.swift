@@ -573,6 +573,10 @@ struct TaskExecutionResourceClaimResolverTests {
 
         for invalidJSON in ["[]", "{broken", "[{\"kind\":\"future_kind\"}]"] {
             request.resourceClaimsJSON = invalidJSON
+            // Scheduling still retains an exclusive lease in every case,
+            // while runtime can distinguish compatible empty claims from
+            // corruption instead of granting writes from the same fallback.
+            #expect((request.decodedResourceClaims != nil) == (invalidJSON == "[]"))
             let claims = TaskExecutionResourceClaimResolver.admissionClaims(for: request, task: task)
             let fallback = try #require(claims.first)
             #expect(claims.count == 1)

@@ -102,6 +102,7 @@ struct ChatPanelView: View {
     @State private var slashSelectedIndex: Int = 0
     @State private var activeSlashContext: String?
     @State private var isPlanMode = false
+    @State private var newTaskConsultationMode = false
     @State private var pendingPlan: TaskPlanPayload?
     // In-flight planning chat round-trips. Cancelled in `.onDisappear` so a dismissed composer
     // tears down the utility LLM subprocess instead of running it to completion for an assistant
@@ -294,13 +295,14 @@ struct ChatPanelView: View {
     }
 
     private var hasGoalModeSurface: Bool {
-        isPlanMode || pendingPlan != nil || approvedDraftPlan != nil
+        !isConsultationMode && (isPlanMode || pendingPlan != nil || approvedDraftPlan != nil)
     }
 
     private var goalModeBinding: Binding<Bool> {
         Binding(
-            get: { isPlanMode },
+            get: { !isConsultationMode && isPlanMode },
             set: { enabled in
+                guard !enabled || !isConsultationMode else { return }
                 if enabled {
                     isPlanMode = true
                 } else {
@@ -1073,13 +1075,14 @@ struct ChatPanelView: View {
                     useAgentTeam: $useAgentTeam,
                     teamSize: $teamSize,
                     isPlanMode: goalModeBinding,
-                    isPlanModeDisabled: isSlashCommandInput,
-                    planModeHelp: goalModeHelpText,
+                    isPlanModeDisabled: isSlashCommandInput || isConsultationMode,
+                    planModeHelp: isConsultationMode ? "Choose Work to use Goal Mode." : goalModeHelpText,
                     onPolicyLevelChange: { level in
                         if let draftTask {
                             recordPolicySelection(on: draftTask, level: level, source: "new_task_composer")
                         }
                     },
+                    consultationMode: consultationModeBinding,
                     submitIcon: submitButtonIcon,
                     submitTitle: submitButtonTitle,
                     submitColor: submitButtonColor,
@@ -1308,7 +1311,7 @@ struct ChatPanelView: View {
         let recapContext: String? = (lower == "/recap" || lower.hasPrefix("/recap "))
             ? buildRecapContext()
             : nil
-        let shouldUseGoalMode = isPlanMode && activeSlashContext == nil && recapContext == nil
+        let shouldUseGoalMode = !isConsultationMode && isPlanMode && activeSlashContext == nil && recapContext == nil
 
         messages.append(ChatMessage(role: "user", content: input))
         messageText = ""
@@ -1334,6 +1337,7 @@ struct ChatPanelView: View {
             do {
                 let planningDraft = try await saveDraft()
                 try Task.checkCancellation()
+                guard !shouldUseGoalMode || !isConsultationMode else { return }
                 if shouldUseGoalMode, let planningDraft {
                     try await ensurePlanningWorktree(for: planningDraft)
                     guard planningDraft.isLive else { return }
@@ -1417,6 +1421,7 @@ struct ChatPanelView: View {
             runtime: runtime
         )
         task.inputs = attachedFiles
+        TaskWorkspaceConsultationPolicy.apply(isConsultationMode, to: task)
         task.skills = AgentTask.storableSkills(taskSkills, in: task.workspace)
         TaskCapabilitySnapshotter.capture(for: task)
         task.useAgentTeam = useAgentTeam
@@ -1425,40 +1430,43 @@ struct ChatPanelView: View {
         task.reasoningEffort = composerReasoningEffort(model: model, runtime: runtime)
 
         performTaskCreation {
-            try await prepareTaskCheckout(task)
-            TaskStateMachine.enqueueFromChatSubmission(task, modelContext: modelContext)
-            modelContext.insert(task)
-            TaskRoleProfileStore.recordSelected(workerSelection, task: task, modelContext: modelContext)
-            recordPolicySelection(on: task, level: currentAgentPolicyLevel, source: "quick_run")
-            saveConversationAsEvents(on: task)
-            guard case .success = ExecutionRequestSubmissionService.submitInitial(for: task, into: modelContext) else {
-                draftTask = try TaskWorktreeService.recoverFailedSubmission(
-                    task: task, existingDraft: composerDraft, modelContext: modelContext
-                )
-                taskCreationError = "ASTRA could not save the execution request. Your task has not been launched."
-                return
-            }
-            var auditFields = taskCreatedAuditFields(source: "quick_run", task: task)
-            auditFields["trace_id"] = traceID
-            auditFields["use_agent_team"] = String(useAgentTeam)
-            auditFields["team_size"] = String(teamSize)
-            AppLogger.audit(.taskCreated, category: "UI", taskID: task.id, fields: auditFields, fieldMaxLength: 240)
-            try promoteDraft(to: task)
-            messageText = ""
-            messages = []
-            attachedFiles = []
-            pendingPlan = nil
-            isApprovedPlanHistoryExpanded = false
-            isPlanMode = false
-            worktreeSelection.resetTaskChoice()
+            try await NewTaskWorktreeComposerFlow.prepareAndSubmit(task, consultationSelection: { isConsultationMode }) {
+                try await prepareTaskCheckout(task)
+            } submit: {
+                TaskStateMachine.enqueueFromChatSubmission(task, modelContext: modelContext)
+                modelContext.insert(task)
+                TaskRoleProfileStore.recordSelected(workerSelection, task: task, modelContext: modelContext)
+                recordPolicySelection(on: task, level: currentAgentPolicyLevel, source: "quick_run")
+                saveConversationAsEvents(on: task)
+                guard case .success = ExecutionRequestSubmissionService.submitInitial(for: task, into: modelContext) else {
+                    draftTask = try TaskWorktreeService.recoverFailedSubmission(
+                        task: task, existingDraft: composerDraft, modelContext: modelContext
+                    )
+                    taskCreationError = "ASTRA could not save the execution request. Your task has not been launched."
+                    return
+                }
+                var auditFields = taskCreatedAuditFields(source: "quick_run", task: task)
+                auditFields["trace_id"] = traceID
+                auditFields["use_agent_team"] = String(useAgentTeam)
+                auditFields["team_size"] = String(teamSize)
+                AppLogger.audit(.taskCreated, category: "UI", taskID: task.id, fields: auditFields, fieldMaxLength: 240)
+                try promoteDraft(to: task)
+                messageText = ""
+                messages = []
+                attachedFiles = []
+                pendingPlan = nil
+                isApprovedPlanHistoryExpanded = false
+                isPlanMode = false
+                worktreeSelection.resetTaskChoice()
 
-            onQuickRun?(task)
+                onQuickRun?(task)
+            }
         }
     }
 
     /// Generate a concrete plan candidate from the full planning conversation.
     private func generatePlanFromConversation() {
-        guard !messages.isEmpty, !isThinking, !isPreparingWorktree, canSubmitWorktreeSelection else { return }
+        guard !isConsultationMode, !messages.isEmpty, !isThinking, !isPreparingWorktree, canSubmitWorktreeSelection else { return }
 
         isThinking = true
         taskCreationError = nil
@@ -1485,6 +1493,7 @@ struct ChatPanelView: View {
             do {
                 let planningDraft = try await saveDraft()
                 try Task.checkCancellation()
+                guard !isConsultationMode else { return }
                 if let planningDraft {
                     try await ensurePlanningWorktree(for: planningDraft)
                     guard planningDraft.isLive else { return }
@@ -1528,9 +1537,9 @@ struct ChatPanelView: View {
     }
 
     private func approvePendingPlan() {
-        guard var plan = pendingPlan else { return }
+        guard !isConsultationMode, var plan = pendingPlan else { return }
         performTaskCreation {
-            guard let task = try await saveDraft() else { return }
+            guard let task = try await saveDraft(), !TaskWorkspaceConsultationPolicy.isEnabled(for: task) else { return }
             task.inputs = ComposerAttachments.inputs(task.inputs, replacingPathsWith: attachedFiles)
 
             if let existingPlan = TaskPlanService.reconstruct(for: task).plan {
@@ -1564,7 +1573,7 @@ struct ChatPanelView: View {
     }
 
     private func runApprovedPlan(_ plan: TaskPlanPayload, worktreeReady: Bool = false) {
-        guard let task = draftTask,
+        guard !isConsultationMode, let task = draftTask,
               task.status != .running, worktreeReady || !isPreparingWorktree else { return }
 
         if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
@@ -1641,6 +1650,7 @@ struct ChatPanelView: View {
         )
         task.inputs = spec.inputs + attachedFiles
         task.constraints = spec.constraints
+        TaskWorkspaceConsultationPolicy.apply(isConsultationMode, to: task)
         task.acceptanceCriteria = spec.acceptanceCriteria
         task.skills = AgentTask.storableSkills(taskSkills, in: task.workspace)
         TaskCapabilitySnapshotter.capture(for: task)
@@ -1651,42 +1661,45 @@ struct ChatPanelView: View {
         task.reasoningEffort = composerReasoningEffort(model: model, runtime: runtime)
 
         performTaskCreation {
-            try await prepareTaskCheckout(task)
-            TaskStateMachine.enqueueFromChatSubmission(task, modelContext: modelContext)
-            modelContext.insert(task)
-            TaskRoleProfileStore.recordSelected(workerSelection, task: task, modelContext: modelContext)
-            recordPolicySelection(on: task, level: currentAgentPolicyLevel, source: "conversation_spec")
+            try await NewTaskWorktreeComposerFlow.prepareAndSubmit(task, consultationSelection: { isConsultationMode }) {
+                try await prepareTaskCheckout(task)
+            } submit: {
+                TaskStateMachine.enqueueFromChatSubmission(task, modelContext: modelContext)
+                modelContext.insert(task)
+                TaskRoleProfileStore.recordSelected(workerSelection, task: task, modelContext: modelContext)
+                recordPolicySelection(on: task, level: currentAgentPolicyLevel, source: "conversation_spec")
 
-            // Persist conversation history as events so it survives draft→queued→draft transitions
-            saveConversationAsEvents(on: task)
+                // Persist conversation history as events so it survives draft→queued→draft transitions
+                saveConversationAsEvents(on: task)
 
-            guard case .success = ExecutionRequestSubmissionService.submitInitial(for: task, into: modelContext) else {
-                draftTask = try TaskWorktreeService.recoverFailedSubmission(
-                    task: task, existingDraft: composerDraft, modelContext: modelContext
-                )
-                taskCreationError = "ASTRA could not save the execution request. Your task has not been launched."
-                return
+                guard case .success = ExecutionRequestSubmissionService.submitInitial(for: task, into: modelContext) else {
+                    draftTask = try TaskWorktreeService.recoverFailedSubmission(
+                        task: task, existingDraft: composerDraft, modelContext: modelContext
+                    )
+                    taskCreationError = "ASTRA could not save the execution request. Your task has not been launched."
+                    return
+                }
+                var auditFields = taskCreatedAuditFields(source: "conversation_spec", task: task)
+                auditFields["trace_id"] = traceID
+                auditFields["inputs_count"] = String(task.inputs.count)
+                auditFields["criteria_count"] = String(task.acceptanceCriteria.count)
+                AppLogger.audit(.taskCreated, category: "UI", taskID: task.id, fields: auditFields, fieldMaxLength: 240)
+                try promoteDraft(to: task)
+
+                // Reset state
+                messageText = ""
+                messages = []
+                extractedSpec = nil
+                showSpecCard = false
+                pendingPlan = nil
+                isApprovedPlanHistoryExpanded = false
+                attachedFiles = []
+                chainedGoal = ""
+                isPlanMode = false
+                worktreeSelection.resetTaskChoice()
+
+                onTaskCreated?(task)
             }
-            var auditFields = taskCreatedAuditFields(source: "conversation_spec", task: task)
-            auditFields["trace_id"] = traceID
-            auditFields["inputs_count"] = String(task.inputs.count)
-            auditFields["criteria_count"] = String(task.acceptanceCriteria.count)
-            AppLogger.audit(.taskCreated, category: "UI", taskID: task.id, fields: auditFields, fieldMaxLength: 240)
-            try promoteDraft(to: task)
-
-            // Reset state
-            messageText = ""
-            messages = []
-            extractedSpec = nil
-            showSpecCard = false
-            pendingPlan = nil
-            isApprovedPlanHistoryExpanded = false
-            attachedFiles = []
-            chainedGoal = ""
-            isPlanMode = false
-            worktreeSelection.resetTaskChoice()
-
-            onTaskCreated?(task)
         }
     }
 
@@ -2051,10 +2064,13 @@ struct ChatPanelView: View {
 
             let taskTitle = json["taskTitle"] as? String ?? tmpl.name
             let variables = json["variables"] as? [String: String] ?? [:]
+            do { try WorkspaceCommandService.requireTemplateWork(consultation: isConsultationMode) }
+            catch { reportTaskCreationError(error); return }
 
             performTaskCreation {
+                try WorkspaceCommandService.requireTemplateWork(consultation: isConsultationMode)
                 let checkoutSource = try await templateCheckoutSource(branchTitle: taskTitle)
-                let creation = WorkspaceCommandService.createTemplateTasks(
+                let creation = try WorkspaceCommandService.createTemplateTasks(
                     template: tmpl,
                     taskTitle: taskTitle,
                     variables: variables,
@@ -2064,6 +2080,7 @@ struct ChatPanelView: View {
                     workspace: ws,
                     modelContext: modelContext,
                     source: "template",
+                    consultation: isConsultationMode,
                     checkoutSource: checkoutSource
                 )
                 activeSlashContext = nil
@@ -2226,6 +2243,7 @@ struct ChatPanelView: View {
             draft.reasoningEffort = composerReasoningEffort(model: model, runtime: runtime)
             draft.draftMessages = json
             draft.inputs = attachedFiles
+            TaskWorkspaceConsultationPolicy.apply(isConsultationMode, to: draft)
             draft.skills = AgentTask.storableSkills(scopedSelectedSkills(forTaskText: draft.goal, inputs: attachedFiles), in: draft.workspace)
             TaskCapabilitySnapshotter.capture(for: draft)
             draft.useAgentTeam = useAgentTeam
@@ -2310,6 +2328,21 @@ struct ChatPanelView: View {
         """
     }
 
+    private var isConsultationMode: Bool {
+        TaskWorkspaceConsultationPolicy.composerSelection(for: composerDraft, newTaskSelection: newTaskConsultationMode)
+    }
+
+    private var consultationModeBinding: Binding<Bool> {
+        Binding(get: { isConsultationMode }, set: { enabled in
+            submissionIntent.cancel()
+            if let draft = composerDraft {
+                TaskWorkspaceConsultationPolicy.select(enabled, for: draft, in: modelContext)
+            } else {
+                newTaskConsultationMode = enabled
+            }
+        })
+    }
+
     private func loadDraftMessages(_ task: AgentTask) {
         // Adopt this draft's own persisted runtime pick and chips, not whatever this view held before.
         composerRuntimeExplicitlySelected = task.runtimeExplicitlySelected
@@ -2321,7 +2354,7 @@ struct ChatPanelView: View {
            let decoded = try? JSONDecoder().decode([DraftChatMessagePayload].self, from: data) {
             messages = decoded.map { ChatMessage(role: $0.role, content: $0.content) }
             draftTask = task
-            isPlanMode = true
+            isPlanMode = !isConsultationMode
             return
         }
 
@@ -2338,11 +2371,11 @@ struct ChatPanelView: View {
                 break
             }
         }
+        draftTask = task
         if !restored.isEmpty {
             messages = restored
-            isPlanMode = true
+            isPlanMode = !isConsultationMode
         }
-        draftTask = task
     }
 
     /// Save current chat messages as TaskEvent records on the task

@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import ASTRAModels
 import ASTRACore
 
@@ -6,13 +7,14 @@ public enum TaskOutputWorkspaceDiscovery {
     public static let scanEntryLimit = 800
     public static let scanDepthLimit = 4
 
+    @MainActor
     public static func filesChangedDuringRun(
         workspacePath: String,
         taskFolder: String,
         run: TaskRun,
         fileManager: FileManager = .default
     ) -> [TaskOutputDiscoveredFile] {
-        guard !workspacePath.isEmpty else { return [] }
+        guard !workspacePath.isEmpty, allowsWorkspaceInference(for: run) else { return [] }
 
         let rootURL = URL(fileURLWithPath: workspacePath, isDirectory: true)
         let root = PathBoundary(rootURL)
@@ -88,6 +90,50 @@ public enum TaskOutputWorkspaceDiscovery {
         return files.sorted {
             $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending
         }
+    }
+
+    /// A modification time is not ownership evidence when this run accepted
+    /// concurrent writers. Read the durable request rather than the current
+    /// composer selection; later delivery checks must keep the same boundary.
+    @MainActor
+    private static func allowsWorkspaceInference(for run: TaskRun) -> Bool {
+        guard let task = run.task, let context = task.modelContext else { return true }
+        let taskID = task.id
+        let runID = run.id
+        do {
+            // A later attempt moves both request.runID and source.run. The
+            // immutable identity event keeps the original accepted request.
+            if let request = try TaskRunRequestAssociation.request(for: run, in: context) {
+                return permitsWorkspaceInference(request)
+            }
+            // Pre-event attempts can still be resolved before reassociation.
+            let userMessage = TaskEventTypes.Conversation.userMessage.rawValue
+            let requestPrefix = "execution.request."
+            let sourceEvents = try context.fetch(FetchDescriptor<TaskEvent>(predicate: #Predicate {
+                $0.task?.id == taskID && $0.run?.id == runID
+                    && ($0.type == userMessage || $0.type.starts(with: requestPrefix))
+            }))
+            let sourceIDs = sourceEvents.filter { $0.task?.persistentModelID == task.persistentModelID }.map(\.id)
+            let requests = try context.fetch(FetchDescriptor<TaskTurnRequest>(predicate: #Predicate {
+                $0.taskID == taskID && ($0.runID == runID || sourceIDs.contains($0.messageEventID))
+            }))
+            var owners = TaskTurnRequestOwnership.Resolver(candidates:
+                try TaskTurnRequestOwnership.candidates(taskID: taskID, in: context))
+            for request in requests {
+                guard let owner = owners.resolve(request) else { return false }
+                guard owner.persistentModelID == task.persistentModelID else { continue }
+                if !permitsWorkspaceInference(request) { return false }
+            }
+            return true
+        } catch {
+            // An unreadable ownership record cannot authorize attribution.
+            return false
+        }
+    }
+
+    private static func permitsWorkspaceInference(_ request: TaskTurnRequest) -> Bool {
+        guard let claims = request.decodedResourceClaims else { return false }
+        return !claims.contains { $0.kind == .workspace && $0.readConsistency == .live }
     }
 
     private static func wasChangedDuringRun(_ values: URLResourceValues, run: TaskRun) -> Bool {

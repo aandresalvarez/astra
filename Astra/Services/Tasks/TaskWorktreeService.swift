@@ -8,6 +8,7 @@ enum TaskWorktreeCreationError: LocalizedError, Equatable {
     case repositoryUnavailable
     case repositoryBusy(String)
     case resourceQueueUnavailable
+    case consultationRequiresWork
     case noCommit(String)
     case checkoutUnavailable(String)
     case baseUnavailable(String)
@@ -28,6 +29,8 @@ enum TaskWorktreeCreationError: LocalizedError, Equatable {
             "Another task or worktree operation is using \(path). Wait for it to finish, then try again. No new worktree was created."
         case .resourceQueueUnavailable:
             "ASTRA could not access the task queue to reserve this repository. No worktree operation was started."
+        case .consultationRequiresWork:
+            "Choose Work to create a new worktree. Consult can use an existing checkout."
         case .noCommit(let path):
             "Could not read HEAD in \(path). Create an initial commit before starting a task in a worktree."
         case .checkoutUnavailable(let path):
@@ -455,11 +458,14 @@ enum TaskWorktreeService {
     /// 3. a request creates a new worktree from the requested base;
     /// 4. otherwise the task inherits the draft's pin, if any.
     /// A draft from another workspace lends neither its worktree nor its pin.
+    /// `modeSource` retains the composer's durable draft mode even when that
+    /// draft does not supply the checkout; creation requires Work on both.
     /// `branchTitle` names a new worktree's branch instead of the task title.
     static func prepare(
         task: AgentTask,
         request: TaskWorktreeRequest?,
         inheritingFrom draft: AgentTask? = nil,
+        modeSource: AgentTask? = nil,
         branchTitle: String? = nil,
         modelContext: ModelContext,
         resourceQueue: TaskQueue?,
@@ -482,7 +488,8 @@ enum TaskWorktreeService {
         }
         if let request {
             try await createWorktree(
-                for: task, request: request, branchTitle: branchTitle, modelContext: modelContext, git: git,
+                for: task, modeSource: modeSource ?? source, request: request,
+                branchTitle: branchTitle, modelContext: modelContext, git: git,
                 resourceQueue: resourceQueue, worktreesRoot: worktreesRoot,
                 journal: ownership.creationJournal, setUpSubmodules: setUpSubmodules
             )
@@ -493,10 +500,22 @@ enum TaskWorktreeService {
         }
     }
 
+    /// Read the target and originating draft directly again after preflight;
+    /// a window-local selection cannot authorize creation.
+    private static func requireWorkMode(for task: AgentTask, modeSource: AgentTask?) throws {
+        let sourceIsConsultation = modeSource.map {
+            $0.workspace?.id == task.workspace?.id && TaskWorkspaceConsultationPolicy.isEnabled(for: $0)
+        } ?? false
+        guard !TaskWorkspaceConsultationPolicy.isEnabled(for: task), !sourceIsConsultation else {
+            throw TaskWorktreeCreationError.consultationRequiresWork
+        }
+    }
+
     /// Creation is journaled before Git runs and settled only once the task's
     /// binding is saved; recovery removes what an interrupted creation left.
     private static func createWorktree(
         for task: AgentTask,
+        modeSource: AgentTask?,
         request: TaskWorktreeRequest,
         branchTitle: String?,
         modelContext: ModelContext,
@@ -506,6 +525,7 @@ enum TaskWorktreeService {
         journal: TaskWorktreeCleanupStore,
         setUpSubmodules: TaskWorktreeSubmoduleSetup
     ) async throws {
+        try requireWorkMode(for: task, modeSource: modeSource)
         guard let workspace = task.workspace else {
             throw TaskWorktreeCreationError.repositoryUnavailable
         }
@@ -524,6 +544,10 @@ enum TaskWorktreeService {
         let resolvedRoot = WorkspacePathPresentation.resolvedPath(worktreesRoot)
         let checkouts = [GitCheckoutLayout.worktreeRoot(containing: path) ?? path]
             + (await git.listWorktrees(at: path)).map(\.path)
+        // Admit creation after the read-only awaits and before the first mkdir,
+        // lease, fetch, or journal write. A later mode change does not revoke
+        // this already-admitted Work operation.
+        try requireWorkMode(for: task, modeSource: modeSource)
         var containing = checkouts.first(where: {
             let checkout = WorkspacePathPresentation.resolvedPath($0)
             return resolvedRoot == checkout || resolvedRoot.hasPrefix(checkout + "/")

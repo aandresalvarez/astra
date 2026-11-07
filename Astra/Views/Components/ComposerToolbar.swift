@@ -124,6 +124,8 @@ struct ComposerToolbar: View {
     var isPlanModeDisabled: Bool = false
     var planModeHelp: String = "Turn on Goal Mode to define and approve a goal before execution"
     var onPolicyLevelChange: ((AgentPolicyLevel) -> Void)?
+    var consultationMode: Binding<Bool>?
+    var consultationModeDisabled = false
 
     // MARK: - Submit button style
 
@@ -168,6 +170,26 @@ struct ComposerToolbar: View {
 
             if showSecurityGate || showPermissionControls {
                 permissionModeButton
+            }
+
+            if let consultationMode, workspace != nil {
+                Menu {
+                    Picker("Workspace access", selection: consultationMode) {
+                        Text("Work").tag(false)
+                        Text("Consult").tag(true)
+                    }
+                } label: {
+                    Label(consultationMode.wrappedValue ? "Consult" : "Work",
+                        systemImage: consultationMode.wrappedValue ? "text.bubble" : "hammer")
+                        .font(Stanford.ui(13))
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .disabled(isRunning || consultationModeDisabled || isPlanMode)
+                .help("Consult reads workspace files while other tasks work. Files may change during the answer. Switch to Work to change workspace files.")
+                .accessibilityLabel("Workspace access")
+                .accessibilityValue(consultationMode.wrappedValue ? "Consult" : "Work")
+                .accessibilityIdentifier("WorkspaceConsultationMode")
             }
 
             Spacer(minLength: ComposerToolbarPresentation.controlSpacing)
