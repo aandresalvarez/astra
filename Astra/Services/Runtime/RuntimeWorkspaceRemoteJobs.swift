@@ -39,6 +39,14 @@ enum WorkspaceSSHWait: LocalizedError {
 
 @MainActor
 enum RuntimeWorkspaceRemoteJobs {
+    /// The status continuation reviews a job by. A cancellation projected by
+    /// an older app from host-only metadata must not silently become a
+    /// terminal reviewed job: only a protected withdrawn permit proves it.
+    nonisolated static func reviewedStatus(_ job: RemoteWorkspaceJobRecord) -> RemoteWorkspaceJobStatus {
+        let protectedWithdrawal = job.schemaVersion == RemoteWorkspaceJobRecord.currentSchemaVersion && job.launchPermit == .withdrawn
+        return job.launchFence == .cancelledBeforeStart && !protectedWithdrawal ? .unverified : job.status
+    }
+
     private static func records(_ configurations: [RemoteWorkspaceJobConfiguration]) throws -> [(ReviewedWorkspaceSSHJob, RemoteWorkspaceJobRecord)] {
         var jobs: [(ReviewedWorkspaceSSHJob, RemoteWorkspaceJobRecord)] = []
         for config in configurations {
@@ -52,10 +60,7 @@ enum RuntimeWorkspaceRemoteJobs {
                 // A previous session's process scan cannot approve a legacy
                 // handoff after restart. Allow a probe timeout plus two polls.
                 let age = job.lastObservation.map { -$0.at.timeIntervalSinceNow } ?? .infinity
-                // A cancellation projected by an older app from host-only
-                // metadata must not silently become a terminal reviewed job.
-                let protectedWithdrawal = job.schemaVersion == RemoteWorkspaceJobRecord.currentSchemaVersion && job.launchPermit == .withdrawn
-                let status: RemoteWorkspaceJobStatus = job.launchFence == .cancelledBeforeStart && !protectedWithdrawal ? .unverified : job.status
+                let status = reviewedStatus(job)
                 let reviewed = ReviewedWorkspaceSSHJob(jobID: job.jobID, executionID: binding.executionID, nonce: nonce,
                     legacy: job.schemaVersion == 2, status: status,
                     sealed: status == .unverified && job.launch == nil && job.cancellationRequestedAt != nil

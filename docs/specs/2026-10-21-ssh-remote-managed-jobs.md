@@ -59,11 +59,13 @@ request in the admitted job directory. Only the original live scope signals its
 own process group: TERM first, then KILL after a grace interval even if children
 ignore TERM. ASTRA never signals PIDs taken from mutable remote metadata.
 Disconnected cancellation stays pending and is delivered on subsequent checks,
-including after an ASTRA restart. Before deleting a task, ASTRA must also save
-a cancellation delivery receipt and a private copy of the original public
-known-host keys. Delivery and startup reconciliation use this receipt even
-when the SwiftData task or its folder no longer exists. A failed save blocks
-deletion; the receipt can only cancel/probe its original owner and execution.
+including after an ASTRA restart, until the job ends or the host fences its
+launch; a finished or fenced job has nothing left to receive. Before deleting
+a task, ASTRA must also save a cancellation delivery receipt and a private
+copy of the original public known-host keys. Delivery and startup
+reconciliation use this receipt even when the SwiftData task or its folder no
+longer exists. A failed save blocks deletion; the receipt can only
+cancel/probe its original owner and execution.
 Whole-task cancellation is retained even if registration is still in flight
 and the job journal is empty. Later registrations receive that saved stop;
 cancelling one job never widens the request to other jobs. Local worker
@@ -99,9 +101,28 @@ Version 2 probes require a complete framed response, job ID, nonce, boot identit
 explicit liveness fields, and successful SSH/script exit. Partial output and
 nonzero exits are unreachable observations, not proof of absence. PID start
 markers must match. A missing final result, missing directory, reboot, or late
-launch is unverified and continues to be checked. Terminal observations are
-also rechecked. A probe is dated before SSH starts so a slow old response cannot
-overwrite a newer observation.
+launch is unverified and continues to be checked. A probe is dated before SSH
+starts so a slow old response cannot overwrite a newer observation.
+
+Automatic checks follow `RemoteWorkspaceJobObservationPolicy`, derived from the
+job record and the clock alone, so a restart keeps the same schedule:
+
+| Job | Automatic check |
+| --- | --- |
+| Starting or running | Every 15 seconds |
+| A cancellation saved after the last check | At once |
+| Unverified or lost | 15 s for 2 min, then 1 min until 10 min, 5 min until 1 h, then 30 min, timed from the job's creation or its cancellation |
+| Finished, or launch fenced by the host | None: Check now only |
+| Any job of a task whose workspace another request waits for | Every 15 seconds, unless finished as continuation reviews it and last seen reachable |
+
+Workspace continuation accepts a fenced launch only with a complete check at
+most 90 seconds old, so a task holding a waiting request's workspace keeps the
+live cadence while that request waits: the request's blocking task and every
+predecessor in its saved continuation. A host-only cancellation without a
+protected withdrawn permit counts as unverified there, as continuation reviews
+it. Settled jobs are otherwise never checked again by themselves: a recheck
+could only find the host unreachable or the job directory gone, which never
+releases the reservation.
 
 The app uses `/usr/bin/ssh` directly with the task's explicit host-key options;
 it never executes an agent-editable wrapper. It revalidates the saved connection
@@ -111,8 +132,14 @@ The initial SSH shim and app observations share the same quoted known-host file
 argument, preserving spaces, quotes, and backslashes through OpenSSH's separate
 filename-list parser.
 
-A queue-store-owned monitor refreshes asynchronously every 15 seconds. Its
-only side effects are observations and delivery of saved cancellation intent.
+A queue-store-owned monitor wakes every 15 seconds and contacts the host only
+for jobs the policy says are due. Its only side effects are observations and
+delivery of saved cancellation intent. A job with a saved cancellation is
+checked with the trust file pinned in its receipt, by a task's refresh or the
+deletion outbox. The outbox runs after the refreshes, so it contacts the host
+only for jobs no refresh reached. Automatic checks publish nothing unless a
+record changed and show no progress; Check now checks every job and shows it.
+A box whose jobs are all settled starts collapsed.
 The task's Remote jobs panel shows the observed status, last successful check,
 connection errors, cancellation pending, bounded output and why the workspace
 remains reserved. Check now, Read output and Cancel job use the same service.

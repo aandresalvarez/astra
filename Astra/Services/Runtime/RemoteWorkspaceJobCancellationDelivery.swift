@@ -14,12 +14,33 @@ enum RemoteWorkspaceJobCancellationDelivery {
         var cancelExecution: Bool
     }
 
+    /// The task's configuration with the trust file pinned next to the receipt.
+    private static func pinned(_ configuration: RemoteWorkspaceJobConfiguration) -> RemoteWorkspaceJobConfiguration {
+        let root = URL(fileURLWithPath: configuration.recordRootPath).deletingLastPathComponent()
+        var delivery = configuration
+        delivery.observationSSHOptions = RemoteWorkspaceJobRegistration.observationOptions(
+            knownHostsPath: root.appendingPathComponent("cancel-known_hosts").path)
+        return delivery
+    }
+
+    /// How a saved cancellation is sent, by the outbox or a task's refresh:
+    /// with the trust file pinned when it was saved, which a later change to
+    /// the task folder cannot remove. nil when the execution has no receipt.
+    static func savedDelivery(for configuration: RemoteWorkspaceJobConfiguration) throws -> RemoteWorkspaceJobConfiguration? {
+        let url = URL(fileURLWithPath: configuration.recordRootPath).deletingLastPathComponent().appendingPathComponent("cancellation.json")
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let receipt = try JSONDecoder().decode(Receipt.self, from: RemoteWorkspaceJobProtectedFile.read(url, maximumBytes: 65_536))
+        guard receipt.configuration == pinned(configuration) else {
+            throw RemoteWorkspaceJobError.invalidArgument("The saved remote cancellation identity could not be verified.")
+        }
+        return receipt.configuration
+    }
+
     static func persist(configuration: RemoteWorkspaceJobConfiguration, task: AgentTask, cancelExecution: Bool) throws -> RemoteWorkspaceJobConfiguration {
         let root = URL(fileURLWithPath: configuration.recordRootPath).deletingLastPathComponent()
         let knownHosts = root.appendingPathComponent("cancel-known_hosts")
         let source = URL(fileURLWithPath: TaskWorkspaceAccess(task: task).taskFolder).appendingPathComponent(".runtime-ssh/known_hosts")
-        var delivery = configuration
-        delivery.observationSSHOptions = RemoteWorkspaceJobRegistration.observationOptions(knownHostsPath: knownHosts.path)
+        let delivery = pinned(configuration)
         let receipt = root.appendingPathComponent("cancellation.json")
         if FileManager.default.fileExists(atPath: receipt.path) {
             var saved = try JSONDecoder().decode(Receipt.self, from: RemoteWorkspaceJobProtectedFile.read(receipt))
@@ -59,7 +80,8 @@ enum RemoteWorkspaceJobCancellationDelivery {
             let jobs = try RemoteWorkspaceJobStore(rootPath: configuration.recordRootPath).records()
             // Keep whole-execution intent even with an empty journal: a
             // registration already in flight can become visible after delete.
-            if receipt.cancelExecution || jobs.contains(where: { $0.cancellationRequestedAt != nil && (!$0.status.isTerminal || $0.lastObservation?.outcome != .reachable) }) {
+            // A finished or host-fenced job has nothing left to receive.
+            if receipt.cancelExecution || jobs.contains(where: RemoteWorkspaceJobObservationPolicy.awaitsDelivery) {
                 result.append(configuration)
             }
         }
@@ -77,11 +99,18 @@ enum RemoteWorkspaceJobCancellationDelivery {
         return try store.records().filter { $0.cancellationRequestedAt != nil }
     }
 
+    /// Marks jobs a whole-execution receipt covers, then sends the cancel to
+    /// each job still waiting for it when the observation policy says it is
+    /// due. A job its task's refresh just checked is not due, so the host is
+    /// contacted here only when no refresh reached it.
     nonisolated static func deliver(_ configuration: RemoteWorkspaceJobConfiguration) async {
         let failure = await BlockingWork.run(qos: .utility) { () -> String? in
-            let manager = RemoteWorkspaceJobManager(configuration: configuration)
             do {
-                for job in try preparePendingCancellation(configuration) {
+                let jobs = try preparePendingCancellation(configuration)
+                let manager = RemoteWorkspaceJobManager(configuration: configuration)
+                let now = Date()
+                for job in jobs where RemoteWorkspaceJobObservationPolicy.awaitsDelivery(job)
+                    && RemoteWorkspaceJobObservationPolicy.isDue(job, awaited: false, now: now) {
                     _ = manager.status(jobID: job.jobID) // cancel marker + probe, never start
                 }
                 return nil

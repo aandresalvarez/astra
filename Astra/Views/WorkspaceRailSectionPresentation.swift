@@ -23,12 +23,14 @@ enum WorkspaceRailSectionPresentation {
 
     /// The boxes in their fixed order. There is no adaptive reorder: the old
     /// one existed to surface pending setup, a concept this model does not
-    /// have. Outputs is last and task-scoped: the files the selected task
-    /// produced, so the rail ends the way Claude Code's and Codex's do.
+    /// have. Remote jobs and Outputs are task-scoped and come last: what the
+    /// selected task started on a server, then the files it produced, so the
+    /// rail ends the way Claude Code's and Codex's do.
     enum Section: String, CaseIterable, Equatable {
         case environment
         case context
         case capabilities
+        case remoteJobs
         case outputs
 
         var title: String {
@@ -36,12 +38,13 @@ enum WorkspaceRailSectionPresentation {
             case .environment: "Environment"
             case .context: "Context"
             case .capabilities: "Capabilities"
+            case .remoteJobs: "Remote jobs"
             case .outputs: "Outputs"
             }
         }
     }
 
-    static let sectionOrder: [Section] = [.environment, .context, .capabilities, .outputs]
+    static let sectionOrder: [Section] = [.environment, .context, .capabilities, .remoteJobs, .outputs]
 
     // MARK: - Facts (inputs)
 
@@ -131,6 +134,22 @@ enum WorkspaceRailSectionPresentation {
         var files: [OutputFile] = []
     }
 
+    /// One SSH job the selected task registered. The status text is the job
+    /// record's own; the rail never derives a status of its own.
+    struct RemoteJob: Equatable, Identifiable, Sendable {
+        var id: String
+        var label: String
+        var status: String
+        /// Finished or fenced: ASTRA checks it again only on Check now.
+        var isSettled = false
+    }
+
+    struct RemoteJobFacts: Equatable, Sendable {
+        var jobs: [RemoteJob] = []
+        /// The last check failed. Shown even when no job could be listed.
+        var checkFailed = false
+    }
+
     // MARK: - Rows
 
     enum RowTone: Equatable {
@@ -169,6 +188,9 @@ enum WorkspaceRailSectionPresentation {
         case output(path: String)
         /// The files past the row limit, as one link row into the Files shelf.
         case outputsOverflow(hiddenCount: Int, firstHiddenPath: String)
+        case remoteJob(id: String)
+        /// A failed check that listed no job, so the failure has a row to live on.
+        case remoteJobsCheckFailed
     }
 
     struct Row: Equatable, Identifiable {
@@ -235,6 +257,8 @@ enum WorkspaceRailSectionPresentation {
         var collapsedSummary: String
         /// Re-opens on its own while something inside needs the user.
         var forcesExpansion: Bool = false
+        /// Shown collapsed until the user opens it: nothing inside can change.
+        var startsCollapsed: Bool = false
 
         var title: String { section.title }
         var addActions: [AddAction] { AddAction.actions(for: section) }
@@ -267,12 +291,14 @@ enum WorkspaceRailSectionPresentation {
         environment: EnvironmentFacts,
         context: ContextFacts,
         capabilities: [CapabilityFacts],
+        remoteJobs: RemoteJobFacts = RemoteJobFacts(),
         outputs: OutputFacts = OutputFacts()
     ) -> [Box] {
         let built: [Section: Box?] = [
             .environment: environmentBox(environment),
             .context: contextBox(context),
             .capabilities: capabilitiesBox(capabilities),
+            .remoteJobs: remoteJobsBox(remoteJobs),
             .outputs: outputsBox(outputs)
         ]
         return sectionOrder.compactMap { built[$0] ?? nil }.filter { !$0.rows.isEmpty }
@@ -546,6 +572,36 @@ enum WorkspaceRailSectionPresentation {
         }
 
         return Box(section: .outputs, rows: rows, collapsedSummary: outputsSummary(files))
+    }
+
+    // MARK: Remote jobs
+
+    /// One row per job, oldest first as the journal lists them. The box is
+    /// absent until the task registers a job (or a check fails), and it has
+    /// no add: jobs are started by the agent, never from the rail.
+    static func remoteJobsBox(_ facts: RemoteJobFacts) -> Box? {
+        var rows = facts.jobs.map { job in
+            Row(kind: .remoteJob(id: job.id), systemImage: "terminal", title: job.label, value: job.status, isExpandable: true)
+        }
+        if rows.isEmpty, facts.checkFailed {
+            rows.append(Row(kind: .remoteJobsCheckFailed, systemImage: "network", title: "Last check failed"))
+        }
+        guard !rows.isEmpty else { return nil }
+        return Box(section: .remoteJobs, rows: rows, collapsedSummary: remoteJobsSummary(facts),
+                   startsCollapsed: !facts.checkFailed && facts.jobs.allSatisfy(\.isSettled))
+    }
+
+    /// Counts per status in first-seen order: `2 launch blocked`,
+    /// `1 running · 1 failed`.
+    static func remoteJobsSummary(_ facts: RemoteJobFacts) -> String {
+        guard !facts.jobs.isEmpty else { return facts.checkFailed ? "Last check failed" : "" }
+        var order: [String] = []
+        var counts: [String: Int] = [:]
+        for status in facts.jobs.map({ $0.status.lowercased() }) {
+            if counts[status] == nil { order.append(status) }
+            counts[status, default: 0] += 1
+        }
+        return order.map { "\(counts[$0] ?? 0) \($0)" }.joined(separator: summarySeparator)
     }
 
     static func outputsSummary(_ files: [OutputFile]) -> String {

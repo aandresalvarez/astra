@@ -201,4 +201,100 @@ struct RemoteWorkspaceJobPersistenceTests {
         #expect(try h.context.fetch(FetchDescriptor<AgentTask>()).isEmpty)
     }
 
+
+    @Test("The cancellation outbox stops at a host-fenced or finished job")
+    func deliveryStopsWhenSettled() throws {
+        let h = try HeadlessChatHarness(persistentStore: true)
+        defer { h.cleanup() }
+        let task = h.makeTask(runtime: .claudeCode, goal: "Synthetic", model: "haiku")
+        let workspace = try #require(task.workspace)
+        let connection = SSHConnection(name: "QA", host: "127.0.0.1", user: "qa", port: 22441)
+        SSHConnectionManager.save([connection], workspacePath: workspace.primaryPath)
+        let connections = RemoteWorkspaceJobShim.offeredConnections(task: task,
+            targets: [RemoteWorkspaceSSHRoute.connectTarget(for: connection)])
+        let owner = try #require(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60))
+        defer { owner.finish() }
+        let run = TaskRun(task: task); h.context.insert(run); try owner.bind(run: run); try owner.prepareLaunch()
+        let config = try RemoteWorkspaceJobRegistration.prepare(task: task, runID: run.id, owner: owner, context: h.context, connections: connections)
+        let trust = URL(fileURLWithPath: TaskWorkspaceAccess(task: task).taskFolder).appendingPathComponent(".runtime-ssh/known_hosts")
+        try FileManager.default.createDirectory(at: trust.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("synthetic-public-host-key\n".utf8).write(to: trust)
+        var job = RemoteWorkspaceJobRecord(jobID: UUID().uuidString.lowercased(), taskID: task.id.uuidString, runID: run.id.uuidString,
+            connection: try #require(connections.first), command: "sleep 60", createdAt: Date())
+        job.status = .running; job.ownerID = config.ownerBinding?.ownerID; job.executionID = config.ownerBinding?.executionID
+        let store = RemoteWorkspaceJobStore(rootPath: config.recordRootPath)
+        try store.create(job)
+        #expect(RemoteWorkspaceJobMonitor.shared.requestCancellation(task: task, jobID: job.jobID, context: h.context, deliver: { _ in }))
+        #expect(try RemoteWorkspaceJobCancellationDelivery.pending(context: h.context).count == 1)
+        // The host fenced the launch: the legacy jobs of task 636A8A8C.
+        try store.update(jobID: job.jobID) { $0.status = .unverified; $0.launchFence = .legacySealed }
+        #expect(try RemoteWorkspaceJobCancellationDelivery.pending(context: h.context).isEmpty)
+        // A finished job last seen unreachable was re-sent its cancel forever.
+        try store.update(jobID: job.jobID) {
+            $0.launchFence = nil; $0.status = .cancelled
+            $0.lastObservation = .init(at: Date(), outcome: .unreachable, error: "timeout")
+        }
+        #expect(try RemoteWorkspaceJobCancellationDelivery.pending(context: h.context).isEmpty)
+        // The refresh queued by requestCancellation must find no live task.
+        h.context.delete(task); try h.context.save()
+    }
+
+    @Test("A saved cancellation is checked with its pinned trust file, even after the task's copy is gone")
+    func cancellationUsesPinnedTrust() throws {
+        let h = try HeadlessChatHarness(persistentStore: true)
+        defer { h.cleanup() }
+        let task = h.makeTask(runtime: .claudeCode, goal: "Synthetic", model: "haiku")
+        let workspace = try #require(task.workspace)
+        let connection = SSHConnection(name: "QA", host: "127.0.0.1", user: "qa", port: 22441)
+        SSHConnectionManager.save([connection], workspacePath: workspace.primaryPath)
+        let connections = RemoteWorkspaceJobShim.offeredConnections(task: task,
+            targets: [RemoteWorkspaceSSHRoute.connectTarget(for: connection)])
+        let owner = try #require(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60))
+        defer { owner.finish() }
+        let run = TaskRun(task: task); h.context.insert(run); try owner.bind(run: run); try owner.prepareLaunch()
+        let config = try RemoteWorkspaceJobRegistration.prepare(task: task, runID: run.id, owner: owner, context: h.context, connections: connections)
+        let trust = URL(fileURLWithPath: TaskWorkspaceAccess(task: task).taskFolder).appendingPathComponent(".runtime-ssh/known_hosts")
+        try FileManager.default.createDirectory(at: trust.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("synthetic-public-host-key\n".utf8).write(to: trust)
+        func job() throws -> RemoteWorkspaceJobRecord {
+            var job = RemoteWorkspaceJobRecord(jobID: UUID().uuidString.lowercased(), taskID: task.id.uuidString, runID: run.id.uuidString,
+                connection: try #require(connections.first), command: "sleep 60", createdAt: Date())
+            job.status = .running; job.ownerID = config.ownerBinding?.ownerID; job.executionID = config.ownerBinding?.executionID
+            return job
+        }
+        let cancelled = try job(), running = try job()
+        let store = RemoteWorkspaceJobStore(rootPath: config.recordRootPath)
+        try store.create(cancelled); try store.create(running)
+        #expect(try RemoteWorkspaceJobCancellationDelivery.savedDelivery(for: config) == nil)
+        #expect(RemoteWorkspaceJobMonitor.shared.requestCancellation(task: task, jobID: cancelled.jobID, context: h.context, deliver: { _ in }))
+        // The agent or the user removes the task folder's trust file.
+        try FileManager.default.removeItem(at: trust)
+        let delivery = try #require(try RemoteWorkspaceJobCancellationDelivery.savedDelivery(for: config))
+        #expect(try RemoteWorkspaceJobCancellationDelivery.pending(context: h.context).first == delivery)
+        let pinned = URL(fileURLWithPath: config.recordRootPath).deletingLastPathComponent().appendingPathComponent("cancel-known_hosts")
+        #expect(delivery.observationSSHOptions?.contains { $0.contains(pinned.path) } == true)
+        #expect(FileManager.default.fileExists(atPath: pinned.path))
+        let saved = try store.load(jobID: cancelled.jobID)
+        #expect(RemoteWorkspaceJobMonitor.observationConfiguration(for: saved, task: config, delivery: delivery) == delivery)
+        #expect(RemoteWorkspaceJobMonitor.observationConfiguration(for: running, task: config, delivery: delivery) == config)
+        // A receipt for a different configuration is not trusted.
+        var changed = config; changed.sshExecutable = "/tmp/ssh"
+        #expect(throws: (any Error).self) { try RemoteWorkspaceJobCancellationDelivery.savedDelivery(for: changed) }
+        // The refresh queued by requestCancellation must find no live task.
+        h.context.delete(task); try h.context.save()
+    }
+
+    @Test("A task holding a waiting request's workspace is awaited")
+    func awaitedTasks() throws {
+        let h = try HeadlessChatHarness(persistentStore: true)
+        defer { h.cleanup() }
+        let holder = h.makeTask(runtime: .claudeCode, goal: "Holder", model: "test")
+        let waiter = h.makeTask(runtime: .claudeCode, goal: "Waiter", model: "test")
+        let waiting = TaskTurnRequest(task: waiter, messageEventID: UUID(), sequence: 1, state: .waitingForResource)
+        waiting.blockingTaskID = holder.id
+        let finished = TaskTurnRequest(task: waiter, messageEventID: UUID(), sequence: 2, state: .completed)
+        finished.blockingTaskID = UUID()
+        h.context.insert(waiting); h.context.insert(finished); try h.context.save()
+        #expect(try RemoteWorkspaceJobMonitorSession.awaitedTaskIDs(context: h.context) == [holder.id])
+    }
 }
