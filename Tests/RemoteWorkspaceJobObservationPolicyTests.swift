@@ -46,6 +46,24 @@ struct RemoteWorkspaceJobObservationPolicyTests {
         #expect(Policy.cadence(job(.succeeded), awaited: true) == .settled)
     }
 
+    @Test("a host-only cancellation stays live while awaited: continuation reviews it as unverified")
+    func hostOnlyCancellationIsAwaited() {
+        var hostOnly = job(.cancelled, cancelledAt: 1, fence: .cancelledBeforeStart)
+        hostOnly.schemaVersion = 3
+        #expect(RuntimeWorkspaceRemoteJobs.reviewedStatus(hostOnly) == .unverified)
+        #expect(Policy.cadence(hostOnly, awaited: true) == .live)
+        #expect(Policy.isDue(hostOnly, awaited: true, now: Self.t0 + 15))
+        #expect(Policy.cadence(hostOnly, awaited: false) == .settled)
+        // A protected withdrawn permit proves the launch never ran: confirmed.
+        var withdrawn = job(.cancelled, cancelledAt: 1, fence: .cancelledBeforeStart)
+        withdrawn.launchPermit = .withdrawn
+        #expect(RuntimeWorkspaceRemoteJobs.reviewedStatus(withdrawn) == .cancelled)
+        #expect(Policy.cadence(withdrawn, awaited: true) == .settled)
+        var missingPermit = withdrawn
+        missingPermit.launchPermit = nil
+        #expect(Policy.cadence(missingPermit, awaited: true) == .live)
+    }
+
     @Test("unverified checks thin out with the time since the job, or its cancellation, began")
     func backoffByAge() {
         let open = job(.unverified)

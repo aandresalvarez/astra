@@ -102,16 +102,17 @@ final class RemoteWorkspaceJobMonitor {
                     current = try store.records().sorted { $0.createdAt < $1.createdAt }
                 }
                 let now = Date()
-                let due = current.filter { force || RemoteWorkspaceJobObservationPolicy.isDue($0, awaited: awaited, now: now) }.map(\.jobID)
+                let delivery = try RemoteWorkspaceJobCancellationDelivery.savedDelivery(for: config)
+                let due = current.filter { force || RemoteWorkspaceJobObservationPolicy.isDue($0, awaited: awaited, now: now) }
+                    .map { (jobID: $0.jobID, configuration: Self.observationConfiguration(for: $0, task: config, delivery: delivery)) }
                 var after = current
                 if !due.isEmpty {
                     publish(Self.interimJobs(observed: observed, current: current, previous: previous), awaited: awaited, key)
                     // Each task has an independent observation worker. A disconnected
                     // host cannot block unrelated tasks or Swift's cooperative pool.
                     let result = await BlockingWork.run(qos: .utility) { () -> Result<[RemoteWorkspaceJobRecord], Error> in
-                        let manager = RemoteWorkspaceJobManager(configuration: config)
-                        for jobID in due { _ = manager.status(jobID: jobID) }
-                        return Result { try manager.store.records() }
+                        for check in due { _ = RemoteWorkspaceJobManager(configuration: check.configuration).status(jobID: check.jobID) }
+                        return Result { try RemoteWorkspaceJobStore(rootPath: config.recordRootPath).records() }
                     }
                     guard task.isLive, task.modelContext === context, !Task.isCancelled else {
                         publish(nil, key)
@@ -132,6 +133,16 @@ final class RemoteWorkspaceJobMonitor {
             AppLogger.audit(.workerBlocked, category: "RemoteJobs", taskID: taskID,
                 fields: ["reason": "observation_failed", "error": error.localizedDescription], level: .warning)
         }
+    }
+
+    /// A job with a saved cancellation is checked as the outbox sends it, with
+    /// the trust file pinned in its receipt; `status` delivers the cancel.
+    nonisolated static func observationConfiguration(
+        for job: RemoteWorkspaceJobRecord,
+        task configuration: RemoteWorkspaceJobConfiguration,
+        delivery: RemoteWorkspaceJobConfiguration?
+    ) -> RemoteWorkspaceJobConfiguration {
+        job.cancellationRequestedAt == nil ? configuration : delivery ?? configuration
     }
 
     /// Writes only real changes: every write re-renders each view reading the
@@ -229,22 +240,21 @@ final class RemoteWorkspaceJobMonitorSession {
                 do {
                     let tasks = try Self.registeredTasks(context: context)
                     let awaited = try Self.awaitedTaskIDs(context: context)
-                    // A live task's refresh delivers its own saved cancellations;
-                    // the outbox contacts the host only for jobs nobody refreshes.
-                    let refreshed = Set(tasks.flatMap {
-                        (try? RemoteWorkspaceJobRegistration.loadAll(task: $0, context: context)) ?? []
-                    }.map(\.recordRootPath))
-                    let deliveries = try RemoteWorkspaceJobCancellationDelivery.pending(context: context)
                     await withTaskGroup(of: Void.self) { group in
-                        for delivery in deliveries {
-                            let contactHost = !refreshed.contains(delivery.recordRootPath)
-                            group.addTask { await RemoteWorkspaceJobCancellationDelivery.deliver(delivery, contactHost: contactHost) }
-                        }
                         for task in tasks {
                             let isAwaited = awaited.contains(task.id)
                             group.addTask { @MainActor in
                                 await RemoteWorkspaceJobMonitor.shared.refresh(task: task, context: context, awaited: isAwaited)
                             }
+                        }
+                    }
+                    // After the refreshes: a live task's refresh delivers its own
+                    // saved cancellations, so the outbox finds those jobs just
+                    // checked and contacts only hosts no refresh reached.
+                    let deliveries = try RemoteWorkspaceJobCancellationDelivery.pending(context: context)
+                    await withTaskGroup(of: Void.self) { group in
+                        for delivery in deliveries {
+                            group.addTask { await RemoteWorkspaceJobCancellationDelivery.deliver(delivery) }
                         }
                     }
                 } catch {
@@ -257,12 +267,21 @@ final class RemoteWorkspaceJobMonitorSession {
     }
     /// Tasks holding a workspace that another task's request is waiting for.
     /// Continuing that workspace needs a recent complete check of the holder's
-    /// jobs, so they stay on the live cadence while the request waits.
+    /// jobs, so they stay on the live cadence while the request waits. The
+    /// request names only its first conflicting holder; a saved continuation
+    /// checks every predecessor it lists, so all of them are awaited.
     static func awaitedTaskIDs(context: ModelContext) throws -> Set<UUID> {
         let waiting = TaskTurnRequestState.waitingForResource.rawValue
         let requests = try context.fetch(FetchDescriptor<TaskTurnRequest>(
             predicate: #Predicate { $0.stateRawValue == waiting }))
-        return Set(requests.compactMap(\.blockingTaskID))
+        let store = RuntimeExecutionOwner.store(in: context)
+        var awaited = Set(requests.compactMap(\.blockingTaskID))
+        for request in requests {
+            // Cadence only: an unreadable continuation fails admission anyway.
+            let sources = (try? store.workspaceContinuation(requestID: request.id))?.sources ?? []
+            awaited.formUnion(sources.map(\.receipt.taskID))
+        }
+        return awaited
     }
 
     /// Only tasks with a registration in their retained execution lineage can have

@@ -29,9 +29,11 @@ enum RemoteWorkspaceJobObservationPolicy {
     /// `awaited`: a request of another task is waiting for this job's
     /// workspace. Workspace continuation needs a recent complete check of
     /// every open job (and of a result last seen unreachable), so those keep
-    /// the live cadence until the request starts or ends.
+    /// the live cadence until the request starts or ends. "Open" is judged as
+    /// continuation reviews it: a host-only cancellation is still unverified.
     static func cadence(_ job: RemoteWorkspaceJobRecord, awaited: Bool) -> Cadence {
-        let confirmedResult = job.status.isTerminal && job.lastObservation?.outcome == .reachable
+        let confirmedResult = RuntimeWorkspaceRemoteJobs.reviewedStatus(job).isTerminal
+            && job.lastObservation?.outcome == .reachable
         if awaited && !confirmedResult { return .live }
         if job.status.isTerminal || job.cancellationState == .launchBlocked { return .settled }
         switch job.status {

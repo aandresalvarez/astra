@@ -113,13 +113,16 @@ job record and the clock alone, so a restart keeps the same schedule:
 | A cancellation saved after the last check | At once |
 | Unverified or lost | 15 s for 2 min, then 1 min until 10 min, 5 min until 1 h, then 30 min, timed from the job's creation or its cancellation |
 | Finished, or launch fenced by the host | None: Check now only |
-| Any job of a task whose workspace another request waits for | Every 15 seconds, unless finished and last seen reachable |
+| Any job of a task whose workspace another request waits for | Every 15 seconds, unless finished as continuation reviews it and last seen reachable |
 
 Workspace continuation accepts a fenced launch only with a complete check at
 most 90 seconds old, so a task holding a waiting request's workspace keeps the
-live cadence while that request waits. Settled jobs are otherwise never checked
-again by themselves: a recheck could only find the host unreachable or the job
-directory gone, which never releases the reservation.
+live cadence while that request waits: the request's blocking task and every
+predecessor in its saved continuation. A host-only cancellation without a
+protected withdrawn permit counts as unverified there, as continuation reviews
+it. Settled jobs are otherwise never checked again by themselves: a recheck
+could only find the host unreachable or the job directory gone, which never
+releases the reservation.
 
 The app uses `/usr/bin/ssh` directly with the task's explicit host-key options;
 it never executes an agent-editable wrapper. It revalidates the saved connection
@@ -131,11 +134,12 @@ filename-list parser.
 
 A queue-store-owned monitor wakes every 15 seconds and contacts the host only
 for jobs the policy says are due. Its only side effects are observations and
-delivery of saved cancellation intent. A live task's refresh delivers its own
-cancellations; the deletion outbox contacts the host only for jobs no refresh
-covers. Automatic checks publish nothing unless a record changed and show no
-progress; Check now checks every job and shows it. A box whose jobs are all
-settled starts collapsed.
+delivery of saved cancellation intent. A job with a saved cancellation is
+checked with the trust file pinned in its receipt, by a task's refresh or the
+deletion outbox. The outbox runs after the refreshes, so it contacts the host
+only for jobs no refresh reached. Automatic checks publish nothing unless a
+record changed and show no progress; Check now checks every job and shows it.
+A box whose jobs are all settled starts collapsed.
 The task's Remote jobs panel shows the observed status, last successful check,
 connection errors, cancellation pending, bounded output and why the workspace
 remains reserved. Check now, Read output and Cancel job use the same service.
