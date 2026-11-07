@@ -28,7 +28,8 @@ enum PersistedTurnRuntimeEventLinker {
         requestID: UUID?,
         run: TaskRun,
         task: AgentTask,
-        in modelContext: ModelContext
+        in modelContext: ModelContext,
+        persist: (() -> Bool)? = nil
     ) -> RuntimeBegin {
         // `requestID == nil` legitimately means a legacy (non-durable)
         // continuation — proceed with no request to track. `requestID` set
@@ -58,10 +59,15 @@ enum PersistedTurnRuntimeEventLinker {
             AgentRuntimeLaunchPreflight.failLaunchForUnpersistedTurnState(run: run, task: task, modelContext: modelContext)
             return RuntimeBegin(request: request, persisted: false)
         }
-        guard transition.changed else {
-            return RuntimeBegin(request: request, persisted: true)
+        do {
+            try recordAssociation(request, run: run, task: task, in: modelContext)
+        } catch {
+            AgentRuntimeLaunchPreflight.failLaunchForUnpersistedTurnState(run: run, task: task, modelContext: modelContext)
+            return RuntimeBegin(request: request, persisted: false)
         }
-        let persisted = WorkspacePersistenceCoordinator.saveWithoutAutoExport(
+        // Even an idempotent running transition may follow a source link or
+        // historical association staged by `link`; save the whole boundary.
+        let persisted = persist?() ?? WorkspacePersistenceCoordinator.saveWithoutAutoExport(
             modelContext: modelContext,
             taskID: task.id,
             auditFields: ["operation": "turn_request_running"]
@@ -132,9 +138,16 @@ enum PersistedTurnRuntimeEventLinker {
         fallbackType: String,
         fallbackPayload: String,
         in modelContext: ModelContext
-    ) -> Bool {
+    ) throws -> Bool {
+        guard run.task?.persistentModelID == task.persistentModelID,
+              run.modelContext === modelContext, task.modelContext === modelContext else {
+            throw TaskRunRequestAssociation.Failure.invalidReference
+        }
         if let eventID,
            let event = sourceEvent(eventID, of: task, in: modelContext) {
+            if let previousRun = event.run, previousRun.persistentModelID != run.persistentModelID {
+                try preservePreviousAssociation(event: event, run: previousRun, task: task, in: modelContext)
+            }
             event.run = run
             TaskThreadChangeNotifier.post(taskID: task.id, source: "turn_request_admitted")
             return true
@@ -142,6 +155,55 @@ enum PersistedTurnRuntimeEventLinker {
         let event = TaskEvent(task: task, type: fallbackType, payload: fallbackPayload, run: run)
         TaskEventInsertionService.insert(event, into: modelContext)
         return false
+    }
+
+    /// Upgrade an older attempt while its source still identifies it. These
+    /// pending rows and the source move share beginRuntime's atomic save: a
+    /// failed save leaves the old durable source link intact, while in-memory
+    /// readers can already use the preserved association.
+    private static func preservePreviousAssociation(
+        event: TaskEvent, run: TaskRun, task: AgentTask, in context: ModelContext
+    ) throws {
+        guard run.task?.persistentModelID == task.persistentModelID else {
+            throw TaskRunRequestAssociation.Failure.invalidReference
+        }
+        if let recorded = try TaskRunRequestAssociation.request(for: run, in: context) {
+            guard recorded.sourceEventID == event.id else { throw TaskRunRequestAssociation.Failure.conflictingReference }
+            return
+        }
+        let taskID = task.id
+        let eventID = event.id
+        let rows = try context.fetch(FetchDescriptor<TaskTurnRequest>(predicate: #Predicate {
+            $0.taskID == taskID && $0.messageEventID == eventID
+        })).filter { !$0.isDeleted }
+        var owners = TaskTurnRequestOwnership.Resolver(candidates: try TaskTurnRequestOwnership.candidates(taskID: taskID, in: context))
+        var owned: [TaskTurnRequest] = []
+        for request in rows {
+            guard let owner = owners.resolve(request) else { throw TaskRunRequestAssociation.Failure.invalidReference }
+            if owner.persistentModelID == task.persistentModelID { owned.append(request) }
+        }
+        guard owned.count <= 1 else { throw TaskRunRequestAssociation.Failure.conflictingReference }
+        if let request = owned.first {
+            try recordAssociation(request, run: run, task: task, in: context)
+        } else if event.type.hasPrefix("execution.request.") {
+            throw TaskRunRequestAssociation.Failure.invalidReference
+        }
+    }
+
+    private static func recordAssociation(
+        _ request: TaskTurnRequest, run: TaskRun, task: AgentTask, in context: ModelContext
+    ) throws {
+        try TaskRunRequestAssociation.validate(request, for: run, in: context)
+        if let recorded = try TaskRunRequestAssociation.request(for: run, in: context) {
+            guard recorded.persistentModelID == request.persistentModelID else {
+                throw TaskRunRequestAssociation.Failure.conflictingReference
+            }
+            return
+        }
+        let reference = TaskRunRequestAssociationPayload(taskID: task.id, runID: run.id,
+            requestID: request.id, sourceEventID: request.sourceEventID)
+        TaskEventInsertionService.insert(TaskEvent.structuredPayloadEvent(task: task,
+            eventType: TaskEventTypes.ExecutionRequest.runAssociated, payload: reference, run: run), into: context)
     }
 
     /// One row by id, matched in the store rather than by faulting the task's

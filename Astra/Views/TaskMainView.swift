@@ -3568,7 +3568,7 @@ struct TaskMainView: View {
             planExecutionMode: planCheckpointExecutionMode,
             canOpenPlan: onOpenPlan != nil,
             isPlanCanvasVisible: isPlanCanvasVisible,
-            canRunApprovedPlan: taskQueue != nil,
+            canRunApprovedPlan: TaskApprovedPlanRunCommand.isEnabled(for: task, hasQueue: taskQueue != nil),
             latestRunHasNoUsableResult: pendingReview.dismissalReason == .noUsableResult || pendingReview.dismissalReason == .missingRequiredArtifact,
             completedTaskNeedsArtifactAttention: PendingTaskReviewPolicy.completedTaskNeedsArtifactAttention(reviewInput),
             canCancel: onCancelTask != nil,
@@ -4195,8 +4195,10 @@ struct TaskMainView: View {
             policyLevelRaw: $taskPolicyLevelRaw,
             useAgentTeam: .constant(false),
             teamSize: .constant(3),
-            isPlanMode: $isPlanMode,
-            planModeHelp: "Turn on Goal Mode to refine the task goal before resuming",
+            isPlanMode: ComposerToolbar.goalModeBinding(for: task, selection: $isPlanMode),
+            isPlanModeDisabled: TaskWorkspaceConsultationPolicy.isEnabled(for: task),
+            planModeHelp: TaskWorkspaceConsultationPolicy.isEnabled(for: task)
+                ? "Choose Work to use Goal Mode." : "Turn on Goal Mode to refine the task goal before resuming",
             onPolicyLevelChange: { level in
                 TaskPolicyStore.recordSelection(
                     level: level,
@@ -4207,6 +4209,9 @@ struct TaskMainView: View {
                 task.updatedAt = Date()
                 WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
             },
+            consultationMode: ComposerToolbar.workspaceConsultationBinding(
+                for: task, in: modelContext, draft: composerDraft),
+            consultationModeDisabled: task.status == .queued,
             showSecurityGate: true,
             sshConnections: sshConnections
         )
@@ -4702,23 +4707,15 @@ struct TaskMainView: View {
 
     private func runApprovedPlan(_ plan: TaskPlanPayload, mode: TaskPlanExecutionMode) {
         guard let taskQueue,
-              task.status != .queued,
-              task.status != .running else { return }
+              TaskApprovedPlanRunCommand.isEnabled(for: task, hasQueue: true) else { return }
 
-        // Check before recording approval or enqueueing. A read-only fork must
-        // preserve its completed/pending state so the general queue cannot
-        // later reinterpret an approved-plan launch as a normal task run.
-        if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
-            recordForkReadOnlyBlock(readOnlyReason)
-            return
-        }
-
-        guard case .success(let submission) = ExecutionRequestSubmissionService.submitPlan(
+        guard case .success(let submission)? = TaskApprovedPlanRunCommand.submit(
             plan: plan,
             mode: mode,
-            mutation: .existingTask,
-            for: task,
-            into: modelContext,
+            task: task,
+            modelContext: modelContext,
+            hasQueue: true,
+            recordReadOnlyBlock: recordForkReadOnlyBlock,
             recordAdditionalPolicy: {
                 recordCurrentTaskPolicyIfNeeded(source: "approved_plan_run")
             }
@@ -4855,18 +4852,19 @@ struct TaskMainView: View {
         // composer state must outlive a failed durable submission: clear alongside
         // `composerDraft.text` in each success branch, never up front, so a retry
         // from the retained composer rebuilds the message with its files.
-        let traceID = AuditTrace.make(isPlanMode ? "task-plan-chat" : "task-chat")
-        AppLogger.breadcrumb(action: isPlanMode ? "task_plan_chat_sent" : "task_chat_sent", category: "UI", taskID: task.id, traceID: traceID, fields: [
-            "source": isPlanMode ? "task_plan_chat" : "task_continue_chat",
+        let usesGoalMode = TaskWorkspaceConsultationPolicy.goalModeSelection(for: task, localSelection: isPlanMode)
+        let traceID = AuditTrace.make(usesGoalMode ? "task-plan-chat" : "task-chat")
+        AppLogger.breadcrumb(action: usesGoalMode ? "task_plan_chat_sent" : "task_chat_sent", category: "UI", taskID: task.id, traceID: traceID, fields: [
+            "source": usesGoalMode ? "task_plan_chat" : "task_continue_chat",
             "runtime": task.runtimeID ?? "none",
             "model": task.model,
             "workspace_id": task.workspace?.id.uuidString ?? "none",
             "task_status": task.status.rawValue,
             "message_length": String(msg.count)
         ])
-        if isPlanMode {
+        if usesGoalMode {
+            guard sendPlanningMessage(msg, attachmentPaths: attachmentPaths, traceID: traceID) else { return }
             (composerDraft.text, attachedFiles) = ("", [])
-            sendPlanningMessage(msg, attachmentPaths: attachmentPaths, traceID: traceID)
             return
         }
         if task.status == .queued {
@@ -4907,71 +4905,74 @@ struct TaskMainView: View {
         }
     }
 
-    private func sendPlanningMessage(_ msg: String, attachmentPaths: [String], traceID: String = AuditTrace.make("task-plan-chat")) {
-        guard !isPlanning else { return }
-        if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
-            recordForkReadOnlyBlock(readOnlyReason)
-            return
-        }
+    private func sendPlanningMessage(_ msg: String, attachmentPaths: [String], traceID: String = AuditTrace.make("task-plan-chat")) -> Bool {
+        TaskWorkspaceConsultationPolicy.acceptPlanningSubmission(for: task) {
+            guard !isPlanning else { return false }
+            if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
+                recordForkReadOnlyBlock(readOnlyReason)
+                return false
+            }
 
-        shouldScrollAfterUserMessage = true
-        resumeLatestHistory()
-        let userEvent = TaskEvent(task: task, type: TaskPlanConversationEventTypes.userMessage, payload: msg)
-        TaskEventInsertionService.insert(userEvent, attachmentPaths: attachmentPaths, into: modelContext)
-        task.updatedAt = Date()
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
-        threadViewModel.refreshSnapshot(for: task)
+            shouldScrollAfterUserMessage = true
+            resumeLatestHistory()
+            let userEvent = TaskEvent(task: task, type: TaskPlanConversationEventTypes.userMessage, payload: msg)
+            TaskEventInsertionService.insert(userEvent, attachmentPaths: attachmentPaths, into: modelContext)
+            task.updatedAt = Date()
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+            threadViewModel.refreshSnapshot(for: task)
 
-        let history = planningConversationHistory(appendingUserMessage: msg)
-        let workspacePath = planningWorkspacePath
-        let skillContext = planModeSkillContext()
-        isPlanning = true
-        logTaskCapabilityContext(source: "task_plan_chat", traceID: traceID)
-        let roleRuntime = utilityRuntime(for: .planner)
-        TaskRoleProfileStore.recordSelected(roleRuntime.selection, task: task, modelContext: modelContext)
+            let history = planningConversationHistory(appendingUserMessage: msg)
+            let workspacePath = planningWorkspacePath
+            let skillContext = planModeSkillContext()
+            isPlanning = true
+            logTaskCapabilityContext(source: "task_plan_chat", traceID: traceID)
+            let roleRuntime = utilityRuntime(for: .planner)
+            TaskRoleProfileStore.recordSelected(roleRuntime.selection, task: task, modelContext: modelContext)
 
-        Task {
-            let result = await SpecEngine.chat(
-                messages: history,
-                workspacePath: workspacePath,
-                skillContext: skillContext,
-                utilityRuntime: roleRuntime.configuration
-            )
+            Task {
+                let result = await SpecEngine.chat(
+                    messages: history,
+                    workspacePath: workspacePath,
+                    skillContext: skillContext,
+                    utilityRuntime: roleRuntime.configuration
+                )
 
-            await MainActor.run {
-                isPlanning = false
-                switch result {
-                case .success(let response):
-                    let assistantEvent = TaskEvent(
-                        task: task,
-                        type: TaskPlanConversationEventTypes.assistantMessage,
-                        payload: TaskPlanService.userVisiblePlanningText(from: response)
-                    )
-                    modelContext.insert(assistantEvent)
+                await MainActor.run {
+                    isPlanning = false
+                    switch result {
+                    case .success(let response):
+                        let assistantEvent = TaskEvent(
+                            task: task,
+                            type: TaskPlanConversationEventTypes.assistantMessage,
+                            payload: TaskPlanService.userVisiblePlanningText(from: response)
+                        )
+                        modelContext.insert(assistantEvent)
 
-                    let existingPlan = TaskPlanService.reconstruct(for: task).plan
-                    var plan = TaskPlanService.parsePlanPayload(from: response)
-                        ?? TaskPlanFallbackBuilder.plan(from: response, fallbackGoal: msg)
-                    if let existingPlan {
-                        plan.planID = existingPlan.planID
-                        TaskPlanService.recordUpdated(plan, task: task, modelContext: modelContext)
-                    } else {
-                        TaskPlanService.recordCreated(plan, task: task, modelContext: modelContext)
+                        let existingPlan = TaskPlanService.reconstruct(for: task).plan
+                        var plan = TaskPlanService.parsePlanPayload(from: response)
+                            ?? TaskPlanFallbackBuilder.plan(from: response, fallbackGoal: msg)
+                        if let existingPlan {
+                            plan.planID = existingPlan.planID
+                            TaskPlanService.recordUpdated(plan, task: task, modelContext: modelContext)
+                        } else {
+                            TaskPlanService.recordCreated(plan, task: task, modelContext: modelContext)
+                        }
+
+                    case .failure(let error):
+                        let errorEvent = TaskEvent(
+                            task: task,
+                            type: TaskPlanConversationEventTypes.assistantMessage,
+                            payload: "Goal mode failed: \(error.localizedDescription)"
+                        )
+                        modelContext.insert(errorEvent)
                     }
 
-                case .failure(let error):
-                    let errorEvent = TaskEvent(
-                        task: task,
-                        type: TaskPlanConversationEventTypes.assistantMessage,
-                        payload: "Goal mode failed: \(error.localizedDescription)"
-                    )
-                    modelContext.insert(errorEvent)
+                    task.updatedAt = Date()
+                    WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+                    threadViewModel.refreshSnapshot(for: task)
                 }
-
-                task.updatedAt = Date()
-                WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
-                threadViewModel.refreshSnapshot(for: task)
             }
+            return true
         }
     }
 

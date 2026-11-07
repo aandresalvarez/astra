@@ -29,6 +29,25 @@ enum NewTaskWorktreeComposerFlow {
         return nil
     }
 
+    /// Only for new tasks whose request has not been accepted. Re-read the
+    /// composer's selection before preparation and before synchronous submission,
+    /// without another suspension between the final read and request freeze.
+    /// Already admitted Work preparation may finish. Accepted requests retain
+    /// their frozen mode independently of later composer changes.
+    static func prepareAndSubmit(
+        _ task: AgentTask,
+        consultationSelection: () -> Bool,
+        prepareCheckout: () async throws -> Void,
+        submit: () throws -> Void
+    ) async throws {
+        try Task.checkCancellation()
+        TaskWorkspaceConsultationPolicy.apply(consultationSelection(), to: task)
+        try await prepareCheckout()
+        try Task.checkCancellation()
+        TaskWorkspaceConsultationPolicy.apply(consultationSelection(), to: task)
+        try submit()
+    }
+
     /// Keeps a brand-new draft without a worktree on its workspace's default,
     /// so planning reads the checkout the task will run in. An explicit pin or
     /// a recorded repository is left alone.

@@ -649,7 +649,7 @@ struct TaskTurnRequestAdmissionTests {
         // is guaranteed to save again before the provider starts, so a link
         // set only in memory here would risk staying unpersisted forever if
         // the app terminates before any later save.
-        PersistedTurnRuntimeEventLinker.link(
+        try PersistedTurnRuntimeEventLinker.link(
             eventID: submission.eventID,
             to: run,
             for: task,

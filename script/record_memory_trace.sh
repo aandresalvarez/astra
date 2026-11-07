@@ -30,7 +30,12 @@ rm -rf "$trace"
 
 echo "Recording ASTRA Dev PID $PID for $DURATION"
 echo "Perform the documented warm-up and repeated shelf/task workflow now."
+trace_notification=()
+if [[ -n "${ASTRA_MEMORY_TRACE_READY_NOTIFICATION:-}" ]]; then
+  trace_notification=(--notify-tracing-started "$ASTRA_MEMORY_TRACE_READY_NOTIFICATION")
+fi
 xcrun xctrace record \
+  ${trace_notification[@]+"${trace_notification[@]}"} \
   --template Allocations \
   --attach "$PID" \
   --time-limit "$DURATION" \

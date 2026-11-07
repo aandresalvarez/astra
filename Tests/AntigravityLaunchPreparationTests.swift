@@ -5,7 +5,9 @@ import ASTRACore
 import ASTRAModels
 @testable import ASTRA
 
-@Suite("Antigravity launch preparation")
+// These short deadlines must exercise an already-started fixture, not compete
+// with sibling probe fixtures for startup time on the main actor.
+@Suite("Antigravity launch preparation", .serialized)
 @MainActor
 struct AntigravityLaunchPreparationTests {
     @Test("The probe deadline covers inherited pipes and ignored termination", arguments: [false, true])

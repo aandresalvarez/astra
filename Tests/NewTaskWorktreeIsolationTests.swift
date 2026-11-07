@@ -1089,10 +1089,10 @@ struct NewTaskWorktreeIsolationTests {
         let tasksBefore = try context.fetchCount(FetchDescriptor<AgentTask>())
         let reservation = try #require(TaskWorktreeCheckoutReservation.acquire(path))
         defer { TaskWorktreeCheckoutReservation.release(reservation) }
-        let creation = WorkspaceCommandService.createTemplateTasks(
+        let creation = try WorkspaceCommandService.createTemplateTasks(
             template: template, taskTitle: "Review files", variables: [:], selectedSkills: [],
             defaultModel: "", defaultRuntimeID: "claude_code", workspace: workspace,
-            modelContext: context, source: "test", checkoutSource: draft
+            modelContext: context, source: "test", consultation: false, checkoutSource: draft
         )
         #expect(creation.checkoutUnavailable)
         #expect(!creation.initialRequestSubmitted)
@@ -1121,10 +1121,10 @@ struct NewTaskWorktreeIsolationTests {
         let template = TaskTemplate(name: "Review", mainGoal: "Review files", workspace: workspace)
         template.hooksJSON = #"{"PreToolUse":[{"matcher":"Read","hooks":[{"type":"command","command":"true"}]}]}"#
         context.insert(template)
-        let creation = WorkspaceCommandService.createTemplateTasks(
+        let creation = try WorkspaceCommandService.createTemplateTasks(
             template: template, taskTitle: "Review files", variables: [:], selectedSkills: [],
             defaultModel: "", defaultRuntimeID: "claude_code", workspace: workspace,
-            modelContext: context, source: "test", checkoutSource: draft
+            modelContext: context, source: "test", consultation: false, checkoutSource: draft
         )
         let task = creation.mainTask
         #expect(creation.initialRequestSubmitted)
@@ -1383,10 +1383,10 @@ struct NewTaskWorktreeIsolationTests {
         template.beforeGoal = "Prepare the checkout"
         context.insert(template)
 
-        let creation = WorkspaceCommandService.createTemplateTasks(
+        let creation = try WorkspaceCommandService.createTemplateTasks(
             template: template, taskTitle: "Review the login flow", variables: [:], selectedSkills: [],
             defaultModel: "", defaultRuntimeID: "claude_code", workspace: workspace,
-            modelContext: context, source: "test", checkoutSource: draft
+            modelContext: context, source: "test", consultation: false, checkoutSource: draft
         )
 
         let before = try #require(creation.beforeTask)
@@ -1401,10 +1401,10 @@ struct NewTaskWorktreeIsolationTests {
         context.insert(elsewhere)
         let otherTemplate = TaskTemplate(name: "Review", mainGoal: "Review the change", workspace: elsewhere)
         context.insert(otherTemplate)
-        let unrelated = WorkspaceCommandService.createTemplateTasks(
+        let unrelated = try WorkspaceCommandService.createTemplateTasks(
             template: otherTemplate, taskTitle: "Review", variables: [:], selectedSkills: [],
             defaultModel: "", defaultRuntimeID: "claude_code", workspace: elsewhere,
-            modelContext: context, source: "test", checkoutSource: draft
+            modelContext: context, source: "test", consultation: false, checkoutSource: draft
         )
         #expect(unrelated.mainTask.executionRootPath == nil)
         #expect(TaskWorktreeService.activeWorktreeBinding(for: unrelated.mainTask) == nil)

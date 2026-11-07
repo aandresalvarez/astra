@@ -1,4 +1,5 @@
 import importlib.util
+import os
 from contextlib import closing
 import errno
 from pathlib import Path
@@ -14,6 +15,41 @@ spec.loader.exec_module(benchmark)
 
 
 class BenchmarkIsolationTests(unittest.TestCase):
+    def test_synthetic_heap_environment_preserves_os_paths_and_excludes_tokens_and_host_identity(self):
+        with patch.dict(os.environ, {"HOME": "/synthetic/home", "PATH": "/usr/bin", "TMPDIR": "/synthetic/tmp",
+                                     "GH_TOKEN": "fake-token", "ANTHROPIC_API_KEY": "fake-key",
+                                     "__CFBundleIdentifier": "host.app"}, clear=True):
+            self.assertEqual(benchmark.synthetic_environment(),
+                             {"HOME": "/synthetic/home", "PATH": "/usr/bin", "TMPDIR": "/synthetic/tmp"})
+
+    def test_provider_namespace_cleanup_refuses_an_unrelated_directory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            foreign = root / "foreign"
+            foreign.mkdir()
+            (foreign / "sentinel").write_text("preserve")
+            record = {}
+            with self.assertRaises(RuntimeError):
+                with benchmark.RunResources(root / "owned.app", "com.coral.ASTRA.dev.scalebench.synthetic", record) as owned:
+                    owned.provider_namespace_root = foreign
+            self.assertEqual((foreign / "sentinel").read_text(), "preserve")
+            self.assertTrue(record["cleanup_errors"])
+
+    def test_snapshot_metadata_deduplicates_deleted_inodes_and_excludes_other_stores(self):
+        data = ("p123\0\nf11\0D0x100\0i42\0s8192\0k0\0n/owned/.astra-mirror-abc/snapshot.store\0\n"
+                "f12\0D0x100\0i42\0s8192\0k0\0n/owned/.astra-mirror-abc/snapshot.store\0\n"
+                "f13\0D0x100\0i43\0s4096\0k1\0n/owned/.astra-mirror-def/snapshot.store\0\n"
+                "f14\0D0x100\0i44\0s9999\0k0\0n/other/.astra-mirror-ghi/snapshot.store\0\n")
+        parsed = benchmark.snapshot_descriptors(data, Path("/owned"))
+        self.assertEqual(parsed["snapshot_descriptors"], 3)
+        self.assertEqual(parsed["unlinked_inodes"], 1)
+        self.assertEqual(parsed["unlinked_bytes"], 8192)
+
+    def test_missing_link_metadata_is_unknown_not_proven_deleted(self):
+        parsed = benchmark.snapshot_descriptors("f11\0D0x100\0i42\0s8192\0n/owned/.astra-mirror-a/snapshot.store\0", Path("/owned"))
+        self.assertEqual(parsed["snapshot_descriptors"], 1)
+        self.assertEqual(parsed["unlinked_bytes"], 0)
+
     def test_disk_full_removes_only_the_partial_app_copy(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -54,6 +54,9 @@ final class WorkspaceSavedExportSource: @unchecked Sendable {
 /// No managed model or context crosses actors. The temporary SQLite copy is
 /// discarded after projection; SwiftData remains the durable authority.
 actor WorkspaceSavedAutoExport {
+    // Opt-in ownership observation only. Observers must keep weak references;
+    // no diagnostic state participates in export admission or publication.
+    @TaskLocal static var observeReader: (@Sendable (ModelContainer, ModelContext) -> Void)?
     static let shared = WorkspaceSavedAutoExport()
     private let beforeProjection: (@Sendable () async -> Void)?
 
@@ -119,6 +122,7 @@ actor WorkspaceSavedAutoExport {
     nonisolated private static func prepareRows(container: ModelContainer, workspaceID: UUID) throws -> Prepared? {
         let context = ModelContext(container)
         context.autosaveEnabled = false
+        observeReader?(container, context)
         let descriptor = FetchDescriptor<Workspace>(predicate: #Predicate { $0.id == workspaceID })
         guard let workspace = try context.fetch(descriptor).first else { return nil }
         // No suspension while the context and its managed models are alive.

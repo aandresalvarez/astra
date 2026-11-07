@@ -43,6 +43,7 @@ final class AgentRuntimeWorker {
     var supervisionEnabled = true
     var supervisionInvestigatorOverride: RuntimeSupervisionSession.Investigator?
     private let providerSettingsSnapshotProvider: () -> ProviderSettingsSnapshot
+    private let executionRequestReader: RuntimeExecutionAdmission.RequestReader
     var budgetEnforcementModeOverride: BudgetEnforcementMode?
     var permissionPromotionPersistence: (() throws -> Void)?
     /// Home directory in which provider session stores are looked up before a
@@ -100,11 +101,15 @@ final class AgentRuntimeWorker {
         antigravityLaunchPreparation: AntigravityLaunchPreparation? = nil,
         providerSettingsSnapshotProvider: @escaping () -> ProviderSettingsSnapshot = {
             RuntimeSettingsSnapshotStore.providerSnapshot()
+        },
+        executionRequestReader: @escaping RuntimeExecutionAdmission.RequestReader = {
+            try TaskTurnRequestRepository.request(id: $0, in: $1)
         }
     ) {
         self.processRunner = processRunner
         self.antigravityLaunchPreparation = antigravityLaunchPreparation ?? AntigravityLaunchPreparation()
         self.providerSettingsSnapshotProvider = providerSettingsSnapshotProvider
+        self.executionRequestReader = executionRequestReader
         AppLogger.audit(.workerStarted, category: "Worker", fields: [
             "phase": "initialized",
             "default_runtime": defaultRuntimeID.rawValue,
@@ -168,6 +173,19 @@ final class AgentRuntimeWorker {
         defer { withExtendedLifetime(launchProjection) {} }
         let launchTask = launchProjection?.task ?? task
         let currentPlan = TaskPlanService.reconstruct(for: task).plan ?? plan
+        let request: TaskTurnRequest?
+        do {
+            request = try RuntimeExecutionAdmission.readSubmittedRequest(id: executionRequestID,
+                task: task, context: modelContext, read: executionRequestReader)
+        } catch {
+            RuntimeExecutionAdmission.rejectRequest(error, task: task, context: modelContext)
+            return
+        }
+        let executionWorkspaceAccess = executionPolicy.workspaceAccessOverride
+            ?? TaskExecutionResourceClaimResolver.workspaceAccess(for: request)
+        guard RuntimeWorkspaceConsultationGate.validate(task: task, launchTask: launchTask, request: request,
+            workspaceAccess: executionWorkspaceAccess,
+            approvedPlan: currentPlan, modelContext: modelContext) else { return }
         let approvedStep = mode == .nextStep ? TaskPlanService.nextExecutableStep(in: currentPlan) : nil
         if mode == .nextStep, approvedStep == nil {
             let admission: RuntimeExecutionOwner.SettlementAdmission
@@ -193,6 +211,8 @@ final class AgentRuntimeWorker {
             cancellationRequested = false
             defer { owner.settlementScope = nil; owner.finish(); currentExecutionOwner = nil; isRunning = false }
             await RuntimeFinalPlanSettlement.validate(task: task, plan: currentPlan, owner: owner,
+                validationAdmission: .currentTurn(request: request, launchTask: launchTask, workspaceAccess: executionWorkspaceAccess),
+                sandboxEnforcementSnapshot: executionPolicy.sandboxEnforcementSnapshot,
                 modelContext: modelContext, verifierRuntime: utilityRuntimeConfiguration(for: .verifier, task: task,
                     fallbackRuntime: runtimeConfiguration.selectedRuntime(for: launchTask),
                     preferredModel: validationModel, modelContext: modelContext))
@@ -343,7 +363,14 @@ final class AgentRuntimeWorker {
             ], level: .warning)
             return
         }
-        let request = turnRequestID.flatMap { try? TaskTurnRequestRepository.request(id: $0, in: modelContext) }
+        let request: TaskTurnRequest?
+        do {
+            request = try RuntimeExecutionAdmission.readSubmittedRequest(id: turnRequestID,
+                task: task, context: modelContext, read: executionRequestReader)
+        } catch {
+            RuntimeExecutionAdmission.rejectRequest(error, task: task, context: modelContext)
+            return
+        }
         let admission = RuntimeExecutionAdmission.resolve(request: request, task: task)
         guard let executionOwner = RuntimeExecutionOwner.acquire(task: task, context: modelContext,
             maxRunSeconds: maxRunSeconds, newUserTurn: admission.isNewUserTurn,
@@ -356,6 +383,12 @@ final class AgentRuntimeWorker {
         defer { providerWait = nil }
         processRunner.configureExecutionOwner(executionOwner)
         defer { processRunner.configureExecutionOwner(nil) }
+        let executionWorkspaceAccess = executionPolicy.workspaceAccessOverride
+            ?? TaskExecutionResourceClaimResolver.workspaceAccess(for: request)
+        let requiresWorkspaceConsultation = TaskWorkspaceConsultationPolicy.isRequired(by: request, task: launchTask)
+        guard RuntimeWorkspaceConsultationGate.validate(task: task, launchTask: launchTask, request: request,
+            workspaceAccess: executionWorkspaceAccess, approvedPlan: approvedPlan?.plan,
+            modelContext: modelContext) else { return }
         // Reject competing owners before changing the live provider session or settings.
         AgentRuntimeLaunchRuntimeResolver.reconcilePersistedRuntime(
             task: launchTask, selectedRuntime: selectedRuntime, phase: auditPhase)
@@ -483,8 +516,15 @@ final class AgentRuntimeWorker {
         // any later save would leave the durable user message permanently
         // detached from the run that answered it.
         let startPayload = startEventPayload ?? runtimeAdapter.defaultStartEventPayload(task: launchTask)
-        PersistedTurnRuntimeEventLinker.link(eventID: existingStartEventID, to: run, for: task, fallbackType: startEventType, fallbackPayload: startPayload, in: modelContext)
-        let turnBegin = PersistedTurnRuntimeEventLinker.beginRuntime(requestID: turnRequestID, run: run, task: task, in: modelContext)
+        let turnBegin: PersistedTurnRuntimeEventLinker.RuntimeBegin
+        do {
+            try PersistedTurnRuntimeEventLinker.link(eventID: existingStartEventID, to: run, for: task,
+                fallbackType: startEventType, fallbackPayload: startPayload, in: modelContext)
+            turnBegin = PersistedTurnRuntimeEventLinker.beginRuntime(requestID: turnRequestID, run: run, task: task, in: modelContext)
+        } catch {
+            AgentRuntimeLaunchPreflight.failLaunchForUnpersistedTurnState(run: run, task: task, modelContext: modelContext)
+            turnBegin = .init(request: request, persisted: false)
+        }
         var settlementHandled = false
         defer {
             if !settlementHandled {
@@ -495,8 +535,6 @@ final class AgentRuntimeWorker {
         // Unpersisted running state = provider-boundary abort (run already failed by beginRuntime).
         guard turnBegin.persisted else { return }
         executionPolicy.followsUpDeliveredRequest = TaskDeliverableExpectation.followsUpDeliveredRequest(run, in: task)
-        let executionWorkspaceAccess = executionPolicy.workspaceAccessOverride
-            ?? TaskExecutionResourceClaimResolver.workspaceAccess(for: turnBegin.request)
         AgentRuntimeLaunchRuntimeResolver.insertRerouteEventIfNeeded(
             appliedRuntime,
             task: task,
@@ -768,6 +806,9 @@ final class AgentRuntimeWorker {
             repositoryStatus: githubRepositoryStatus
         )
         var prompt = runEnvironment.appendingReadOnlyInputGuidance(to: readinessPrompt)
+        if requiresWorkspaceConsultation {
+            prompt += "\n\n" + TaskWorkspaceConsultationPolicy.providerGuidance
+        }
         var launchResourcePlan = TaskLaunchResourceResolver.resolve(
             task: executionTask,
             runID: run.id,
@@ -781,6 +822,7 @@ final class AgentRuntimeWorker {
             runtimePermissionGrants: executionPolicy.permissionGrantsOverride ?? [],
             permissionPolicy: launchPermissionPolicy,
             workspaceAccess: executionWorkspaceAccess,
+            requiresWorkspaceConsultation: requiresWorkspaceConsultation,
             admittedWritableGitMetadataRoots: TaskExecutionResourceClaimResolver
                 .admittedWritableGitMetadataRoots(for: turnBegin.request, task: launchTask),
             // appliedRuntime.requirements is already resolved above (~line 528),
@@ -923,6 +965,9 @@ final class AgentRuntimeWorker {
                 task: executionTask, executionPolicy: executionPolicy,
                 permissionPolicy: launchPermissionPolicy, contextText: providerLaunchContextText,
                 repositoryStatus: githubRepositoryStatus, runEnvironment: runEnvironment))
+            if requiresWorkspaceConsultation {
+                prompt += "\n\n" + TaskWorkspaceConsultationPolicy.providerGuidance
+            }
         }
         prompt = workspaceOrientation.appending(to: prompt) + historyGuidance + reviewThreadGuidance
         prompt = repositoryInstructions?.appending(to: prompt) ?? prompt
@@ -963,7 +1008,7 @@ final class AgentRuntimeWorker {
         ) else {
             return
         }
-        let beforeGitStatus = runtimeAdapter.recordsInferredFileChanges
+        let beforeGitStatus = runtimeAdapter.recordsInferredFileChanges && !requiresWorkspaceConsultation
             ? publicationBeforeGitStatus
             : nil
         var beforeDirtyFingerprints: [String: AgentFileChangeDetector.FileFingerprint]?
