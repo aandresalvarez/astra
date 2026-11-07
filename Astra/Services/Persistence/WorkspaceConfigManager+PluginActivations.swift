@@ -173,7 +173,7 @@ extension WorkspaceConfigManager {
         awaitedSource: (_ pluginID: String) -> String? = { _ in nil }
     ) -> [InstalledPluginRef] {
         var refs = WorkspaceCapabilityActivation.activations(of: workspace).map { activation in
-            let evidence = credentialEvidenceForExport(activation)
+            let evidence = credentialEvidenceForExport(activation, in: workspace)
             let configuration = PluginLaunchConfiguration.activation(activation)
             let settings = Dictionary(zip(configuration.keys, configuration.values), uniquingKeysWith: { _, last in last })
             // An empty model array also represents unreconciled legacy state.

@@ -20,6 +20,7 @@ struct WorkspaceSnapshotDirectoryTests {
                 let directory = captured.directory.root
                 for _ in 0..<3 {
                     var identities = Set<SnapshotFileIdentity>()
+                    let references = SnapshotProjectionReferences()
                     do {
                         try captured.read { snapshot in
                             let context = ModelContext(snapshot)
@@ -27,7 +28,11 @@ struct WorkspaceSnapshotDirectoryTests {
                             _ = Unmanaged.passRetained(snapshot).autorelease()
                             _ = Unmanaged.passRetained(context).autorelease()
                             let workspace = try #require(context.fetch(FetchDescriptor<Workspace>()).first)
-                            _ = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+                            let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+                            #expect(!context.hasChanges, "Projection must not tear down relationships by mutating the reader")
+                            references.capture(snapshot, context: context, workspace: workspace)
+                            #expect(config.installedPlugins?.first?.credentialRecoveryEvidence?.unresolvedSettingKeys == ["synthetic-legacy-key"])
+                            #expect(config.installedPlugins?.first?.credentialRecoveryEvidence?.admittedActivationID == nil)
                             identities = try snapshotFileIdentities(in: directory)
                             #expect(!openSnapshotDescriptors(identities).isEmpty)
                             if outcome == "failure" { throw ProjectionFailure.injected }
@@ -36,6 +41,7 @@ struct WorkspaceSnapshotDirectoryTests {
                     } catch is CancellationError { #expect(outcome == "cancellation") }
                     catch ProjectionFailure.injected { #expect(outcome == "failure") }
                     #expect(!identities.isEmpty)
+                    references.expectReleased()
                     #expect(openSnapshotDescriptors(identities).isEmpty)
                     #expect(FileManager.default.fileExists(atPath: directory.path))
                 }
@@ -57,6 +63,7 @@ struct WorkspaceSnapshotDirectoryTests {
                 enum ProjectionFailure: Error { case injected }
                 for _ in 0..<5 {
                     var identities = Set<SnapshotFileIdentity>()
+                    let references = SnapshotProjectionReferences()
                     do {
                         try WorkspaceSavedExportSnapshot.read(container: container) { snapshot in
                             let context = ModelContext(snapshot)
@@ -66,7 +73,11 @@ struct WorkspaceSnapshotDirectoryTests {
                             _ = Unmanaged.passRetained(snapshot).autorelease()
                             _ = Unmanaged.passRetained(context).autorelease()
                             let workspace = try #require(context.fetch(FetchDescriptor<Workspace>()).first)
-                            _ = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+                            let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+                            #expect(!context.hasChanges, "Projection must not tear down relationships by mutating the reader")
+                            references.capture(snapshot, context: context, workspace: workspace)
+                            #expect(config.installedPlugins?.first?.credentialRecoveryEvidence?.unresolvedSettingKeys == ["synthetic-legacy-key"])
+                            #expect(config.installedPlugins?.first?.credentialRecoveryEvidence?.admittedActivationID == nil)
                             let directory = try #require(snapshot.configurations.first?.url.deletingLastPathComponent())
                             identities = try snapshotFileIdentities(in: directory)
                             #expect(!openSnapshotDescriptors(identities).isEmpty, "Exercise real disk-backed readers")
@@ -80,6 +91,7 @@ struct WorkspaceSnapshotDirectoryTests {
                         #expect(outcome == "failure")
                     }
                     #expect(!identities.isEmpty)
+                    references.expectReleased()
                     #expect(openSnapshotDescriptors(identities).isEmpty,
                         "Snapshot files, including unlinked inodes, must have no open descriptors after projection")
                 }
@@ -180,9 +192,50 @@ struct WorkspaceSnapshotDirectoryTests {
         let container = try ModelContainer(for: ASTRASchema.current,
             configurations: [ModelConfiguration(url: root.appendingPathComponent("source.store"))])
         container.mainContext.autosaveEnabled = false
-        container.mainContext.insert(Workspace(name: "Synthetic", primaryPath: root.path))
+        let workspace = Workspace(name: "Synthetic", primaryPath: root.path)
+        container.mainContext.insert(workspace)
+        let activation = PluginActivation(pluginID: "synthetic-reader-lifetime", isEnabled: false, recordedVersion: "1.0.0")
+        container.mainContext.insert(activation)
+        activation.workspace = workspace
+        WorkspaceCapabilityActivation.setKnownComponents(["skill:agent"], on: activation)
+        WorkspaceCapabilityActivation.preserveCredentialRecoveryEvidence(.init(
+            unresolvedSettingKeys: ["synthetic-legacy-key"],
+            namespaceSeed: "", credentialNamespaceSeed: "", admittedActivationID: activation.id.uuidString), on: activation)
+        let task = AgentTask(title: "Synthetic task", goal: "Reader lifetime", workspace: workspace)
+        container.mainContext.insert(task)
+        container.mainContext.insert(TaskEvent(task: task, type: "user.message", payload: "Synthetic history"))
         try container.mainContext.save()
         return container
+    }
+}
+
+/// A real bidirectional workspace/plugin graph reproduced the reader leak in
+/// Dev. Observe only forward relationships here; reading activation.workspace
+/// in the test would itself recreate the cycle that export must avoid.
+private final class SnapshotProjectionReferences {
+    weak var container: ModelContainer?
+    weak var context: ModelContext?
+    weak var workspace: Workspace?
+    weak var activation: PluginActivation?
+    weak var task: AgentTask?
+    weak var event: TaskEvent?
+
+    func capture(_ container: ModelContainer, context: ModelContext, workspace: Workspace) {
+        self.container = container
+        self.context = context
+        self.workspace = workspace
+        activation = workspace.pluginActivations.first
+        task = workspace.tasks.first
+        event = task?.events.first
+        #expect(activation != nil && task != nil && event != nil)
+    }
+
+    func expectReleased() {
+        // Keep failure diagnostics from reflecting and retaining the models.
+        let alive = ["activation": activation != nil, "workspace": workspace != nil,
+            "task": task != nil, "event": event != nil,
+            "context": context != nil, "container": container != nil]
+        #expect(alive.values.allSatisfy { !$0 }, "Reader objects still alive: \(alive)")
     }
 }
 
