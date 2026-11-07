@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Opt-in, external full-app benchmark. Never selects or quits an existing app."""
 import argparse
+import ctypes
 from contextlib import closing
 import fcntl
 import hashlib
@@ -10,7 +11,9 @@ from pathlib import Path
 import platform
 import plistlib
 import re
+import resource
 import shutil
+import signal
 import sqlite3
 import subprocess
 import time
@@ -18,6 +21,14 @@ import uuid
 
 REPO = Path(__file__).resolve().parents[2]
 SUPPORT = REPO / "script/benchmarks/Support/Sources/DevScaleBenchmarkSupport"
+
+
+def synthetic_environment():
+    # Heap artifacts must not inherit provider tokens or the host app's
+    # preference-domain overrides. Preserve normal OS/toolchain locations.
+    allowed = {"PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE",
+               "TERM", "DEVELOPER_DIR", "SDKROOT", "TOOLCHAINS", "MACOSX_DEPLOYMENT_TARGET", "__CF_USER_TEXT_ENCODING"}
+    return {key: value for key, value in os.environ.items() if key in allowed}
 
 
 def command(args, **kwargs):
@@ -39,7 +50,9 @@ def sha256(path):
 def memory(pid):
     # vmmap's charged physical footprint includes compressed pages; RSS does not.
     text = command(["/usr/bin/vmmap", "-summary", pid], stderr=subprocess.STDOUT)
-    return parse_memory(text), text
+    measured = parse_memory(text)
+    measured["rss_bytes"] = int(command(["/bin/ps", "-p", pid, "-o", "rss="]).strip()) * 1024
+    return measured, text
 
 
 def parse_memory(text):
@@ -50,6 +63,45 @@ def parse_memory(text):
         return round(float(match[1]) * {"": 1, "K": 1024, "M": 1024**2, "G": 1024**3}[match[2]])
     return {"physical_footprint_bytes": metric("Physical footprint:"),
             "peak_physical_footprint_bytes": metric("Physical footprint (peak):")}
+
+
+def snapshot_descriptors(text, support):
+    """Parse lsof -F0 metadata for only this owned store's snapshot readers."""
+    records, current = [], {}
+    def finish():
+        name = current.get("n", "")
+        if name.startswith(str(support) + "/") and "/.astra-mirror-" in name and "/snapshot.store" in name:
+            records.append(dict(current))
+    for field in text.replace("\n", "").split("\0"):
+        if not field:
+            continue
+        if field[0] == "f":
+            finish()
+            current = {}
+        current[field[0]] = field[1:]
+    finish()
+    unique = {(row.get("D"), row.get("i")): int(row["s"]) for row in records
+              if row.get("k") == "0" and row.get("D") and row.get("i") and row.get("s", "").isdigit()}
+    return {"snapshot_descriptors": len(records), "unlinked_inodes": len(unique),
+            "unlinked_bytes": sum(unique.values()), "files": records}
+
+
+def wait_for_trace_recording(process, notify, token, timeout=30):
+    deadline = time.monotonic() + timeout
+    changed = ctypes.c_int()
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError("Allocations tracer exited before workload dispatch")
+        if notify.notify_check(token, ctypes.byref(changed)) != 0:
+            raise RuntimeError("Could not read xctrace readiness notification")
+        if changed.value:
+            return
+        time.sleep(0.1)
+    raise RuntimeError("Timed out waiting for xctrace recording to start")
+
+
+def profile_file_limit():
+    resource.setrlimit(resource.RLIMIT_FSIZE, (2 * 1024**3, 2 * 1024**3))
 
 
 def compile_tools(build, output):
@@ -185,6 +237,8 @@ class RunResources:
             raise ValueError("Refusing cleanup of a non-benchmark preference domain")
         self.bundle, self.identifier, self.record = bundle, identifier, record
         self.process = self.log = None
+        self.trace_process = self.trace_log = None
+        self.provider_namespace_root = None
         self.preferences_attempted = False
 
     def __enter__(self):
@@ -197,6 +251,18 @@ class RunResources:
                 action()
             except BaseException as failure:
                 failures.append(f"{label}: {failure}")
+        if self.trace_process is not None:
+            def stop_trace():
+                if self.trace_process.poll() is None:
+                    os.killpg(self.trace_process.pid, signal.SIGINT)
+                    try:
+                        self.trace_process.wait(timeout=15)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(self.trace_process.pid, signal.SIGKILL)
+                        self.trace_process.wait(timeout=15)
+            attempt("owned trace", stop_trace)
+        if self.trace_log is not None:
+            attempt("trace log", self.trace_log.close)
         if self.process is not None:
             def stop():
                 if self.process.poll() is None:
@@ -213,6 +279,15 @@ class RunResources:
             attempt("owned bundle", lambda: shutil.rmtree(self.bundle) if self.bundle.exists() else None)
         else:
             failures.append("owned bundle retained because its process could not be stopped")
+        if self.provider_namespace_root is not None and (self.process is None or self.process.poll() is not None):
+            def remove_namespace():
+                root = self.provider_namespace_root
+                if root.parent != Path("/private/tmp") or not root.name.startswith("astra-provider-tests-"):
+                    raise ValueError("Refusing cleanup outside an owned provider test namespace")
+                uuid.UUID(root.name.removeprefix("astra-provider-tests-"))
+                if root.exists():
+                    shutil.rmtree(root)
+            attempt("owned provider namespace", remove_namespace)
         if self.log is not None:
             attempt("app log", self.log.close)
         if failures:
@@ -256,9 +331,13 @@ def main():
     parser.add_argument("--tools", type=Path, help="Reuse this harness's previously compiled tools")
     parser.add_argument("--plan", type=Path, default=Path(__file__).with_name("dev-scale-plan.json"), help="JSON external AX actions; see documentation")
     parser.add_argument("--prepare-only", action="store_true", help="Launch, dump AX tree and supervise the owned app until it exits")
+    parser.add_argument("--memory-graphs", action="store_true", help="Owned synthetic app heap generations and snapshot descriptor metadata")
+    parser.add_argument("--allocations-seconds", type=int, default=0, help="Opt-in record_memory_trace.sh capture, at most 180 seconds")
     args = parser.parse_args()
     if args.runs < 1 or args.cycles < 1 or args.idle_seconds < 1:
         parser.error("runs/cycles must be positive and idle >= 1 second")
+    if not 0 <= args.allocations_seconds <= 180:
+        parser.error("allocations-seconds must be 0–180")
     source = args.app.resolve()
     info = plistlib.loads((source / "Contents/Info.plist").read_bytes())
     if info.get("ASTRAChannel") != "dev" or info.get("CFBundleIdentifier") != "com.coral.ASTRA.dev":
@@ -271,8 +350,9 @@ def main():
     capacity_root = output.parent
     while not capacity_root.exists():
         capacity_root = capacity_root.parent
-    if shutil.disk_usage(capacity_root).free < 700 * 1024**2:
-        parser.error("less than 700 MiB free; defer until capacity is available")
+    required_free = 12 * 1024**3 if args.memory_graphs or args.allocations_seconds else 700 * 1024**2
+    if shutil.disk_usage(capacity_root).free < required_free:
+        parser.error(f"less than {required_free} bytes free; defer until capacity is available")
     output.mkdir(parents=True)
     write_json(output / "synthetic-benchmark.json", {"format": 1, "owner": str(output)})
     report = {"schema_version": 1, "status": "running", "runs": []}
@@ -309,6 +389,9 @@ def execute_benchmark(args, source, info, output, report):
                   "app_build": info, "harness_revision": command(["git", "rev-parse", "HEAD"], cwd=REPO).strip(),
                   "linked_object_sha256": hashes, "requested_runs": args.runs, "cycles": args.cycles,
                   "idle_seconds": args.idle_seconds, "omit_task_files": args.omit_task_files,
+                  "memory_graphs": getattr(args, "memory_graphs", False),
+                  "allocations_seconds": getattr(args, "allocations_seconds", 0),
+                  "environment_policy": "OS/toolchain allowlist; provider credentials omitted",
                   "invocation": __import__("sys").argv, "runs": []})
         report["input_sha256"] = {p.name: sha256(p) for p in [Path(__file__),
             Path(__file__).with_name("DevScaleAX.swift"), Path(__file__).with_name("DevWorkspaceFixture.swift"),
@@ -320,7 +403,7 @@ def execute_benchmark(args, source, info, output, report):
             token = uuid.uuid4().hex
             run_root = output / f"run-{index}"
             support = Path.home() / "Library/Application Support/ASTRA Scale Benchmark" / token / "AstraDev"
-            bundle = run_root / "ASTRA Scale Benchmark.app"
+            bundle = run_root / ("ASTRA Dev.app" if getattr(args, "allocations_seconds", 0) else "ASTRA Scale Benchmark.app")
             identifier = "com.coral.ASTRA.dev.scalebench." + token
             record = {"support": str(support), "bundle_identifier": identifier, "status": "setup", "actions": [], "memory": []}
             report["runs"].append(record)
@@ -341,7 +424,11 @@ def execute_benchmark(args, source, info, output, report):
                 preference_file.write_bytes(plistlib.dumps(preferences))
                 owned.preferences_attempted = True
                 command(["/usr/bin/defaults", "import", identifier, preference_file])
-                environment = dict(os.environ, ASTRA_DEV_APP_SUPPORT_DIR=str(support))
+                namespace = str(uuid.UUID(token))
+                owned.provider_namespace_root = Path("/private/tmp") / ("astra-provider-tests-" + namespace.upper())
+                record["provider_namespace"] = namespace
+                environment = dict(synthetic_environment(), ASTRA_DEV_APP_SUPPORT_DIR=str(support),
+                                   ASTRA_TEST_PROVIDER_NAMESPACE_ID=namespace)
                 log = owned.log = (run_root / "app.log").open("w")
                 started = time.monotonic_ns()
                 reject_symlinks(run_root / "Workspaces")
@@ -353,15 +440,30 @@ def execute_benchmark(args, source, info, output, report):
                 def ax(*parts):
                     return json.loads(command([tools / "ax", process.pid, *parts]))
                 def sample(stage):
+                    if (getattr(args, "memory_graphs", False) or getattr(args, "allocations_seconds", 0)) and shutil.disk_usage(run_root).free < 12 * 1024**3:
+                        raise RuntimeError("Stopped owned profiling workload: less than 12 GiB free")
                     measured, raw = memory(process.pid)
                     record["memory"].append(dict(stage=stage, elapsed_s=(time.monotonic_ns()-started)/1e9, **measured))
                     (run_root / f"vmmap-{stage}.txt").write_text(raw)
+                    if getattr(args, "memory_graphs", False):
+                        descriptors = command(["/usr/sbin/lsof", "-nP", "-a", "-p", process.pid, "-F0fDiksn"])
+                        (run_root / f"snapshot-files-{stage}.txt").write_text(descriptors)
+                        record["memory"][-1]["snapshots"] = snapshot_descriptors(descriptors, support)
                     if stage in ["warm-idle", "final-idle"]:
                         # Live allocation counts/sizes by class, between timed actions.
                         # These distinguish heap growth from charged allocator pages.
                         with (run_root / f"heap-{stage}.txt").open("w") as heap_log:
                             result = subprocess.run(["/usr/bin/heap", "--noContent", "-s", str(process.pid)], stdout=heap_log, stderr=heap_log, timeout=60)
                         record.setdefault("heap_exit_status", {})[stage] = result.returncode
+                        if getattr(args, "memory_graphs", False):
+                            with (run_root / f"graph-{stage}.txt").open("w") as graph_log:
+                                try:
+                                    result = subprocess.run(["/usr/bin/leaks", "--noContent",
+                                        f"--outputGraph={run_root / ('heap-' + stage + '.memgraph')}", str(process.pid)],
+                                        stdout=graph_log, stderr=graph_log, timeout=45, preexec_fn=profile_file_limit)
+                                    record.setdefault("graph_exit_status", {})[stage] = result.returncode
+                                except subprocess.TimeoutExpired:
+                                    record.setdefault("graph_exit_status", {})[stage] = "timeout"
                     write_json(output / "report.json", report)
                 try:
                     ax("wait", "contains:TaskRow_Long thread", "present")
@@ -406,6 +508,28 @@ def execute_benchmark(args, source, info, output, report):
                         record["actions"].append(dict(cycle=0, command=action, result=result))
                     time.sleep(args.idle_seconds)
                     sample("warm-idle")
+                    if getattr(args, "allocations_seconds", 0):
+                        owned.trace_log = (run_root / "allocations-command.log").open("w")
+                        notification = "com.coral.ASTRA.benchmark.trace." + uuid.uuid4().hex
+                        notify = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+                        token = ctypes.c_int()
+                        if notify.notify_register_check(notification.encode(), ctypes.byref(token)) != 0:
+                            raise RuntimeError("Could not register xctrace readiness notification")
+                        try:
+                            # The initial check may report a change without a post.
+                            if notify.notify_check(token, ctypes.byref(ctypes.c_int())) != 0:
+                                raise RuntimeError("Could not initialize xctrace readiness notification")
+                            trace_env = dict(synthetic_environment(), ASTRA_MEMORY_TRACE_PID=str(process.pid),
+                                             ASTRA_MEMORY_TRACE_DURATION=f"{args.allocations_seconds}s",
+                                             ASTRA_MEMORY_TRACE_OUTPUT_DIR=str(run_root / "allocations"),
+                                             ASTRA_MEMORY_TRACE_READY_NOTIFICATION=notification)
+                            owned.trace_process = subprocess.Popen([str(REPO / "script/record_memory_trace.sh")],
+                                env=trace_env, stdout=owned.trace_log, stderr=subprocess.STDOUT, start_new_session=True,
+                                preexec_fn=profile_file_limit)
+                            wait_for_trace_recording(owned.trace_process, notify, token)
+                        finally:
+                            notify.notify_cancel(token)
+                        record["allocations_seconds"] = args.allocations_seconds
                     for cycle in range(1, args.cycles + 1):
                         for action in plan["cycle"]:
                             result = perform(action, cycle)
@@ -414,6 +538,10 @@ def execute_benchmark(args, source, info, output, report):
                         sample(f"cycle-{cycle}")
                         time.sleep(args.idle_seconds)
                         sample(f"idle-{cycle}")
+                    if owned.trace_process is not None:
+                        record["allocations_exit_status"] = owned.trace_process.wait(timeout=args.allocations_seconds + 30)
+                        if record["allocations_exit_status"] != 0:
+                            raise RuntimeError("Owned Dev allocations capture failed; inspect allocations-command.log")
                     record["load_after"] = os.getloadavg()
                     with closing(sqlite3.connect(f"file:{destination}?mode=ro", uri=True)) as stored:
                         record["final_counts"] = {name: stored.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
