@@ -29,11 +29,11 @@ enum StandaloneArtifactRequestPolicy {
     ]
     private static let artifactWords: Set<String> = ["app", "ui", "website", "csv"]
 
+    static let actionWords = creationActions.union(informationalActions).union(["put"])
+
     static func requiresArtifact(in fields: [String]) -> Bool {
         fields.contains { field in
-            TaskIntentLanguagePolicy.affirmativeActionObjects(
-                in: field, words: creationActions.union(informationalActions).union(["put"])
-            ).contains { action in
+            TaskIntentLanguagePolicy.affirmativeActionObjects(in: field, words: actionWords).contains { action in
                 guard !informationalActions.contains(action.verb) else { return false }
                 if action.verb == "put" {
                     // This is an explicit delivery instruction, unlike an

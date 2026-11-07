@@ -168,6 +168,36 @@ struct TaskTextOnlyDeliverableTests {
         #expect(TaskCompletionPolicy.decideSuccessfulCompletion(task: fixture.task, run: fixture.run).shouldBlockCompletion)
     }
 
+    /// Foundation never evicts a compiled `.regularExpression` pattern, so a
+    /// pattern that changes between calls leaks a few hundred KB per call. The
+    /// production word set used to yield a new spelling on almost every call:
+    /// 2026-11-06 production footprint reached 30 GB of MALLOC_SMALL.
+    @Test("Intent parsing reuses one regular-expression pattern per word set")
+    func actionPatternIsStableAcrossSetInstances() {
+        let words = Array(StandaloneArtifactRequestPolicy.actionWords)
+        var patterns = Set<String>()
+        // Equal sets rebuilt in different insertion orders, as each caller's
+        // per-call union did. Count distinct spellings, not time or memory.
+        for iteration in 0..<64 {
+            let offset = iteration % max(1, words.count)
+            var rotated = Array(words[offset...] + words[..<offset])
+            if iteration.isMultiple(of: 2) { rotated.reverse() }
+            var rebuilt = Set<String>(minimumCapacity: iteration)
+            for word in rotated { rebuilt.insert(word) }
+            patterns.insert(TaskIntentLanguagePolicy.actionPattern(for: rebuilt))
+        }
+        #expect(patterns.count == 1)
+    }
+
+    @Test("A longer action form still wins over its prefix in the stable pattern")
+    func stablePatternKeepsLongestFormFirst() {
+        let pattern = TaskIntentLanguagePolicy.actionPattern(for: ["creat", "create"])
+        let forms = pattern.dropFirst("\\b(?:".count).dropLast(")\\b".count).split(separator: "|").map(String.init)
+        #expect(forms == forms.sorted { $0.count != $1.count ? $0.count > $1.count : $0 < $1 })
+        #expect(TaskIntentLanguagePolicy.affirmativeActionObjects(in: "create a dashboard", words: ["creat", "create"])
+            .map(\.verb) == ["create"])
+    }
+
     private func fixture(goal: String) throws -> (root: URL, container: ModelContainer, task: AgentTask, run: TaskRun) {
         let container = try ModelContainer(for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
             configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
