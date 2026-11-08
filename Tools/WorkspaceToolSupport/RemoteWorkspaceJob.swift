@@ -108,6 +108,12 @@ public enum RemoteWorkspaceJobLaunchFence: String, Codable, Sendable {
     case legacySealed = "legacy_sealed"
 }
 
+/// Cancellation of a job whose status is not terminal. `launchBlocked` means
+/// the host has fenced the launch, so there is nothing left to deliver.
+public enum RemoteWorkspaceJobCancellationState: Equatable, Sendable {
+    case none, pending, launchBlocked
+}
+
 /// Authority persisted by the local broker, never supplied by the remote host.
 public enum RemoteWorkspaceJobLaunchPermit: String, Codable, Sendable {
     case pending, issued, withdrawn
@@ -168,6 +174,14 @@ public struct RemoteWorkspaceJobRecord: Codable, Equatable, Sendable {
     /// POSIX process groups cannot contain tools which detach or start work on
     /// another host. Observations never grant the execution owner's stop proof.
     public var cleanupVerified: Bool { false }
+
+    /// Whether a cancellation of this still-open job is waiting on the host.
+    /// A host launch fence only proves that a delayed launcher can no longer
+    /// run the command: it is not a result, and cleanup stays unverified.
+    public var cancellationState: RemoteWorkspaceJobCancellationState {
+        guard cancellationRequestedAt != nil, !status.isTerminal else { return .none }
+        return launchFence == nil ? .pending : .launchBlocked
+    }
 
     public init(
         jobID: String,

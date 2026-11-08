@@ -816,6 +816,22 @@ struct RuntimeWorkspaceContinuationTests {
         }
     }
 
+    @Test("Every predecessor in a waiting request's saved continuation keeps fresh SSH checks")
+    func waitingContinuationAwaitsEverySource() throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (first, _) = try completed(h)
+        let (second, _) = try completed(h)
+        let (b, request) = try next(h, after: second)
+        try approve(h, task: b, request: request)
+        let sources = try #require(try RuntimeExecutionOwner.store(in: h.context).workspaceContinuation(requestID: request.id)).sources
+        #expect(Set(sources.map(\.receipt.taskID)) == [first.id, second.id])
+        // The queue names only the first conflicting holder.
+        TaskTurnRequestStateMachine.transition(request, to: .waitingForResource, blockingTaskID: first.id)
+        #expect(request.state == .waitingForResource)
+        try h.context.save()
+        #expect(try RemoteWorkspaceJobMonitorSession.awaitedTaskIDs(context: h.context) == [first.id, second.id])
+    }
+
     @Test("Legacy quoted SSH aliases stay readable only with identical saved destinations", arguments: ["same", "target", "arguments", "id", "name", "duplicate"], ["alias", "quoted", "identity"])
     func legacySSHRendering(fault: String, style: String) throws {
         let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
