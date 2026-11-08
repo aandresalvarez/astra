@@ -5,8 +5,9 @@ import ASTRAModels
 extension WorkspaceConfigManager {
     /// Read durable key names before the portable configuration removes secret
     /// values and malformed fields. This projection never carries values.
-    static func credentialEvidenceForExport(_ activation: PluginActivation) -> PluginCredentialRecoveryEvidence? {
-        let durable = WorkspaceCapabilityActivation.credentialRecoveryEvidence(of: activation)
+    static func credentialEvidenceForExport(_ activation: PluginActivation, in workspace: Workspace) -> PluginCredentialRecoveryEvidence? {
+        let durable = WorkspaceCapabilityActivation.credentialRecoveryEvidence(for: activation.pluginID,
+            namespaceSeed: activation.namespaceSeed, credentialNamespaceSeed: activation.credentialNamespaceSeed, in: workspace)
         let keys = activation.configKeys + activation.secretSettingKeys
         let positive = activation.configKeys.filter { field in
             guard let component = PluginActivation.componentID(ofSettingKey: field) else { return false }
