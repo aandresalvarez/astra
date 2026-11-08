@@ -100,6 +100,36 @@ struct TaskForkBatchPersistenceTests {
         #expect(original.events.count == 256)
     }
 
+    @Test("Prefetch preserves relationship ownership and pending history when task UUIDs collide")
+    func prefetchedHistoryUsesRelationships() throws {
+        let container = try ModelContainer(for: ASTRASchema.current, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let context = ModelContext(container)
+        context.autosaveEnabled = false
+        let source = makeHistory(events: 16, eventsPerRun: 8)
+        let neighbor = makeHistory(events: 16, eventsPerRun: 8)
+        neighbor.id = source.id
+        neighbor.title = "Unrelated imported task"
+        for event in neighbor.events { event.payload = "Foreign history" }
+        context.insert(source)
+        context.insert(neighbor)
+        try context.save()
+
+        let reader = ModelContext(container)
+        reader.autosaveEnabled = false
+        let tasks = try reader.fetch(FetchDescriptor<AgentTask>())
+        let coldSource = try #require(tasks.first { $0.title == source.title })
+        let target = try #require(coldSource.runs.max(by: TaskRun.isChronologicallyOrdered))
+        let pending = TaskEvent(task: coldSource, type: "tool.use", payload: "Pending source history", run: target)
+        reader.insert(pending)
+        let fork = try AgentTask.fork(from: coldSource, upToRun: target, in: reader)
+        try reader.save()
+        #expect(fork.events.count == 18) // 16 stored, pending, checkpoint
+        #expect(fork.runs.count == 2)
+        #expect(fork.events.contains { $0.payload == "Pending source history" })
+        #expect(!fork.events.contains { $0.payload == "Foreign history" })
+        #expect(fork.events.allSatisfy { $0.task === fork })
+    }
+
     @Test("A complete fork costs less than half of repeated child graph insertions")
     func largeForkInsertionCost() throws {
         let control = try measure(legacyInsertion: true)

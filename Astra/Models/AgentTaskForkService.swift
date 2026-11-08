@@ -186,14 +186,21 @@ public enum AgentTaskForkService {
         let copiedRunIDs = runsToFork.map(\.id)
         let copiedRunIDSet = Set(copiedRunIDs)
         let cutoffDate = targetRun.completedAt ?? targetRun.startedAt
-        let eventsToFork = source.events
+        let selectedEvents = prefetchedEvents(for: source)
             .filter { event in
                 if let runID = event.run?.id {
                     return copiedRunIDSet.contains(runID)
                 }
                 return event.timestamp <= cutoffDate
             }
-            .sorted(by: eventOrdering)
+        // Capture ordering values once. SwiftData property reads inside
+        // the sort comparator otherwise multiply with history size.
+        let orderingFacts: [(event: TaskEvent, timestamp: Date, id: String)] = selectedEvents.map {
+            (event: $0, timestamp: $0.timestamp, id: $0.id.uuidString)
+        }
+        let eventsToFork = orderingFacts.sorted {
+            $0.timestamp == $1.timestamp ? $0.id < $1.id : $0.timestamp < $1.timestamp
+        }.map { $0.event }
         // The ledger trusts only user-authored turns, including plan-mode chat.
         let attachments = deduplicatedPaths(
             TaskAttachmentLedger.entries(in: eventsToFork.map(TaskAttachmentLedger.EventFacts.init)).map(\.path)
@@ -362,9 +369,15 @@ public enum AgentTaskForkService {
         return forked
     }
 
-    private static func eventOrdering(_ lhs: TaskEvent, _ rhs: TaskEvent) -> Bool {
-        if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
-        return lhs.id.uuidString < rhs.id.uuidString
+    @MainActor
+    private static func prefetchedEvents(for task: AgentTask) -> [TaskEvent] {
+        guard let context = task.modelContext else { return task.events }
+        let taskID = task.id
+        let events = try? context.fetch(FetchDescriptor<TaskEvent>(predicate: #Predicate { $0.task?.id == taskID }))
+        // Hydrate scalar fields together instead of faulting each history row.
+        // Relationships still decide membership, including pending edits and
+        // imported tasks that happen to share a UUID.
+        return withExtendedLifetime(events) { task.events }
     }
 
     /// Points each copied attachment record at the fork's copy of its message
