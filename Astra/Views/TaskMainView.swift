@@ -267,6 +267,7 @@ struct TaskMainView: View {
     @State var cachedForkSharedWorktreeRoot: String?
     @State var pendingForkRequest: PendingTaskForkRequest?
     @State var forkCreationError: String?
+    @State var isForkSourceVisible = false
     @State private var gitPublishProposal: GitPullRequestPublishProposal?
     @State private var githubReviewPublication = TaskGitHubReviewPublicationState()
     @State private var connectorMutationReview = TaskConnectorMutationReviewState()
@@ -590,6 +591,7 @@ struct TaskMainView: View {
             await refreshVerificationPresentation(for: verificationLoadRequest)
         }
         .onAppear {
+            isForkSourceVisible = true
             deferTaskViewMutation {
                 installPasteMonitor()
             }
@@ -600,6 +602,7 @@ struct TaskMainView: View {
             stopInitialCorrelation: { threadViewModel.cancelInitialResponsivenessCorrelation(for: task.id) }
         ))
         .onDisappear {
+            isForkSourceVisible = false
             pendingPlanStateRefreshTask?.cancel()
             // Here, not in the next task's setup: `ContentView` keys this
             // view with `.id(task.persistentModelID)`, so that setup runs against fresh
@@ -1706,10 +1709,7 @@ struct TaskMainView: View {
 
     @ViewBuilder
     private func chatThreadContentBody(decisionDockVisible: Bool) -> some View {
-        if task.isForked {
-            forkContextBanner
-                .padding(.horizontal, 14)
-        }
+        forkBanners
 
         if !currentThreadSnapshot.latestAgentPlanItems.isEmpty {
             agentPlanPanel(items: currentThreadSnapshot.latestAgentPlanItems)
@@ -2249,7 +2249,8 @@ struct TaskMainView: View {
                         }
                         .buttonStyle(.plain)
                         .foregroundStyle(Stanford.coolGrey.opacity(0.7))
-                        .help("Fork conversation from here")
+                        .disabled(isCreatingFork)
+                        .help(isCreatingFork ? "A fork is being created" : "Fork conversation from here")
                     }
 
                     runFooterSummaryLabel(

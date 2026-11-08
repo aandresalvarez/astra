@@ -63,6 +63,8 @@ public enum AgentTaskForkError: LocalizedError, Equatable {
     }
 }
 
+/// Synchronous graph construction on the caller-owned context executor. UI callers
+/// must use TaskForkCreationCoordinator.create, never share models across actors.
 public enum AgentTaskForkService {
     private struct ForkManifestEventPayload: Encodable {
         public var sourceTaskID: String
@@ -72,7 +74,6 @@ public enum AgentTaskForkService {
         public var forkMode: String
     }
 
-    @MainActor
     public static func fork(
         from source: AgentTask,
         upToRun targetRun: TaskRun,
@@ -369,7 +370,6 @@ public enum AgentTaskForkService {
         return forked
     }
 
-    @MainActor
     private static func prefetchedEvents(for task: AgentTask) -> [TaskEvent] {
         guard let context = task.modelContext else { return task.events }
         let taskID = task.id

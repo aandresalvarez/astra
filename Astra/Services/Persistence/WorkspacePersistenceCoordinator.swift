@@ -169,7 +169,8 @@ public enum WorkspacePersistenceCoordinator {
         enqueueSavedAutoExport(workspace: workspace, modelContext: modelContext)
     }
 
-    public static func saveWithoutAutoExportOrThrow(
+    // May also save a private worker-owned context on that worker's executor.
+    nonisolated public static func saveWithoutAutoExportOrThrow(
         workspace: Workspace?,
         modelContext: ModelContext,
         taskID: UUID? = nil,
@@ -282,6 +283,15 @@ public enum WorkspacePersistenceCoordinator {
                 completion: { continuation.resume(returning: $0) })
         }
         return written && !Task.isCancelled
+    }
+
+    /// Enqueues the committed state after a worker-owned context saved. The UI
+    /// context is only the lifetime/destination owner; its unsaved edits are not
+    /// committed or projected. Keep the existing pending-export/quit drain path.
+    public static func scheduleSavedMirrorExport(workspace: Workspace?, modelContext: ModelContext) {
+        guard let workspace, !workspace.isDeleted, !shouldSkipAutoExport() else { return }
+        // A UI edit may still owe a debounce save; do not discard it.
+        enqueueSavedAutoExport(workspace: workspace, modelContext: modelContext)
     }
 
     private static func registerMirror(path: String, workspaceID: UUID, modelContext: ModelContext) -> Bool {
