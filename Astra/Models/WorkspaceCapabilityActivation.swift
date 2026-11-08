@@ -194,9 +194,18 @@ public enum WorkspaceCapabilityActivation {
     }
 
     public static func credentialRecoveryEvidence(of activation: PluginActivation) -> PluginCredentialRecoveryEvidence? {
-        guard let workspace = activation.workspace,
-              let evidence = retentionRecords(of: workspace).first(where: { $0.pluginID == activation.pluginID })?.credentialRecoveryEvidence,
-              evidence.appliesTo(namespaceSeed: activation.namespaceSeed, credentialNamespaceSeed: activation.credentialNamespaceSeed)
+        guard let workspace = activation.workspace else { return nil }
+        return credentialRecoveryEvidence(for: activation.pluginID, namespaceSeed: activation.namespaceSeed,
+            credentialNamespaceSeed: activation.credentialNamespaceSeed, in: workspace)
+    }
+
+    /// A workspace projection already knows the owner. Read its value evidence
+    /// without resolving activation.workspace: faulting both relationship
+    /// directions creates a SwiftData backing-data cycle that retains readers.
+    public static func credentialRecoveryEvidence(for pluginID: String, namespaceSeed: String,
+        credentialNamespaceSeed: String, in workspace: Workspace) -> PluginCredentialRecoveryEvidence? {
+        guard let evidence = retentionRecords(of: workspace).first(where: { $0.pluginID == pluginID })?.credentialRecoveryEvidence,
+              evidence.appliesTo(namespaceSeed: namespaceSeed, credentialNamespaceSeed: credentialNamespaceSeed)
         else { return nil }
         return evidence
     }
