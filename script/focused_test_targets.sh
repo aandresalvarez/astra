@@ -20,6 +20,9 @@ target_for_path() {
   local path="$1"
 
   case "$path" in
+    Astra/Services/Persistence/TaskArtifactPersistenceService.swift|Tests/TaskArtifactPersistenceServiceTests.swift|Tests/TaskArtifactBatchPersistenceTests.swift|Tests/TaskArtifactBatchScalingTests.swift)
+      add_target "TaskArtifactPersistenceServiceTests|TaskArtifactBatchPersistenceTests|TaskArtifactBatchScalingTests|TaskDeliverableArtifactScanCostTests"
+      ;;
     Astra/Services/Tasks/WorkspaceCommandService.swift|Tests/WorkspaceCommandServiceTests.swift)
       add_target "WorkspaceCommandServiceTests|RuntimeModelAvailabilityTests"
       ;;

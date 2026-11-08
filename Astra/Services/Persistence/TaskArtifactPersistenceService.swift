@@ -86,20 +86,14 @@ public enum TaskArtifactPersistenceService {
         var normalizedArtifacts: [Artifact] = []
         var normalizedArtifactKinds: [Artifact] = []
         var seenPaths = Set<String>()
-        // Everything the loops below need about the rows already on the task,
-        // gathered in the single pass that was walking them anyway.
-        //
-        // This used to be four more passes: `nextVersion` and
-        // `insertArtifact` each scanned `task.artifacts` from scratch *per
-        // created file*, and `duplicateArtifacts` re-normalised every path a
-        // second time. At 13,295 artifacts — an agent's virtualenv, before
-        // `generatedDependencyDirectoryNames` started excluding those — that is
-        // where run finalization's ten seconds went.
+        // Gather existing paths and versions once. New rows are accumulated
+        // separately so neither lookup nor relationship updates repeat a full
+        // traversal for each discovered file.
         var highestVersionByPath: [String: Int] = [:]
-        var heldArtifactIDs = Set<UUID>()
+        let existingArtifacts = prefetchedArtifacts(for: task)
         var artifactsByNormalizedPath: [String: [Artifact]] = [:]
 
-        for artifact in task.artifacts {
+        for artifact in existingArtifacts {
             let path = normalizedPath(artifact.path, task: task)
             if artifact.path != path {
                 artifact.path = path
@@ -110,7 +104,6 @@ public enum TaskArtifactPersistenceService {
                 artifact.type = kind.rawValue
                 normalizedArtifactKinds.append(artifact)
             }
-            heldArtifactIDs.insert(artifact.id)
             artifactsByNormalizedPath[path, default: []].append(artifact)
             if !path.isEmpty {
                 seenPaths.insert(path)
@@ -118,26 +111,34 @@ public enum TaskArtifactPersistenceService {
             }
         }
 
+        // Insert new rows without an inverse first: inserting a child that
+        // already references this task traverses its entire existing graph.
+        let insertionContext = modelContext ?? task.modelContext
         var created: [Artifact] = []
         for file in files {
             let path = normalizedPath(file.path, task: task)
             guard !path.isEmpty, seenPaths.insert(path).inserted else { continue }
 
             let artifact = Artifact(
-                task: task,
+                task: nil,
                 type: file.kind.rawValue,
                 path: path,
                 version: (highestVersionByPath[path] ?? 0) + 1
             )
-            insertArtifact(
-                artifact,
-                into: task,
-                modelContext: modelContext,
-                heldArtifactIDs: &heldArtifactIDs
-            )
+            insertionContext?.insert(artifact)
             created.append(artifact)
             highestVersionByPath[path] = artifact.version
             artifactsByNormalizedPath[path, default: []].append(artifact)
+        }
+
+        // Update the growing to-many relationship once, after the new rows
+        // have identities in the context. SwiftData establishes their inverse
+        // links here; no child insertion needs to traverse the task graph.
+        if !created.isEmpty {
+            task.artifacts = existingArtifacts + created
+            if let insertionContext, task.modelContext != insertionContext {
+                insertionContext.insert(task)
+            }
         }
 
         // One `fileExists` per artifact, not two. The two filters were
@@ -215,6 +216,17 @@ public enum TaskArtifactPersistenceService {
         return artifact
     }
 
+    private static func prefetchedArtifacts(for task: AgentTask) -> [Artifact] {
+        guard let context = task.modelContext else { return task.artifacts }
+        let taskID = task.id
+        let descriptor = FetchDescriptor<Artifact>(predicate: #Predicate { $0.task?.id == taskID })
+        guard let rows = try? context.fetch(descriptor) else { return task.artifacts }
+        // Hydrate scalar fields in one fetch instead of faulting every row.
+        // Imported tasks can share a UUID: the relationship, not the query,
+        // still decides membership and preserves pending relationship changes.
+        return withExtendedLifetime(rows) { task.artifacts }
+    }
+
     private static func normalizedPath(_ path: String, task: AgentTask) -> String {
         TaskArtifactPathNormalizer.normalizedPath(path, task: task)
     }
@@ -244,22 +256,11 @@ public enum TaskArtifactPersistenceService {
     }
 
     private static func insertArtifact(_ artifact: Artifact, into task: AgentTask, modelContext: ModelContext?) {
-        var heldArtifactIDs = Set(task.artifacts.map(\.id))
-        insertArtifact(artifact, into: task, modelContext: modelContext, heldArtifactIDs: &heldArtifactIDs)
-    }
-
-    /// The bulk form. `heldArtifactIDs` carries the membership test across
-    /// calls so appending *n* artifacts costs *n* lookups rather than a linear
-    /// scan of the relationship each time.
-    private static func insertArtifact(
-        _ artifact: Artifact,
-        into task: AgentTask,
-        modelContext: ModelContext?,
-        heldArtifactIDs: inout Set<UUID>
-    ) {
+        let alreadyHeld = task.artifacts.contains { $0.id == artifact.id }
         modelContext?.insert(artifact)
-        guard heldArtifactIDs.insert(artifact.id).inserted else { return }
-        task.artifacts.append(artifact)
+        if !alreadyHeld {
+            task.artifacts.append(artifact)
+        }
     }
 
     private static func duplicateArtifacts(

@@ -620,3 +620,8 @@ AgentRuntimeRunPersistenceTests" \
 assert_targets "TaskApprovedPlanRunCommandTests" \
   "Astra/Services/Tasks/TaskApprovedPlanRunCommand.swift" \
   "Tests/TaskApprovedPlanRunCommandTests.swift"
+
+assert_targets "TaskArtifactPersistenceServiceTests|TaskArtifactBatchPersistenceTests|TaskArtifactBatchScalingTests|TaskDeliverableArtifactScanCostTests" \
+  "Astra/Services/Persistence/TaskArtifactPersistenceService.swift" \
+  "Tests/TaskArtifactBatchPersistenceTests.swift" \
+  "Tests/TaskArtifactBatchScalingTests.swift"
