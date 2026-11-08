@@ -343,9 +343,22 @@ public enum AgentTaskForkService {
             ))
         }
 
+        // Register new models without links into the growing graph. Inserting
+        // linked children (or inserting the complete transient graph) makes
+        // SwiftData rebuild inverse relationships repeatedly on the main actor.
+        // Keep the constructors above, including their redaction/session rules.
+        let copiedEventRuns = copiedEvents.map(\.run)
+        for event in copiedEvents {
+            event.task = nil
+            event.run = nil
+        }
+        for run in copiedRuns { run.task = nil }
         context.insert(forked)
         copiedRuns.forEach(context.insert)
         copiedEvents.forEach(context.insert)
+        forked.runs = copiedRuns
+        for (event, run) in zip(copiedEvents, copiedEventRuns) { event.run = run }
+        forked.events = copiedEvents
         return forked
     }
 

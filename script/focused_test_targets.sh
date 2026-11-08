@@ -20,6 +20,12 @@ target_for_path() {
   local path="$1"
 
   case "$path" in
+    Astra/Models/AgentTaskForkService.swift|Astra/Services/Tasks/TaskForkPolicyService.swift|Tests/AgentTaskForkServiceTests.swift|Tests/TaskForkPolicyServiceTests.swift|Tests/TaskForkBatchPersistenceTests.swift)
+      add_target "AgentTaskForkServiceTests|TaskForkPolicyServiceTests|TaskForkBatchPersistenceTests"
+      ;;
+  esac
+
+  case "$path" in
     Astra/Services/Tasks/WorkspaceCommandService.swift|Tests/WorkspaceCommandServiceTests.swift)
       add_target "WorkspaceCommandServiceTests|RuntimeModelAvailabilityTests"
       ;;

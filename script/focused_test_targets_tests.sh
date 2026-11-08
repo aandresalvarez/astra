@@ -16,6 +16,10 @@ assert_targets() {
   fi
 }
 
+assert_targets "AgentTaskForkServiceTests|TaskForkPolicyServiceTests|TaskForkBatchPersistenceTests" \
+  "Astra/Models/AgentTaskForkService.swift" \
+  "Tests/TaskForkBatchPersistenceTests.swift"
+
 assert_targets "RuntimeManagedSSHHelperEvidenceTests|RuntimeManagedSSHHelperMetadataTests|RuntimeClaudeFrameMetadataTests|RuntimeCopilotFrameMetadataTests|RuntimeProviderCompletionEvidenceTests|RuntimeWorkspaceContinuationTests
 RuntimeCancellation|RuntimeSettlementCancellationTests|TaskQueueWedgedWorkerReleaseTests|RuntimeTurnSettlementTests|LaunchSnapshotDisciplineTests|QueueLockTests|RuntimeSettlementRecoveryFollowupTests|RuntimeProvider|RuntimeCleanupAuthorizationTests|OpenCode" \
   "Astra/Services/Runtime/RuntimeCopilotFrameMetadata.swift" \
