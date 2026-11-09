@@ -23,6 +23,15 @@ target_for_path() {
     Astra/Services/Persistence/TaskArtifactPersistenceService.swift|Tests/TaskArtifactPersistenceServiceTests.swift|Tests/TaskArtifactBatchPersistenceTests.swift|Tests/TaskArtifactBatchScalingTests.swift)
       add_target "TaskArtifactPersistenceServiceTests|TaskArtifactBatchPersistenceTests|TaskArtifactBatchScalingTests|TaskDeliverableArtifactScanCostTests"
       ;;
+  esac
+
+  case "$path" in
+    Astra/Models/AgentTaskForkService.swift|Astra/Services/Tasks/TaskForkPolicyService.swift|Astra/Services/Tasks/TaskForkCreationCoordinator.swift|Tests/AgentTaskForkServiceTests.swift|Tests/TaskForkPolicyServiceTests.swift|Tests/TaskForkBatchPersistenceTests.swift|Tests/TaskForkResponsiveTests.swift|Astra/Services/Persistence/TaskForkSavedStore.swift|ASTRACore/TaskForkLifecycleSeams.swift|Astra/Views/TaskMainView+Forking.swift)
+      add_target "AgentTaskForkServiceTests|TaskForkPolicyServiceTests|TaskForkBatchPersistenceTests|TaskForkResponsiveTests"
+      ;;
+  esac
+
+  case "$path" in
     Astra/Services/Tasks/WorkspaceCommandService.swift|Tests/WorkspaceCommandServiceTests.swift)
       add_target "WorkspaceCommandServiceTests|RuntimeModelAvailabilityTests"
       ;;
@@ -203,12 +212,13 @@ target_for_path() {
       add_target "TaskExecutionLaunchSnapshotApplicatorTests"
       add_target "RuntimePermissionGrantRegressionTests"
       ;;
-    Astra/Services/Persistence/SSHConnectionManager.swift|Astra/Services/Persistence/WorkspaceAutoExportWriter.swift|Astra/Services/Persistence/WorkspaceConfigManager.swift|Astra/Services/Persistence/WorkspaceConfigManager+FileExport.swift|Astra/Services/Persistence/WorkspacePersistenceCoordinator.swift|Astra/Services/Persistence/WorkspacePersistenceWork.swift|Astra/Services/Persistence/WorkspaceSavedAutoExport.swift|Astra/Services/Persistence/WorkspaceSavedExportSnapshot.swift|Astra/Services/Persistence/WorkspaceExportFileIO.swift|Astra/Services/Persistence/WorkspaceExportChangeScope.swift|Astra/Services/Persistence/WorkspaceSavedExportLease.swift|Astra/Services/Persistence/WorkspaceSnapshotDirectory.swift|Tests/WorkspaceSavedExportPendingTests.swift|Tests/WorkspaceSavedExportReplacementTests.swift|Tests/WorkspaceSnapshotDirectoryTests.swift|Tests/WorkspaceSavedExportSnapshotTests.swift|Tests/WorkspaceSavedAutoExportTests.swift|Tests/WorkspaceSavedExportReviewTests.swift|Tests/WorkspaceExportTerminationFlushTests.swift|Tests/RunFinalizationResponsivenessTests.swift|Tests/RuntimeSettlementReviewRegressionTests.swift)
+    Astra/Services/Persistence/SSHConnectionManager.swift|Astra/Services/Persistence/WorkspaceAutoExportWriter.swift|Astra/Services/Persistence/WorkspaceConfigManager.swift|Astra/Services/Persistence/WorkspaceConfigManager+FileExport.swift|Astra/Services/Persistence/WorkspacePersistenceCoordinator.swift|Astra/Services/Persistence/WorkspacePersistenceWork.swift|Astra/Services/Persistence/WorkspaceSavedAutoExport.swift|Astra/Services/Persistence/WorkspaceSavedExportSnapshot.swift|Astra/Services/Persistence/WorkspaceExportFileIO.swift|Astra/Services/Persistence/WorkspaceExportChangeScope.swift|Astra/Services/Persistence/WorkspaceSavedExportLease.swift|Astra/Services/Persistence/WorkspaceSnapshotDirectory.swift|Tests/WorkspaceSavedExportPendingTests.swift|Tests/WorkspaceSavedExportObserverLifetimeTests.swift|Tests/WorkspaceSavedExportReplacementTests.swift|Tests/WorkspaceSnapshotDirectoryTests.swift|Tests/WorkspaceSavedExportSnapshotTests.swift|Tests/WorkspaceSavedAutoExportTests.swift|Tests/WorkspaceSavedExportReviewTests.swift|Tests/WorkspaceExportTerminationFlushTests.swift|Tests/RunFinalizationResponsivenessTests.swift|Tests/RuntimeSettlementReviewRegressionTests.swift)
       add_target "RuntimeSettlementReviewRegressionTests"
       add_target "WorkspaceSavedAutoExportTests"
       add_target "WorkspaceSavedExportSnapshotTests"
       add_target "WorkspaceSavedExportReviewTests"
       add_target "WorkspaceSavedExportPendingTests"
+      add_target "WorkspaceSavedExportObserverLifetimeTests"
       add_target "WorkspaceSavedExportReplacementTests"
       add_target "WorkspaceSnapshotDirectoryTests"
       add_target "WorkspaceExportTerminationFlushTests"
@@ -498,6 +508,7 @@ target_for_path() {
       add_target "WorkspaceSavedExportSnapshotTests"
       add_target "WorkspaceSavedExportReviewTests"
       add_target "WorkspaceSavedExportPendingTests"
+      add_target "WorkspaceSavedExportObserverLifetimeTests"
       add_target "WorkspaceSavedExportReplacementTests"
       add_target "WorkspaceSnapshotDirectoryTests"
       add_target "WorkspaceExportTerminationFlushTests"

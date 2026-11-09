@@ -273,15 +273,16 @@ final class ASTRAAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let runtimeController,
-              Self.requiresTerminationDrain(for: runtimeController.taskQueue) else {
+        let needsRuntimeDrain = runtimeController.map { Self.requiresTerminationDrain(for: $0.taskQueue) } ?? false
+        guard needsRuntimeDrain || TaskForkCreationCoordinator.hasActiveForks else {
             prepareForImmediateTermination()
             return .terminateNow
         }
         guard !isDrainingForTermination else { return .terminateLater }
         isDrainingForTermination = true
         Task { @MainActor in
-            let cancellationIsDurable = await runtimeController.shutdown()
+            await TaskForkCreationCoordinator.cancelAndDrain()
+            let cancellationIsDurable = await runtimeController?.shutdown() ?? true
             if !cancellationIsDurable { self.isDrainingForTermination = false }
             if cancellationIsDurable { self.prepareForImmediateTermination() }
             sender.reply(toApplicationShouldTerminate: cancellationIsDurable)

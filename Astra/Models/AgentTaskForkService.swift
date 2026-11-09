@@ -63,6 +63,8 @@ public enum AgentTaskForkError: LocalizedError, Equatable {
     }
 }
 
+/// Synchronous graph construction on the caller-owned context executor. UI callers
+/// must use TaskForkCreationCoordinator.create, never share models across actors.
 public enum AgentTaskForkService {
     private struct ForkManifestEventPayload: Encodable {
         public var sourceTaskID: String
@@ -72,7 +74,6 @@ public enum AgentTaskForkService {
         public var forkMode: String
     }
 
-    @MainActor
     public static func fork(
         from source: AgentTask,
         upToRun targetRun: TaskRun,
@@ -186,14 +187,21 @@ public enum AgentTaskForkService {
         let copiedRunIDs = runsToFork.map(\.id)
         let copiedRunIDSet = Set(copiedRunIDs)
         let cutoffDate = targetRun.completedAt ?? targetRun.startedAt
-        let eventsToFork = source.events
+        let selectedEvents = prefetchedEvents(for: source)
             .filter { event in
                 if let runID = event.run?.id {
                     return copiedRunIDSet.contains(runID)
                 }
                 return event.timestamp <= cutoffDate
             }
-            .sorted(by: eventOrdering)
+        // Capture ordering values once. SwiftData property reads inside
+        // the sort comparator otherwise multiply with history size.
+        let orderingFacts: [(event: TaskEvent, timestamp: Date, id: String)] = selectedEvents.map {
+            (event: $0, timestamp: $0.timestamp, id: $0.id.uuidString)
+        }
+        let eventsToFork = orderingFacts.sorted {
+            $0.timestamp == $1.timestamp ? $0.id < $1.id : $0.timestamp < $1.timestamp
+        }.map { $0.event }
         // The ledger trusts only user-authored turns, including plan-mode chat.
         let attachments = deduplicatedPaths(
             TaskAttachmentLedger.entries(in: eventsToFork.map(TaskAttachmentLedger.EventFacts.init)).map(\.path)
@@ -343,15 +351,33 @@ public enum AgentTaskForkService {
             ))
         }
 
+        // Register new models without links into the growing graph. Inserting
+        // linked children (or inserting the complete transient graph) makes
+        // SwiftData rebuild inverse relationships repeatedly on the main actor.
+        // Keep the constructors above, including their redaction/session rules.
+        let copiedEventRuns = copiedEvents.map(\.run)
+        for event in copiedEvents {
+            event.task = nil
+            event.run = nil
+        }
+        for run in copiedRuns { run.task = nil }
         context.insert(forked)
         copiedRuns.forEach(context.insert)
         copiedEvents.forEach(context.insert)
+        forked.runs = copiedRuns
+        for (event, run) in zip(copiedEvents, copiedEventRuns) { event.run = run }
+        forked.events = copiedEvents
         return forked
     }
 
-    private static func eventOrdering(_ lhs: TaskEvent, _ rhs: TaskEvent) -> Bool {
-        if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
-        return lhs.id.uuidString < rhs.id.uuidString
+    private static func prefetchedEvents(for task: AgentTask) -> [TaskEvent] {
+        guard let context = task.modelContext else { return task.events }
+        let taskID = task.id
+        let events = try? context.fetch(FetchDescriptor<TaskEvent>(predicate: #Predicate { $0.task?.id == taskID }))
+        // Hydrate scalar fields together instead of faulting each history row.
+        // Relationships still decide membership, including pending edits and
+        // imported tasks that happen to share a UUID.
+        return withExtendedLifetime(events) { task.events }
     }
 
     /// Points each copied attachment record at the fork's copy of its message

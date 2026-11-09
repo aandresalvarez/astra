@@ -10,6 +10,24 @@ struct PendingTaskForkRequest: Identifiable {
 }
 
 extension TaskMainView {
+    @ViewBuilder
+    var forkBanners: some View {
+        if isCreatingFork {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Creating fork… You can keep browsing.")
+                    .font(Stanford.caption(12))
+            }
+            .padding(.horizontal, 14)
+            .accessibilityIdentifier("task.fork.progress")
+        }
+
+        if task.isForked {
+            forkContextBanner
+                .padding(.horizontal, 14)
+        }
+    }
+
     var forkContextBanner: some View {
         VStack(alignment: .leading, spacing: 4) {
             Label(
@@ -62,7 +80,12 @@ extension TaskMainView {
         )
     }
 
+    var isCreatingFork: Bool {
+        TaskForkCreationCoordinator.shared.activeSources.contains(task.persistentModelID)
+    }
+
     func presentForkConfirmation(from run: TaskRunSnapshot) {
+        guard !isCreatingFork else { return }
         let sortedRuns = task.runs.sorted {
             if $0.startedAt != $1.startedAt { return $0.startedAt < $1.startedAt }
             return $0.id.uuidString < $1.id.uuidString
@@ -83,17 +106,24 @@ extension TaskMainView {
             forkCreationError = AgentTaskForkError.targetRunMissing.localizedDescription
             return
         }
-        do {
-            let forked = try TaskForkCreationCoordinator.create(
-                source: task,
-                targetRun: sourceRun,
-                mode: mode,
-                policy: policy,
-                modelContext: modelContext
-            )
-            onForkTask?(forked)
-        } catch {
-            forkCreationError = error.localizedDescription
+        guard !isCreatingFork else { return }
+        Task { @MainActor in
+            do {
+                let forked = try await TaskForkCreationCoordinator.create(
+                    source: task,
+                    targetRun: sourceRun,
+                    mode: mode,
+                    policy: policy,
+                    modelContext: modelContext
+                )
+                // A completed background command must not steal selection from
+                // a workspace/task the user navigated to while it was running.
+                if isForkSourceVisible { onForkTask?(forked) }
+            } catch is CancellationError {
+                // Quit cancelled a fork before its durable commit.
+            } catch {
+                forkCreationError = error.localizedDescription
+            }
         }
     }
 }

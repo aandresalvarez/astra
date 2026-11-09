@@ -31,7 +31,7 @@ public struct TaskForkStateInitializationResult: Sendable {
     }
 }
 
-@MainActor
+// Value-only transition: safe on the executor owning the new fork context.
 public protocol TaskForkStateInitializing: Sendable {
     /// `statusRawValue` is `forked.status.rawValue` at the point of the call
     /// (always `.draft` in practice, since `forked` was just constructed).
