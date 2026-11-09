@@ -143,6 +143,23 @@ struct TaskForkResponsiveTests {
         #expect(try reader.fetchCount(FetchDescriptor<AgentTask>()) == 2)
     }
 
+    @Test("Fixture cleanup drains its own pending export without consuming another workspace's work")
+    func fixtureCleanupKeepsOtherPendingExports() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let neighbor = try Fixture()
+        defer { neighbor.remove() }
+        for owner in [fixture, neighbor] {
+            WorkspacePersistenceCoordinator.scheduleAutoExport(workspace: owner.workspace,
+                modelContext: owner.context, delayNanoseconds: 60_000_000_000)
+        }
+        #expect(WorkspacePersistenceCoordinator.pendingExportWorkspaceIDs.contains(fixture.workspace.id))
+        #expect(WorkspacePersistenceCoordinator.pendingExportWorkspaceIDs.contains(neighbor.workspace.id))
+        fixture.remove()
+        #expect(!WorkspacePersistenceCoordinator.pendingExportWorkspaceIDs.contains(fixture.workspace.id))
+        #expect(WorkspacePersistenceCoordinator.pendingExportWorkspaceIDs.contains(neighbor.workspace.id))
+    }
+
     private func create(_ fixture: Fixture) async throws -> AgentTask {
         try await TaskForkCreationCoordinator.create(
             source: fixture.source, targetRun: fixture.target,
@@ -238,6 +255,12 @@ struct TaskForkResponsiveTests {
         }
 
         func remove() {
+            // Retiring the gate alone does not remove the coordinator's
+            // pending obligation. Drain this fixture before deleting its store
+            // so a later termination test cannot consume its leftover export.
+            WorkspacePersistenceCoordinator.flushPendingExportSynchronously(
+                workspaceID: workspace.id, modelContext: context)
+            #expect(!WorkspacePersistenceCoordinator.pendingExportWorkspaceIDs.contains(workspace.id))
             WorkspaceAutoExportGate.shared.retire(workspaceID: workspace.id.uuidString)
             try? FileManager.default.removeItem(at: root)
         }
