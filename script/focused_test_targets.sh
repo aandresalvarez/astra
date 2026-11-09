@@ -20,6 +20,12 @@ target_for_path() {
   local path="$1"
 
   case "$path" in
+    Astra/Services/Persistence/TaskArtifactPersistenceService.swift|Tests/TaskArtifactPersistenceServiceTests.swift|Tests/TaskArtifactBatchPersistenceTests.swift|Tests/TaskArtifactBatchScalingTests.swift)
+      add_target "TaskArtifactPersistenceServiceTests|TaskArtifactBatchPersistenceTests|TaskArtifactBatchScalingTests|TaskDeliverableArtifactScanCostTests"
+      ;;
+  esac
+
+  case "$path" in
     Astra/Models/AgentTaskForkService.swift|Astra/Services/Tasks/TaskForkPolicyService.swift|Astra/Services/Tasks/TaskForkCreationCoordinator.swift|Tests/AgentTaskForkServiceTests.swift|Tests/TaskForkPolicyServiceTests.swift|Tests/TaskForkBatchPersistenceTests.swift|Tests/TaskForkResponsiveTests.swift|Astra/Services/Persistence/TaskForkSavedStore.swift|ASTRACore/TaskForkLifecycleSeams.swift|Astra/Views/TaskMainView+Forking.swift)
       add_target "AgentTaskForkServiceTests|TaskForkPolicyServiceTests|TaskForkBatchPersistenceTests|TaskForkResponsiveTests"
       ;;

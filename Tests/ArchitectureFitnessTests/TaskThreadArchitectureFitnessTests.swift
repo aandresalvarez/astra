@@ -524,10 +524,10 @@ struct TaskThreadArchitectureFitnessTests {
         #expect(observers.contains("artifactsRevision &+= 1"))
         #expect(observers.contains("artifactsRevision: artifactsRevision"))
 
-        // Both entry points announce, and rows are only ever inserted from
-        // them: two definitions of `insertArtifact` and three calls.
+        // Both entry points announce. Single-file writes use one helper;
+        // reconciliation attaches its new rows in one relationship update.
         #expect(service.components(separatedBy: "TaskArtifactChangeNotifier.post(taskID: task.id)").count - 1 == 2)
-        #expect(service.components(separatedBy: "insertArtifact(").count - 1 == 5)
+        #expect(service.components(separatedBy: "insertArtifact(").count - 1 == 2)
 
         // Outside the service, artifacts are only built for tasks no view has
         // open yet: an import, a detached launch copy, a scratch fork manifest.

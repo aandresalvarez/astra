@@ -12,7 +12,7 @@ public final class Artifact {
     public var version: Int
     public var createdAt: Date
 
-    public init(task: AgentTask, type: String, path: String, content: String? = nil, version: Int = 1) {
+    public init(task: AgentTask?, type: String, path: String, content: String? = nil, version: Int = 1) {
         self.id = UUID()
         self.task = task
         self.type = ArtifactKind(rawValue: type).rawValue
