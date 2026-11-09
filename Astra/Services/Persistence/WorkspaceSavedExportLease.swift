@@ -6,6 +6,7 @@ import ASTRAModels
 /// of how many workspaces have projections queued. Only didSave retires the
 /// affected tickets; failed saves cannot discard the last committed mirror.
 final class WorkspaceSavedExportLease: @unchecked Sendable {
+    @TaskLocal static var notifications = NotificationCenter.default
     private let observation: SavedExportContextObservation
     private let id: UUID
     let readTicket: WorkspaceAutoExportGate.ReadTicket
@@ -79,7 +80,10 @@ private final class SavedExportContextObservation: @unchecked Sendable {
     private var affected: Set<UUID>?
     private var withdrawn: Set<UUID>?
     private var observers: [NSObjectProtocol] = []
-    @MainActor private weak var context: ModelContext?
+    private let notifications: NotificationCenter
+    // Off-actor callers may only load this weak reference to compare identity.
+    // All access to the context's model state remains on MainActor.
+    private weak var context: ModelContext?
 
     @MainActor
     static func shared(for context: ModelContext) -> SavedExportContextObservation {
@@ -96,16 +100,17 @@ private final class SavedExportContextObservation: @unchecked Sendable {
     @MainActor
     private init(_ context: ModelContext) {
         self.context = context
-        // Reference identity is the isolation boundary even when a bridged
-        // object matches NotificationCenter's filter. Check before assuming
-        // the source context's executor or retiring any of its projections.
-        let contextID = ObjectIdentifier(context)
-        observers.append(NotificationCenter.default.addObserver(forName: ModelContext.willSave,
+        notifications = WorkspaceSavedExportLease.notifications
+        // NotificationCenter may already have copied a callback when its
+        // observer disappears. A cached ObjectIdentifier can also match a new
+        // context allocated at a dead source's address. Check both live owners
+        // before assuming the executor or retiring any projections.
+        observers.append(notifications.addObserver(forName: ModelContext.willSave,
             object: context, queue: nil) { [weak self] notification in
-            guard let source = notification.object as? ModelContext,
-                  ObjectIdentifier(source) == contextID else { return }
+            guard let self, let context = self.context,
+                  let source = notification.object as? ModelContext,
+                  source === context else { return }
             MainActor.assumeIsolated {
-                guard let self, let context = self.context else { return }
                 let pending = self.lock.withLock {
                     self.entries.filter { WorkspaceAutoExportGate.shared.isCurrent($0.value.ticket)
                         || ($0.value.sealed && WorkspaceAutoExportGate.shared.isSealedCurrent($0.value.ticket))
@@ -130,11 +135,11 @@ private final class SavedExportContextObservation: @unchecked Sendable {
                 self.lock.withLock { self.affected = affected; self.withdrawn = withdrawn }
             }
         })
-        observers.append(NotificationCenter.default.addObserver(forName: ModelContext.didSave,
+        observers.append(notifications.addObserver(forName: ModelContext.didSave,
             object: context, queue: nil) { [weak self] notification in
-            guard let source = notification.object as? ModelContext,
-                  ObjectIdentifier(source) == contextID else { return }
-            guard let self else { return }
+            guard let self, let context = self.context,
+                  let source = notification.object as? ModelContext,
+                  source === context else { return }
             let tickets = self.lock.withLock {
                 let reads = self.entries.compactMap { id, entry in
                     (self.affected?.contains(id) ?? true) ? entry.ticket : nil
@@ -170,5 +175,5 @@ private final class SavedExportContextObservation: @unchecked Sendable {
 
     func remove(_ id: UUID) { _ = lock.withLock { entries.removeValue(forKey: id) } }
 
-    deinit { for observer in observers { NotificationCenter.default.removeObserver(observer) } }
+    deinit { for observer in observers { notifications.removeObserver(observer) } }
 }
