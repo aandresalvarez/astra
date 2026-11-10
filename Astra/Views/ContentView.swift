@@ -60,7 +60,7 @@ struct ContentView: View {
     @State private var editingSSHConnection: SSHConnection?
     @State private var sshReloadTrigger = 0
     @State private var newWorkspaceDraft = NewWorkspaceDraft()
-    @State private var isShowingWorkspaceCapabilityEnableFailure = false
+    @State private var workspaceCapabilityNotice: WorkspaceCapabilityNotice?
     @StateObject private var browserSessionStore = ShelfBrowserSessionStore()
     @StateObject private var markdownSessionStore = ShelfMarkdownSessionStore()
     @StateObject private var querySession = ShelfQuerySession()
@@ -1138,8 +1138,9 @@ struct ContentView: View {
                 },
                 onCreate: finalizeNewWorkspace
             )
+            .workspaceCredentialRecoveryAlert($workspaceCapabilityNotice, retry: finalizeNewWorkspace)
         }
-        .workspaceCapabilityEnableFailureAlert(isPresented: $isShowingWorkspaceCapabilityEnableFailure)
+        .workspaceCapabilityEnableFailureAlert($workspaceCapabilityNotice)
         .taskDeletionFailureAlert($taskDeletionFailure)
         .workspaceDeletionFailureAlert($workspaceDeletionFailure)
         .alert(item: $linkedScheduleWarning) { warning in
@@ -2377,10 +2378,8 @@ struct ContentView: View {
 
     private func finalizeNewWorkspace() {
         let outcome = createWorkspace(from: newWorkspaceDraft, source: "workspace_creation")
-        guard outcome != .notCreated else { return }
-        if outcome == .createdWithCapabilityIssues {
-            isShowingWorkspaceCapabilityEnableFailure = true
-        }
+        workspaceCapabilityNotice = WorkspaceCapabilityNotice(outcome)
+        guard outcome.didCreate else { return }
         showingNewWorkspace = false
         resetNewWorkspaceDraft()
     }
@@ -2392,9 +2391,9 @@ struct ContentView: View {
 
     @discardableResult
     private func createWorkspace(from draft: NewWorkspaceDraft, source: String) -> WorkspaceCreationOutcome {
-        guard let result = workspaceActionCoordinator.createWorkspace(from: draft, source: source) else { return .notCreated }
-        applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.create(workspace: result.workspace))
-        return result.hasCapabilityEnableFailures ? .createdWithCapabilityIssues : .created
+        let attempt = workspaceActionCoordinator.attemptWorkspaceCreation(from: draft, source: source)
+        if let workspace = attempt.workspace { applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.create(workspace: workspace)) }
+        return attempt.outcome
     }
 
     private func deleteWorkspace(_ ws: Workspace) {

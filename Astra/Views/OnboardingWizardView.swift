@@ -291,15 +291,6 @@ enum OnboardingCapabilitySetup {
 ///   1. Permissions — review local Keychain and workspace storage access
 ///   2. Workspace — create the first workspace and quick-start capabilities
 ///   3. Ready — open the configured workspace
-enum WorkspaceCreationOutcome: Equatable {
-    case notCreated
-    case created
-    /// The workspace itself was created, but at least one quick-start
-    /// capability's credential could not be saved (e.g. a denied Keychain
-    /// prompt) — surfaced so the wizard doesn't silently report success.
-    case createdWithCapabilityIssues
-}
-
 struct OnboardingWizardView: View {
     /// Bound to the enclosing gate (see `AppStorageKeys.hasCompletedOnboarding`).
     /// Toggling true dismisses the wizard.
@@ -354,7 +345,7 @@ struct OnboardingWizardView: View {
     @State private var workspaceValidationIssues: [String] = []
     @State private var workspaceValidationWarnings: [String] = []
     @State private var isShowingWorkspaceValidationWarning = false
-    @State private var isShowingCapabilityEnableFailure = false
+    @State private var capabilityNotice: WorkspaceCapabilityNotice?
     @State private var createdWorkspaceName: String?
     @StateObject private var macOSPermissions = MacOSPermissionsViewModel()
 
@@ -389,11 +380,8 @@ struct OnboardingWizardView: View {
         } message: {
             Text(workspaceValidationWarnings.prefix(3).joined(separator: "\n"))
         }
-        .alert("Some credentials couldn't be saved", isPresented: $isShowingCapabilityEnableFailure) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text("Your workspace was created, but one or more capability credentials could not be saved to Keychain. Add them later in Configure > Connectors.")
-        }
+        .workspaceCapabilityEnableFailureAlert($capabilityNotice)
+        .workspaceCredentialRecoveryAlert($capabilityNotice, retry: createFirstWorkspaceAndAdvance)
     }
 
     // MARK: - Step Content Router
@@ -654,11 +642,9 @@ struct OnboardingWizardView: View {
     private func createFirstWorkspaceAndAdvance() {
         let workspaceName = workspaceDraft.trimmedName
         let outcome = onCreateWorkspace(workspaceDraft)
-        guard outcome != .notCreated else { return }
+        capabilityNotice = WorkspaceCapabilityNotice(outcome)
+        guard outcome.didCreate else { return }
         createdWorkspaceName = workspaceName
-        if outcome == .createdWithCapabilityIssues {
-            isShowingCapabilityEnableFailure = true
-        }
         if let next = Step(rawValue: currentStep.rawValue + 1) {
             withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { currentStep = next }
         }

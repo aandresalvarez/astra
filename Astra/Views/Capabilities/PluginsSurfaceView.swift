@@ -32,6 +32,9 @@ struct PluginsSurfaceView: View {
     @State private var prerequisiteScan = PrerequisiteScanSnapshot()
     private var statuses: [String: HealthStatus] { prerequisiteScan.statuses }
     @State private var errorMessage: String?
+    /// The Add the account credential journal refused, and the error it is
+    /// offered beside: any other message withdraws the offer.
+    @State private var credentialRecoveryOffer: (package: PluginPackage, message: String)?
     @State private var confirming: PluginsSurfaceConfirmation?
     @StateObject private var repairs = PluginRepairCoordinator()
     @State private var showCreateWizard = false
@@ -138,6 +141,15 @@ struct PluginsSurfaceView: View {
                 Text(errorMessage)
                     .font(Stanford.caption(12))
                     .foregroundStyle(Stanford.statusError)
+                if let offer = credentialRecoveryOffer, offer.message == errorMessage {
+                    HStack(spacing: 8) {
+                        Button("Recover and add \(offer.package.name)") { recoverCredentialEditing(thenAdd: offer.package) }
+                            .controlSize(.small)
+                        Text("Existing secrets will be kept.")
+                            .font(Stanford.caption(12))
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
             PluginStateRecoverySection(onChanged: { errorMessage = nil; sourceCoordinator.reload(); onCatalogChanged() }, onError: { errorMessage = $0 })
             let model = surface
@@ -595,7 +607,20 @@ struct PluginsSurfaceView: View {
             onCatalogChanged()
             refreshStatuses()
         } catch {
-            errorMessage = "Couldn't add \(package.name): \(error.localizedDescription)"
+            let message = "Couldn't add \(package.name): \(error.localizedDescription)"
+            errorMessage = message
+            let service = CapabilityCatalogActionService()
+            credentialRecoveryOffer = service.offersCredentialEditingRecovery(after: error, modelContext: modelContext)
+                ? (package, message) : nil
+        }
+    }
+
+    private func recoverCredentialEditing(thenAdd package: PluginPackage) {
+        do {
+            try CapabilityCatalogActionService().recoverCredentialEditing(modelContext: modelContext)
+            add(package)
+        } catch {
+            errorMessage = "Couldn't recover credential editing: \(error.localizedDescription)"
         }
     }
 

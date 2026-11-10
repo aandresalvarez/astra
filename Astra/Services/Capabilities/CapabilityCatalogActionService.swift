@@ -372,6 +372,25 @@ struct CapabilityCatalogActionService {
         else { for workspaceID in receipt.workspaceIDs { CapabilityCatalogPersistenceEvents.post(.workspace(workspaceID)) } }
     }
 
+    /// Whether the account credential journal refuses this store in a way the
+    /// explicit recovery clears. While it does, no plugin can create an
+    /// account. One small file read: call from an action, never a view body.
+    func credentialEditingNeedsRecovery(modelContext: ModelContext) -> Bool {
+        ConnectorCredentialEditor.canRecoverJournal(modelContext: modelContext)
+    }
+
+    /// Whether a failed Add stopped at that journal, so the surface can offer
+    /// the recovery beside the error instead of naming a button elsewhere.
+    func offersCredentialEditingRecovery(after error: Error, modelContext: ModelContext) -> Bool {
+        error is ConnectorCredentialGenerationJournal.Failure && credentialEditingNeedsRecovery(modelContext: modelContext)
+    }
+
+    /// The person's explicit recovery. It archives the unverifiable journal
+    /// and keeps every secret and account row; see `recoverEditing(lease:)`.
+    func recoverCredentialEditing(modelContext: ModelContext) throws {
+        try ConnectorCredentialEditor.recoverJournal(modelContext: modelContext)
+    }
+
     /// The row's Update: brings every workspace's activations of `package`
     /// to its definition in the library, releasing what it dropped. Only
     /// the definition read back from the library is reconciled against,
