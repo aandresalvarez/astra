@@ -178,7 +178,26 @@ struct ConnectorEditorView: View {
         connector.missingCredentialKeys()
     }
 
+    /// Whether the account this editor shows was deleted. Once that delete is
+    /// saved the row has no context and still answers its plain fields, but
+    /// reading one of its arrays (`credentialKeys`) is a SwiftData fatal
+    /// error: "backing data was detached from a context".
+    static func isGone(_ connector: Connector) -> Bool {
+        connector.modelContext == nil || connector.isDeleted
+    }
+
+    /// Confirming Delete saves the deletion while the confirmation is still
+    /// closing, and that closing animation lays this view out once more before
+    /// the parent has removed it. Nothing of a deleted account is rendered.
     var body: some View {
+        if Self.isGone(connector) {
+            Color.clear
+        } else {
+            editor
+        }
+    }
+
+    private var editor: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 // Identity
