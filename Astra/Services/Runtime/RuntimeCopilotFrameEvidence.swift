@@ -34,6 +34,8 @@ enum RuntimeCopilotFrameEvidence {
         case "session.mcp_servers_loaded": return data["servers"] is [Any] ? .bookkeeping : .uncertain
         case "session.tools_updated": return data["model"] is String ? .bookkeeping : .uncertain
         case "session.auto_mode_resolved": return data["chosenModel"] is String ? .bookkeeping : .uncertain
+        case "session.info": return data["message"] is String ? .bookkeeping : .uncertain
+        case "session.usage_checkpoint": return data["accountingSnapshot"] is [String: Any] ? .bookkeeping : .uncertain
         default: return .uncertain
         }
     }

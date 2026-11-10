@@ -20,7 +20,7 @@ enum RuntimeCopilotFrameMetadata {
             return fields(data, strings: ["content", "messageId", "delivery", "interactionId", "parentAgentTaskId",
                 "transformedContent", "turnId", "source", "agentMode"], booleans: ["isAutopilotContinuation"],
                 special: ["supportedNativeDocumentMimeTypes": stringArray, "nativeDocumentPathFallbackPaths": stringArray,
-                          "causalDependencies": stringArray])
+                          "causalDependencies": stringArray, "responsesReasoning": responsesReasoning])
         case "assistant.turn_start":
             return fields(data, strings: ["turnId", "interactionId", "model", "agentMode"], special: ["parentToolCallId": emptyParent])
         case "assistant.message_start": return fields(data, strings: ["messageId", "phase"])
@@ -34,15 +34,17 @@ enum RuntimeCopilotFrameMetadata {
         case "model.call_failure":
             return fields(data, strings: ["errorMessage", "errorCode", "errorType", "message", "model", "apiCallId"],
                 numbers: ["statusCode", "durationMs"], special: ["parentToolCallId": emptyParent])
-        case "model.call_final_result": return fields(data, strings: ["model", "result"])
+        case "model.call_final_result": return fields(data, strings: ["model", "result"], booleans: ["isByok"])
         case "session.error":
             return fields(data, strings: ["message", "errorCode", "errorType"], numbers: ["statusCode"])
         case "session.shutdown": return shutdown(data)
-        case "session.mcp_server_status_changed": return fields(data, strings: ["serverName", "status"])
+        case "session.mcp_server_status_changed": return fields(data, strings: ["serverName", "status", "configSource"])
         case "session.mcp_server_tools_loaded": return fields(data, strings: ["serverName"], numbers: ["toolCount"])
         case "session.mcp_servers_loaded": return fields(data, special: ["servers": servers])
         case "session.tools_updated": return fields(data, strings: ["model"])
-        case "session.auto_mode_resolved": return fields(data, strings: ["chosenModel"])
+        case "session.auto_mode_resolved": return autoModeResolved(data)
+        case "session.info": return configurationNotice(data)
+        case "session.usage_checkpoint": return usageCheckpoint(data)
         default: return false
         }
     }
@@ -84,11 +86,14 @@ enum RuntimeCopilotFrameMetadata {
         guard let servers = value as? [[String: Any]] else { return false }
         return servers.allSatisfy {
             $0["name"] is String && $0["status"] is String
-                && fields($0, strings: ["name", "status", "source"])
+                && fields($0, strings: ["name", "status", "source", "displayName"], special: ["serverMetadata": { value in
+                    guard let metadata = value as? [String: Any] else { return false }
+                    return fields(metadata, strings: ["instructions"])
+                }])
         }
     }
 
-    private static let tokenNumbers: [String] = ["inputTokens", "input_tokens", "promptTokens", "prompt_tokens",
+    static let tokenNumbers: [String] = ["inputTokens", "input_tokens", "promptTokens", "prompt_tokens",
         "outputTokens", "output_tokens", "completionTokens", "completion_tokens", "cacheReadTokens", "cacheReadInputTokens",
         "cache_read_input_tokens", "cacheWriteTokens", "cacheCreationInputTokens", "cache_creation_input_tokens",
         "reasoningTokens", "costUSD", "cost_usd", "total_cost_usd"]
@@ -100,23 +105,25 @@ enum RuntimeCopilotFrameMetadata {
             special: ["modelMetrics": modelMetrics, "tokenDetails": tokenDetails, "codeChanges": noCodeChanges])
     }
 
-    private static func modelMetrics(_ value: Any) -> Bool {
+    static func modelMetrics(_ value: Any) -> Bool {
         guard let models = value as? [String: Any] else { return false }
-        return models.values.allSatisfy { value in
-            guard let metric = value as? [String: Any] else { return false }
-            return fields(metric, numbers: tokenNumbers + ["totalNanoAiu"], special: [
-                "usage": { value in
-                    guard let usage = value as? [String: Any] else { return false }
-                    return fields(usage, numbers: tokenNumbers)
-                },
-                "requests": { value in
-                    guard let requests = value as? [String: Any] else { return false }
-                    return fields(requests, numbers: ["count", "cost"])
-                }, "tokenDetails": tokenDetails])
-        }
+        return models.values.allSatisfy { metric($0) }
     }
 
-    private static func tokenDetails(_ value: Any) -> Bool {
+    static func metric(_ value: Any, strings: [String] = []) -> Bool {
+        guard let metric = value as? [String: Any] else { return false }
+        return fields(metric, strings: strings, numbers: tokenNumbers + ["totalNanoAiu"], special: [
+            "usage": { value in
+                guard let usage = value as? [String: Any] else { return false }
+                return fields(usage, numbers: tokenNumbers)
+            },
+            "requests": { value in
+                guard let requests = value as? [String: Any] else { return false }
+                return fields(requests, numbers: ["count", "cost"])
+            }, "tokenDetails": tokenDetails])
+    }
+
+    static func tokenDetails(_ value: Any) -> Bool {
         guard let details = value as? [String: Any] else { return false }
         return details.values.allSatisfy { value in
             guard let entry = value as? [String: Any], entry["tokenCount"] != nil else { return false }
@@ -133,17 +140,17 @@ enum RuntimeCopilotFrameMetadata {
     }
 
     private static func emptyParent(_ value: Any) -> Bool { value is NSNull || (value as? String)?.isEmpty == true }
-    private static func stringArray(_ value: Any) -> Bool { value is [String] }
+    static func stringArray(_ value: Any) -> Bool { value is [String] }
     private static func boolean(_ value: Any) -> Bool {
         guard let number = value as? NSNumber else { return false }
         return CFGetTypeID(number) == CFBooleanGetTypeID()
     }
-    private static func number(_ value: Any) -> Bool {
+    static func number(_ value: Any) -> Bool {
         guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return false }
         return number.doubleValue.isFinite && number.doubleValue >= 0
     }
 
-    private static func fields(_ object: [String: Any], strings: [String] = [], numbers: [String] = [],
+    static func fields(_ object: [String: Any], strings: [String] = [], numbers: [String] = [],
                                booleans: [String] = [], special: [String: (Any) -> Bool] = [:]) -> Bool {
         let allowed = Set(strings).union(numbers).union(booleans).union(special.keys)
         guard Set(object.keys).isSubset(of: allowed) else { return false }
