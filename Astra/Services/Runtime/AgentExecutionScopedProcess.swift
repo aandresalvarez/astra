@@ -38,6 +38,8 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
     private var status: Int32 = 0
     private var settlementScope: RuntimeSettlementExecutionScope?
     private let settlementChildID = UUID()
+    /// Inherited by everything this launch starts; see RuntimeExecutionLocalSurvivors.
+    let localScope = UUID().uuidString
 
     let stdoutPipe = Pipe()
     let stderrPipe = Pipe()
@@ -72,14 +74,22 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
     /// Captured at waitpid, before a late cancellation can change stopRequested.
     var naturalSuccessfulExit: Bool { lock.withLock { reapedNaturallyWithSuccess } }
 
-    func stopProof(executionID: UUID, toolsStopped: Bool, remoteWorkExcluded: Bool, managedSSHOnly: Bool = false) -> RuntimeExecutionStopProof? {
-        lock.withLock {
+    /// `observingLocalSurvivors` lets the process table answer what the
+    /// transcript could not: whether anything a tool started is still alive.
+    /// The caller passes it only where local processes are the whole question
+    /// (host placement, no remote route, stdout closed, no helper activity).
+    func stopProof(executionID: UUID, toolsStopped: Bool, remoteWorkExcluded: Bool, managedSSHOnly: Bool = false,
+                   observingLocalSurvivors: Bool = false) -> RuntimeExecutionStopProof? {
+        let proof: RuntimeExecutionStopProof? = lock.withLock {
             guard let identity = launchIdentity else { return nil }
             let empty = processGroupID > 0 && kill(-processGroupID, 0) == -1 && errno == ESRCH
             return .init(executionID: executionID, process: identity, reaped: reapedSuccessfully && !running,
                 processGroupEmpty: empty, toolsStopped: toolsStopped, remoteWorkExcluded: remoteWorkExcluded,
                 capturedAt: Date(), managedSSHOnly: managedSSHOnly ? true : nil)
         }
+        guard let proof, observingLocalSurvivors, !proof.toolsStopped, proof.reaped, proof.processGroupEmpty else { return proof }
+        return proof.observing(RuntimeExecutionLocalSurvivors.observeSettled(.init(scope: localScope,
+            root: RuntimeExecutionLocalSurvivors.resolved(currentDirectory), provider: proof.process, ended: proof.capturedAt)))
     }
 
     init(
@@ -198,7 +208,8 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
         }
 
         var argv = makeCStringArray([executablePath] + arguments)
-        var envp = makeCStringArray(environment.map { "\($0.key)=\($0.value)" }.sorted())
+        let scoped = environment.merging([RuntimeExecutionLocalSurvivors.environmentKey: localScope]) { _, scope in scope }
+        var envp = makeCStringArray(scoped.map { "\($0.key)=\($0.value)" }.sorted())
         defer {
             freeCStringArray(argv)
             freeCStringArray(envp)
