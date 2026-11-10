@@ -41,7 +41,21 @@ struct RuntimeExecutionStopProof: Codable, Equatable, Sendable {
     var managedSSHOnly: Bool? = nil
     /// A later local observation for a new human turn. Replacement still requires the original proof.
     var groupObservedEmptyAt: Date? = nil
+    /// Present when the transcript could not show that no tool ran and the
+    /// process table was asked instead. `toolsStopped` then records its answer.
+    var localSurvivors: RuntimeLocalSurvivorObservation? = nil
     var permitsReplacement: Bool { reaped && processGroupEmpty && toolsStopped && remoteWorkExcluded }
+
+    /// Tools that ran are stopped when nothing they started is alive. Only a
+    /// reaped provider with an empty group can be answered this way.
+    func observing(_ observation: RuntimeLocalSurvivorObservation) -> Self {
+        guard !toolsStopped, reaped, processGroupEmpty else { return self }
+        var result = Self(executionID: executionID, process: process, reaped: reaped, processGroupEmpty: processGroupEmpty,
+            toolsStopped: observation.clean, remoteWorkExcluded: remoteWorkExcluded, capturedAt: capturedAt,
+            managedSSHOnly: managedSSHOnly, groupObservedEmptyAt: groupObservedEmptyAt)
+        result.localSurvivors = observation
+        return result
+    }
 }
 
 struct RuntimeRecoveryLimits: Codable, Equatable, Sendable {

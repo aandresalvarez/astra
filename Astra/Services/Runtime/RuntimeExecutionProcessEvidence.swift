@@ -12,6 +12,9 @@ final class RuntimeExecutionProcessEvidence: @unchecked Sendable {
     private var managedHelper: RuntimeManagedSSHHelperEvidence?
     private var terminalFrameSeen = false
     private var openCodeStopSeen = false
+    /// Uncertainty ASTRA raised itself: invalid accounting, an unverified
+    /// native session, a stream that never closed. Not a question about local processes.
+    private var ownedUncertainty = false
     /// Log-only: the first inputs that left cleanup unproven. Not evidence.
     private var uncertaintyCauses: [String] = []
 
@@ -29,11 +32,11 @@ final class RuntimeExecutionProcessEvidence: @unchecked Sendable {
     /// Explicit ASTRA-owned events (including interactive permission tools).
     func observe(_ event: ParsedEvent) {
         lock.withLock {
-            if Self.uncertain(event) { toolsOrUnknownExecution = true; unaccountedExecution = true; note("owned_event") }
+            if Self.uncertain(event) { toolsOrUnknownExecution = true; unaccountedExecution = true; ownedUncertainty = true; note("owned_event") }
             switch event {
             case .result: terminalFrameSeen = true
             case .text, .thinking, .systemInit: terminalFrameSeen = false; openCodeStopSeen = false
-            case .control: toolsOrUnknownExecution = true; unaccountedExecution = true; note("owned_control_event")
+            case .control: toolsOrUnknownExecution = true; unaccountedExecution = true; ownedUncertainty = true; note("owned_control_event")
             default: break
             }
         }
@@ -97,6 +100,7 @@ final class RuntimeExecutionProcessEvidence: @unchecked Sendable {
                 toolsOrUnknownExecution = true
                 unaccountedExecution = true
                 terminalFrameSeen = false
+                ownedUncertainty = true
                 note("no_stdout_eof")
             }
             if runtime == .openCodeCLI { terminalFrameSeen = naturally && stdoutEOF && openCodeStopSeen }
@@ -124,6 +128,13 @@ final class RuntimeExecutionProcessEvidence: @unchecked Sendable {
             return uncertaintyCauses + (terminalFrameSeen ? [] : ["no_terminal_frame"])
                 + (brokerActivity ? ["managed_helper_broker_activity"] : [])
         }
+    }
+    /// The provider reported its turn finished and stdout closed; all that is
+    /// unproven is whether tools the stream showed, or frames ASTRA could not
+    /// classify, left local work behind. Only that can be asked of the process
+    /// table. A killed or lost turn, ASTRA's own doubts and remote helper work cannot.
+    var localObservationCanSettle: Bool {
+        lock.withLock { terminalFrameSeen && !ownedUncertainty && managedHelper?.hasBrokerActivity != true }
     }
     var managedSSHOnly: Bool {
         lock.withLock { terminalFrameSeen && toolsOrUnknownExecution && !unaccountedExecution && managedHelper?.fullyAccounted == true }
