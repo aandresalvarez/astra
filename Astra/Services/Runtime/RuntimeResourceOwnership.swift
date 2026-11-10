@@ -7,7 +7,8 @@ import ASTRAModels
 @MainActor
 enum RuntimeResourceOwnership {
     nonisolated static func retainsResources(_ record: RuntimeExecutionOwnerRecord) -> Bool {
-        record.resourcesReleased != true && !record.canRecoverPreparation
+        // A receipt saved before `endedBeforeLaunch` existed never had its release recorded.
+        record.resourcesReleased != true && !record.canRecoverPreparation && !(record.endedBeforeLaunch && record.canReplace)
     }
 
     static func claims(in store: RuntimeExecutionOwnerStore, context: ModelContext? = nil, excluding taskID: UUID? = nil,

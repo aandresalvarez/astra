@@ -203,7 +203,11 @@ final class RuntimeExecutionOwner {
             record.workspaceContinuationRequestID = workspaceAdmission?.authorization.requestID ?? previous?.workspaceContinuationRequestID
             if workspaceAdmission != nil { record.continuingUserRequestID = userRequest?.id }
             record.resourceClaims = claims
-            if continuesOwner, let previous {
+            if continuesOwner, let previous, previous.endedBeforeLaunch {
+                // Nothing to carry forward: retrying an attempt that never
+                // launched must not turn it into history that reserves the workspace.
+                record.continuingUserRequestID = userRequest?.id
+            } else if continuesOwner, let previous {
                 try store.retain(protectedPrevious ?? previous)
                 record.retainedExecutionHead = previous.executionID
                 record.continuingUserRequestID = userRequest?.id

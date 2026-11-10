@@ -129,6 +129,16 @@ struct RuntimeExecutionOwnerRecord: Codable, Equatable, Sendable {
 
     var hasProviderLaunch: Bool { (providerLaunchCount ?? 0) > 0 || providerProcess != nil }
 
+    /// This execution ended with an explicit zero provider launches and holds
+    /// no earlier execution of its own task. Uncertainty it inherited from a
+    /// workspace decision describes other tasks' receipts, which keep their
+    /// own reservations; it started nothing that could need verifying.
+    var endedBeforeLaunch: Bool {
+        state == .notStarted && providerLaunchCount == 0 && providerProcess == nil && stopProof == nil
+            && retainedExecutionHead == nil && sessionVerificationPending != true && pendingSSHJobSetDigest == nil
+            && settlementToolsStopped != false
+    }
+
     /// A legacy "not started" label can follow a fallback that already spent tokens.
     /// Replaying a message or clearing a reader requires explicit zero launches for this run.
     func provesNoProviderLaunch(for run: TaskRun) -> Bool {
@@ -149,7 +159,7 @@ struct RuntimeExecutionOwnerRecord: Codable, Equatable, Sendable {
 
     var canReplace: Bool {
         guard settlementInProgress != true, settlementLocalWorkStopped != false,
-              !hasUnverifiedTools else { return false }
+              !hasUnverifiedTools || endedBeforeLaunch else { return false }
         if state == .notStarted { return true }
         guard state == .stopped || state == .finished,
               let proof = stopProof, proof.executionID == executionID,
