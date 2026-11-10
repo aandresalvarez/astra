@@ -135,7 +135,10 @@ struct RuntimeCopilotFrameMetadataTests {
 
     // MARK: Copilot CLI 1.0.105 stdout captures (shape-only; see the PR that added them)
 
-    static let toolFreeStreams = ["tool-free-1.0.105-auto.jsonl", "tool-free-1.0.105-allow-all.jsonl"]
+    /// The third is ASTRA's autonomous launch shape: `--allow-all` plus an
+    /// attached MCP server that, like `astra_host`, gives no instructions.
+    static let hostControlStream = "tool-free-1.0.105-host-control.jsonl"
+    static let toolFreeStreams = ["tool-free-1.0.105-auto.jsonl", "tool-free-1.0.105-allow-all.jsonl", hostControlStream]
 
     static func stream(_ name: String) throws -> [[String: Any]] {
         let path = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
@@ -212,6 +215,38 @@ struct RuntimeCopilotFrameMetadataTests {
         frames[index] = checkpoint
         let spliced = try Self.evidence(frames)
         #expect(spliced.providerTurnEnded && !spliced.toolsStopped)
+    }
+
+    @Test("A server without instructions reports null; any other non-string value stays uncertain",
+          arguments: ["captured", "number", "boolean", "object", "list", "metadataNull", "displayNameNull", "sourceNull", "statusNull"])
+    func serverWithoutInstructions(shape: String) throws {
+        var frames = try Self.stream(Self.hostControlStream)
+        let index = try #require(frames.firstIndex { $0["type"] as? String == "session.mcp_servers_loaded" })
+        let servers = try #require((frames[index]["data"] as? [String: Any])?["servers"] as? [[String: Any]])
+        // Captured: the attached server has neither `source` nor `displayName`
+        // and a null `instructions`; the built-in one has all three as strings.
+        #expect(servers.count == 2 && servers[0]["displayName"] == nil && servers[0]["source"] == nil)
+        #expect((servers[0]["serverMetadata"] as? [String: Any])?["instructions"] is NSNull)
+        #expect((servers[1]["serverMetadata"] as? [String: Any])?["instructions"] is String)
+        let server = ["data", "servers", "0"]
+        let faults: [String: ([String], Any)] = [
+            "number": (server + ["serverMetadata", "instructions"], 0),
+            "boolean": (server + ["serverMetadata", "instructions"], false),
+            "object": (server + ["serverMetadata", "instructions"], ["command": "sleep 10 &"]),
+            "list": (server + ["serverMetadata", "instructions"], ["fixture"]),
+            "metadataNull": (server + ["serverMetadata"], NSNull()),
+            "displayNameNull": (server + ["displayName"], NSNull()),
+            "sourceNull": (server + ["source"], NSNull()),
+            "statusNull": (server + ["status"], NSNull())
+        ]
+        if let (path, replacement) = faults[shape] {
+            frames[index] = try #require(Self.replacing(frames[index], at: path[...], with: replacement) as? [String: Any])
+        }
+        let kind = RuntimeProviderFrameEvidence.classify(frames[index], runtime: .copilotCLI)
+        let evidence = try Self.evidence(frames)
+        #expect(evidence.providerTurnEnded)
+        #expect((kind == .uncertain) == (shape != "captured"))
+        #expect(evidence.toolsStopped == (shape == "captured"))
     }
 
     static let snapshot = ["data", "accountingSnapshot"]

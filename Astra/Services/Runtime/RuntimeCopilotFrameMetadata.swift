@@ -88,7 +88,9 @@ enum RuntimeCopilotFrameMetadata {
             $0["name"] is String && $0["status"] is String
                 && fields($0, strings: ["name", "status", "source", "displayName"], special: ["serverMetadata": { value in
                     guard let metadata = value as? [String: Any] else { return false }
-                    return fields(metadata, strings: ["instructions"])
+                    // A server that gives no instructions reports null: any MCP
+                    // server ASTRA attaches itself (`astra_host`) does.
+                    return fields(metadata, special: ["instructions": { $0 is String || $0 is NSNull }])
                 }])
         }
     }
