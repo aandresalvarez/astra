@@ -1251,6 +1251,13 @@ final class AgentRuntimeProcessRunner {
                     remoteWorkExcluded: remoteWorkExcluded ||
                         (!plan.executionEnvironment.providerRunsInsideContainer && processEvidence.toolsStopped),
                     managedSSHOnly: processEvidence.managedSSHOnly)
+                let cleanupUncertainty = processEvidence.cleanupUncertainty
+                if !cleanupUncertainty.isEmpty {
+                    // Names what kept this run's reservation. Debug level: a run that used tools always has one.
+                    var fields = ["event": "cleanup_unverified", "runtime": plan.runtime.rawValue]
+                    for (index, cause) in cleanupUncertainty.enumerated() { fields["cause_\(index + 1)"] = cause }
+                    AppLogger.audit(.runtimeStreamDebug, category: "Worker", taskID: taskID, fields: fields, level: .debug, fieldMaxLength: 600)
+                }
                 processResult.executionTurnsSpent = max(1, monitor.turnCount)
                 processResult.executionTokensSpent = monitor.recoveryTokensConsumed(estimatedInputTokens: estimatedInputTokens)
                 processResult.executionSecondsSpent = ProcessInfo.processInfo.systemUptime - processStartedAt
