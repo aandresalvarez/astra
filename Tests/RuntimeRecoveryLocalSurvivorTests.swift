@@ -160,7 +160,13 @@ struct RuntimeRecoveryLocalSurvivorTests {
             #expect(proof.reaped && proof.processGroupEmpty && observation.complete)
             if shape == "orphanElsewhere" {
                 // The stated limit: a hidden-environment orphan that left the folder is not seen.
-                #expect(observation.clean && proof.toolsStopped)
+                // Where the kernel does show a system binary's environment (a host without
+                // that protection, as on CI), the scope value finds it instead.
+                if observation.clean {
+                    #expect(proof.toolsStopped)
+                } else {
+                    #expect(observation.survivors.map(\.name) == ["sleep"] && !proof.toolsStopped)
+                }
             } else {
                 #expect(observation.survivors.count == 1 && !proof.toolsStopped)
                 #expect(observation.survivors.first?.name == (shape == "scopeElsewhere" ? "survivor" : "sleep"))
