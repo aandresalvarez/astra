@@ -67,9 +67,10 @@ enum RuntimeHostNoToolReceiptReconciliation {
 
     /// Admission reconciliation owns both the global admission fence and the
     /// task lease. Live workers, unreadable receipts and uncertain tools stay fenced.
-    static func reconcile(in store: RuntimeExecutionOwnerStore, context: ModelContext) throws {
+    static func reconcile(in store: RuntimeExecutionOwnerStore, context: ModelContext,
+                          bootedAt: Date? = ProviderSharedStateReadObservation.hostBootTime()) throws {
         let candidates = try store.records().filter {
-            awaitsLocalSurvivors($0) || ($0.state == .finished && $0.resourcesReleased == false
+            RuntimeHostRestartRelease.awaits($0, bootedAt: bootedAt) || awaitsLocalSurvivors($0) || ($0.state == .finished && $0.resourcesReleased == false
                 && ($0.stopProof?.toolsStopped == true || $0.stopProof?.managedSSHOnly == true)
                 && ($0.stopProof?.remoteWorkExcluded == false || $0.pendingSSHJobSetDigest != nil))
         }
@@ -96,7 +97,12 @@ enum RuntimeHostNoToolReceiptReconciliation {
                       RuntimeCompletedUserTurnContinuation.hasCompletedTurn(saved, task: task, context: context) else { continue }
                 repaired.pendingSSHJobSetDigest = nil
             }
-            if awaitsLocalSurvivors(saved) {
+            // A saved SSH inventory is settled by its own evidence, never by a restart.
+            let restarted = saved.pendingSSHJobSetDigest != nil ? nil : try RuntimeHostRestartRelease.released(
+                repaired, task: task, journal: lease.recordURL, store: store, bootedAt: bootedAt)
+            if let restarted {
+                repaired = restarted
+            } else if awaitsLocalSurvivors(saved) {
                 guard let value = reobserved(repaired) else { continue }
                 repaired = value
             } else if saved.stopProof?.remoteWorkExcluded == false || saved.stopProof?.toolsStopped == false {
@@ -117,7 +123,8 @@ enum RuntimeHostNoToolReceiptReconciliation {
                 run: task.runs.first { $0.id == repaired.runID }))
             try WorkspacePersistenceCoordinator.saveWithoutAutoExportOrThrow(workspace: task.workspace,
                 modelContext: context, taskID: task.id,
-                auditFields: ["operation": awaitsLocalSurvivors(saved) ? "release_after_local_survivors_exited"
+                auditFields: ["operation": restarted != nil ? "release_after_host_restart"
+                    : awaitsLocalSurvivors(saved) ? "release_after_local_survivors_exited"
                     : (saved.pendingSSHJobSetDigest == nil ? "reconcile_finished_host_no_tool_receipt" : "release_after_ssh_cancellation")])
         }
     }

@@ -41,7 +41,7 @@ struct ProviderSharedStateReadObservation: Codable, Equatable, Sendable {
         return boundary < Date() ? boundary : nil
     }
 
-    private static func endedLocally(_ record: RuntimeExecutionOwnerRecord, before boot: Date) -> Bool {
+    static func endedLocally(_ record: RuntimeExecutionOwnerRecord, before boot: Date) -> Bool {
         guard record.state == .finished || record.state == .stopped || record.state == .unverified,
               record.sessionVerificationPending != true, record.cancellationRequested != true,
               record.pendingSSHJobSetDigest == nil,
@@ -128,7 +128,7 @@ struct ProviderSharedStateReadObservation: Codable, Equatable, Sendable {
         return true
     }
 
-    private static func journalPredatesBoot(_ url: URL, bootedAt: Date) -> Bool {
+    static func journalPredatesBoot(_ url: URL, bootedAt: Date) -> Bool {
         var info = stat(), fs = statfs()
         guard lstat(url.path, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
               info.st_ctimespec.tv_sec > 0, statfs(url.path, &fs) == 0,

@@ -124,7 +124,7 @@ target_for_path() {
   esac
 
   case "$path" in
-    Astra/Services/Runtime/RuntimeWorkspaceContinuation*.swift|Astra/Services/Runtime/RuntimeTimeoutRecoveryCheck.swift|Astra/Services/Runtime/RuntimeWorkspaceRemoteJobs.swift|Astra/Services/Runtime/RuntimeHostNoToolReceiptReconciliation.swift|Astra/Views/TaskWorkspaceContinuationPrompt.swift|Tests/RuntimeWorkspaceContinuation*Tests.swift|Astra/Services/Runtime/RuntimeExecution*.swift|Astra/Services/Tasks/TaskQueue+ResourceAdmission.swift)
+    Astra/Services/Runtime/RuntimeWorkspaceContinuation*.swift|Astra/Services/Runtime/RuntimeTimeoutRecoveryCheck.swift|Astra/Services/Runtime/RuntimeWorkspaceRemoteJobs.swift|Astra/Services/Runtime/RuntimeHostNoToolReceiptReconciliation.swift|Astra/Services/Runtime/RuntimeHostRestartRelease.swift|Astra/Views/TaskWorkspaceContinuationPrompt.swift|Tests/RuntimeWorkspaceContinuation*Tests.swift|Astra/Services/Runtime/RuntimeExecution*.swift|Astra/Services/Tasks/TaskQueue+ResourceAdmission.swift)
       add_target "RuntimeWorkspaceContinuation.*Tests|RuntimeCompletedUserTurnContinuationTests|RuntimeHostNoToolReceiptReconciliationTests|RemoteWorkspaceJobPersistenceTests|TaskDecisionDock"
       ;;
   esac
@@ -173,7 +173,7 @@ target_for_path() {
   esac
 
   case "$path" in
-    Astra/Services/Runtime/RuntimeRecovery*.swift|Astra/Services/Runtime/RuntimeExecution*.swift|Tests/RuntimeRecovery*Tests.swift)
+    Astra/Services/Runtime/RuntimeRecovery*.swift|Astra/Services/Runtime/RuntimeExecution*.swift|Astra/Services/Runtime/RuntimeHostRestartRelease.swift|Tests/RuntimeRecovery*Tests.swift)
       add_target "RuntimeRecovery"
       add_target "RuntimeSupervision"
       return
