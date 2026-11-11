@@ -76,6 +76,16 @@ enum TaskExecutionResourceBroker {
         return existing.accessMode == .write || requested.accessMode == .write
     }
 
+    /// Whether a request that names `requested` also names `held`'s resource:
+    /// the same one, or a folder that contains it, with the same access. The
+    /// reverse (a holder of the containing folder) is broader than the request.
+    static func names(_ requested: TaskResourceLockClaim, resourceOf held: TaskResourceLockClaim) -> Bool {
+        guard requested.resourceKind == held.resourceKind, requested.accessMode == held.accessMode else { return false }
+        let outer = canonicalKey(kind: requested.resourceKind, key: requested.resourceKey)
+        let inner = canonicalKey(kind: held.resourceKind, key: held.resourceKey)
+        return outer == inner || (isFilesystemKind(held.resourceKind) && isPath(outer, ancestorOf: inner))
+    }
+
     static func claimsCompete(_ earlier: TaskResourceLockClaim, _ later: TaskResourceLockClaim) -> Bool {
         guard identitiesOverlap(earlier, later) else { return false }
         if earlier.isLiveWorkspaceReader || later.isLiveWorkspaceReader { return false }
