@@ -1250,7 +1250,18 @@ final class AgentRuntimeProcessRunner {
                     toolsStopped: processEvidence.toolsStopped,
                     remoteWorkExcluded: remoteWorkExcluded ||
                         (!plan.executionEnvironment.providerRunsInsideContainer && processEvidence.toolsStopped),
-                    managedSSHOnly: processEvidence.managedSSHOnly)
+                    managedSSHOnly: processEvidence.managedSSHOnly,
+                    observingLocalSurvivors: remoteWorkExcluded && plan.executionEnvironment.isHost
+                        && processEvidence.localObservationCanSettle)
+                let stopProof = processResult.executionStopProof
+                let cleanupUncertainty = processEvidence.cleanupUncertainty
+                    + (stopProof?.localSurvivors?.survivors.map { "local_survivor:\($0.name)" } ?? [])
+                if !cleanupUncertainty.isEmpty {
+                    // What the transcript left unproven, and whether the process table settled it.
+                    var fields = ["event": stopProof?.toolsStopped == true ? "cleanup_observed" : "cleanup_unverified", "runtime": plan.runtime.rawValue]
+                    for (index, cause) in cleanupUncertainty.enumerated() { fields["cause_\(index + 1)"] = cause }
+                    AppLogger.audit(.runtimeStreamDebug, category: "Worker", taskID: taskID, fields: fields, level: .debug, fieldMaxLength: 600)
+                }
                 processResult.executionTurnsSpent = max(1, monitor.turnCount)
                 processResult.executionTokensSpent = monitor.recoveryTokensConsumed(estimatedInputTokens: estimatedInputTokens)
                 processResult.executionSecondsSpent = ProcessInfo.processInfo.systemUptime - processStartedAt

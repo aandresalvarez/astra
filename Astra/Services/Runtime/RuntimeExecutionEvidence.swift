@@ -20,7 +20,23 @@ struct RuntimeProcessIdentity: Codable, Equatable, Sendable {
     enum Presence { case present, absent, unknown }
     var presence: Presence {
         if let current = Self.read(pid) { return current == self ? .present : .absent }
-        return kill(pid, 0) == -1 && errno == ESRCH ? .absent : .unknown
+        if kill(pid, 0) == -1 && errno == ESRCH { return .absent }
+        // Another user's process holds this PID now, which is common after a
+        // restart. The process table still says when it started, and a
+        // different start is a different process.
+        guard let current = Self.readFromProcessTable(pid) else { return .unknown }
+        return current == self ? .present : .absent
+    }
+
+    /// Start time from the kernel process table, readable for any user's process.
+    private static func readFromProcessTable(_ pid: Int32) -> Self? {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.size
+        var name: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard pid > 0, sysctl(&name, 4, &info, &size, nil, 0) == 0, size == MemoryLayout<kinfo_proc>.size,
+              info.kp_proc.p_pid == pid, info.kp_proc.p_un.__p_starttime.tv_sec > 0 else { return nil }
+        return .init(pid: pid, startedSeconds: UInt64(info.kp_proc.p_un.__p_starttime.tv_sec),
+                     startedMicroseconds: UInt64(info.kp_proc.p_un.__p_starttime.tv_usec))
     }
 
     /// AgentExecutionScopedProcess starts a group with the provider's PID.
@@ -41,7 +57,37 @@ struct RuntimeExecutionStopProof: Codable, Equatable, Sendable {
     var managedSSHOnly: Bool? = nil
     /// A later local observation for a new human turn. Replacement still requires the original proof.
     var groupObservedEmptyAt: Date? = nil
+    /// Present when the transcript could not show that no tool ran and the
+    /// process table was asked instead. `toolsStopped` then records its answer.
+    var localSurvivors: RuntimeLocalSurvivorObservation? = nil
+    /// Present when this Mac restarted after every execution of the owner
+    /// ended. `toolsStopped` then records that nothing local outlived it.
+    var hostRestart: RuntimeHostRestartObservation? = nil
     var permitsReplacement: Bool { reaped && processGroupEmpty && toolsStopped && remoteWorkExcluded }
+
+    /// Tools that ran are stopped when nothing they started is alive. Only a
+    /// reaped provider with an empty group can be answered this way.
+    func observing(_ observation: RuntimeLocalSurvivorObservation) -> Self {
+        guard !toolsStopped, reaped, processGroupEmpty else { return self }
+        var result = Self(executionID: executionID, process: process, reaped: reaped, processGroupEmpty: processGroupEmpty,
+            toolsStopped: observation.clean, remoteWorkExcluded: remoteWorkExcluded, capturedAt: capturedAt,
+            managedSSHOnly: managedSSHOnly, groupObservedEmptyAt: groupObservedEmptyAt)
+        result.localSurvivors = observation
+        result.hostRestart = hostRestart
+        return result
+    }
+
+    /// No local process outlives a restart. Only a reaped provider with an
+    /// empty group and no possible remote work can be answered this way.
+    func restarted(_ observation: RuntimeHostRestartObservation) -> Self {
+        guard reaped, processGroupEmpty, remoteWorkExcluded, capturedAt < observation.bootedAt else { return self }
+        var result = Self(executionID: executionID, process: process, reaped: reaped, processGroupEmpty: processGroupEmpty,
+            toolsStopped: true, remoteWorkExcluded: remoteWorkExcluded, capturedAt: capturedAt,
+            managedSSHOnly: managedSSHOnly, groupObservedEmptyAt: groupObservedEmptyAt)
+        result.localSurvivors = localSurvivors
+        result.hostRestart = observation
+        return result
+    }
 }
 
 struct RuntimeRecoveryLimits: Codable, Equatable, Sendable {
@@ -115,6 +161,16 @@ struct RuntimeExecutionOwnerRecord: Codable, Equatable, Sendable {
 
     var hasProviderLaunch: Bool { (providerLaunchCount ?? 0) > 0 || providerProcess != nil }
 
+    /// This execution ended with an explicit zero provider launches and holds
+    /// no earlier execution of its own task. Uncertainty it inherited from a
+    /// workspace decision describes other tasks' receipts, which keep their
+    /// own reservations; it started nothing that could need verifying.
+    var endedBeforeLaunch: Bool {
+        state == .notStarted && providerLaunchCount == 0 && providerProcess == nil && stopProof == nil
+            && retainedExecutionHead == nil && sessionVerificationPending != true && pendingSSHJobSetDigest == nil
+            && settlementToolsStopped != false
+    }
+
     /// A legacy "not started" label can follow a fallback that already spent tokens.
     /// Replaying a message or clearing a reader requires explicit zero launches for this run.
     func provesNoProviderLaunch(for run: TaskRun) -> Bool {
@@ -135,7 +191,7 @@ struct RuntimeExecutionOwnerRecord: Codable, Equatable, Sendable {
 
     var canReplace: Bool {
         guard settlementInProgress != true, settlementLocalWorkStopped != false,
-              !hasUnverifiedTools else { return false }
+              !hasUnverifiedTools || endedBeforeLaunch else { return false }
         if state == .notStarted { return true }
         guard state == .stopped || state == .finished,
               let proof = stopProof, proof.executionID == executionID,

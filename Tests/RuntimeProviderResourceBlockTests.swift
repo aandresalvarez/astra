@@ -28,7 +28,9 @@ struct RuntimeProviderResourceBlockTests {
         record.stopProof = nil
         if fault == "wrongRun" { record.runID = UUID() }
         if fault == "wrongRuntime" { record.runtime = AgentRuntimeID.codexCLI.rawValue }
-        if fault == "uncertainTools" { record.inheritedToolUncertainty = true }
+        // Uncertainty from this task's own earlier execution. A zero-launch attempt that
+        // only inherited another task's doubt through a workspace decision has nothing to verify.
+        if fault == "uncertainTools" { record.inheritedToolUncertainty = true; record.retainedExecutionHead = UUID() }
         if fault == "cancelled" { record.cancellationRequested = true }
         do { let lease = try RuntimeTaskOwnerJournal.acquire(task: task, context: h.context); try lease.save(record) }
         task.isDone = fault == "closed"

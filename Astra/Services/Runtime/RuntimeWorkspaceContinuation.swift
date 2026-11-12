@@ -13,6 +13,9 @@ struct RuntimeWorkspaceContinuationAuthorization: Codable, Equatable {
         let taskOwnerID: PersistentIdentifier
         let receipt: RuntimeExecutionOwnerRecord
         var reviewedSSHJobs: [ReviewedWorkspaceSSHJob]? = nil
+        /// This holder's claims that the request named when the person
+        /// decided. Absent on older decisions, which required all of them.
+        var reviewedClaims: [TaskResourceLockClaim]? = nil
     }
     let taskID: UUID
     let taskOwnerID: PersistentIdentifier
@@ -37,9 +40,24 @@ enum RuntimeWorkspaceContinuation {
         let authorization: RuntimeWorkspaceContinuationAuthorization
         let leases: [RuntimeExecutionOwnerStore.Lease]
         var needsPersistence = false
-        var excludedClaims: Set<TaskResourceLockClaim> {
-            Set(authorization.sources.flatMap { workspaceClaims($0.receipt) })
+        /// The reviewed holders' claims on what this request names. Anything
+        /// else they hold stays reserved.
+        var excludedClaims: Set<TaskResourceLockClaim> = []
+    }
+
+    /// The decision covers only what the request names. A holder's claim must
+    /// either be named by the request (the same resource, or one inside a
+    /// requested folder) or not conflict with it at all. A holder's private
+    /// worktree is the usual second case: it stays reserved and unreviewed.
+    /// A claim broader than the request cannot be continued over.
+    nonisolated private static func named(_ held: [TaskResourceLockClaim],
+                                          by requested: [TaskResourceLockClaim]) -> [TaskResourceLockClaim]? {
+        var result: [TaskResourceLockClaim] = []
+        for claim in held {
+            if requested.contains(where: { TaskExecutionResourceBroker.names($0, resourceOf: claim) }) { result.append(claim) }
+            else if !TaskExecutionResourceBroker.canAcquire(requested, active: [claim]) { return nil }
         }
+        return result
     }
 
     nonisolated private static func workspaceClaims(_ record: RuntimeExecutionOwnerRecord) -> [TaskResourceLockClaim] {
@@ -80,7 +98,7 @@ enum RuntimeWorkspaceContinuation {
             guard record.taskID != task.id, !claims.isEmpty,
                   record.resourceClaims?.allSatisfy({ $0.resourceKind == .workspace || $0.resourceKind == .gitCommonDirectory || $0.resourceKind == .nativeSession }) == true,
                   // This action cannot silently authorize unrelated directories.
-                  claims.allSatisfy({ claim in requested.contains { $0.resourceKind == claim.resourceKind && $0.resourceKey == claim.resourceKey && $0.accessMode == claim.accessMode } }) else { throw RuntimeExecutionOwnerStore.Failure.busy }
+                  let reviewed = named(claims, by: requested) else { throw RuntimeExecutionOwnerStore.Failure.busy }
             let id = record.taskID
             let candidates = try context.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == id }))
             let owners = try candidates.filter { try RuntimeTaskOwnerJournal.read(task: $0, context: context) == record }
@@ -88,9 +106,10 @@ enum RuntimeWorkspaceContinuation {
                   RuntimeCompletedUserTurnContinuation.hasCompletedTurn(record, task: owner, context: context) else { throw RuntimeExecutionOwnerStore.Failure.busy }
             let jobs = try RuntimeWorkspaceRemoteJobs.inventory(task: owner, owner: record, context: context).filter { !$0.status.isTerminal }
             if !reviewSSHJobs { try RuntimeWorkspaceRemoteJobs.check(jobs, reviewed: [], savingDecision: false) }
-            sources.append(.init(taskOwnerID: owner.persistentModelID, receipt: record, reviewedSSHJobs: jobs.isEmpty ? nil : jobs))
+            sources.append(.init(taskOwnerID: owner.persistentModelID, receipt: record, reviewedSSHJobs: jobs.isEmpty ? nil : jobs,
+                reviewedClaims: reviewed))
         }
-        let covered = Set(sources.flatMap { workspaceClaims($0.receipt) })
+        let covered = Set(sources.flatMap { $0.reviewedClaims ?? [] })
         guard Set(conflicts).isSubset(of: covered) else { throw RuntimeExecutionOwnerStore.Failure.unreadable }
         return .init(taskID: task.id, taskOwnerID: task.persistentModelID, requestID: request.id, sourceEventID: request.sourceEventID,
             approvedAt: Date(), sources: sources.sorted { $0.receipt.taskID.uuidString < $1.receipt.taskID.uuidString }, beneficiaryReceiptDigest: try previous.map(RuntimeExecutionOwnerStore.receiptDigest))
@@ -112,7 +131,8 @@ enum RuntimeWorkspaceContinuation {
         guard fresh.taskID == proposed.taskID, fresh.taskOwnerID == proposed.taskOwnerID,
               fresh.requestID == proposed.requestID, fresh.sourceEventID == proposed.sourceEventID,
               fresh.sources.map(\.receipt) == proposed.sources.map(\.receipt),
-              fresh.sources.map(\.taskOwnerID) == proposed.sources.map(\.taskOwnerID) else { throw RuntimeExecutionOwnerStore.Failure.busy }
+              fresh.sources.map(\.taskOwnerID) == proposed.sources.map(\.taskOwnerID),
+              fresh.sources.map(\.reviewedClaims) == proposed.sources.map(\.reviewedClaims) else { throw RuntimeExecutionOwnerStore.Failure.busy }
         let locked = try lockSources(proposed, store: store, context: context, savingDecision: true)
         defer { withExtendedLifetime(locked) {} }
         // Preserve all reviewed identities, including jobs that just finished.
@@ -182,14 +202,24 @@ enum RuntimeWorkspaceContinuation {
         }
         let requested = claims ?? TaskExecutionResourceAdmissionPolicy.lockClaims(for: request, task: task,
             runMode: "workspace_continuation", sandboxEnforcement: .off)
-        guard authorization.sources.flatMap({ ($0.receipt.resourceClaims ?? []).filter { $0.resourceKind != .nativeSession } }).allSatisfy({ held in
-            requested.contains { $0.resourceKind == held.resourceKind && $0.resourceKey == held.resourceKey && $0.accessMode == held.accessMode }
-        }) else { throw RuntimeExecutionOwnerStore.Failure.busy }
+        // The launch must name exactly the holder claims the person reviewed:
+        // a decision is neither stretched to another claim nor reused after
+        // the request moved elsewhere. Older decisions reviewed every claim.
+        var excluded: [TaskResourceLockClaim] = []
+        for source in authorization.sources {
+            let held = (source.receipt.resourceClaims ?? []).filter { $0.resourceKind != .nativeSession }
+            guard let now = named(held, by: requested), Set(now) == Set(source.reviewedClaims ?? held),
+                  source.reviewedClaims != nil || held.allSatisfy({ claim in
+                      requested.contains { $0.resourceKind == claim.resourceKind && $0.resourceKey == claim.resourceKey && $0.accessMode == claim.accessMode }
+                  }) else { throw RuntimeExecutionOwnerStore.Failure.busy }
+            excluded += now
+        }
         let leases = try lockSources(authorization, store: store, context: context)
         // A new task needs no exception once every reviewed owner has
         // independently released its resources. Use ordinary admission.
         if leases.isEmpty && previous == nil { return nil }
-        return Admission(authorization: authorization, leases: leases, needsPersistence: savedAuthorization == nil)
+        return Admission(authorization: authorization, leases: leases, needsPersistence: savedAuthorization == nil,
+            excludedClaims: Set(excluded.filter { $0.resourceKind == .workspace || $0.resourceKind == .gitCommonDirectory }))
     }
 
     static func resumesPreparation(_ saved: RuntimeExecutionOwnerRecord, task: AgentTask,

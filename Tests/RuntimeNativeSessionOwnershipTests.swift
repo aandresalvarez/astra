@@ -373,12 +373,15 @@ struct RuntimeNativeSessionOwnershipTests {
     func newModelDoesNotReclaimReleasedSession(uncertainFirst: Bool) async throws {
         let h = try HeadlessChatHarness(persistentStore: true)
         defer { h.cleanup() }
+        // An uncertain turn is one that leaves a process behind: an unfamiliar
+        // frame alone no longer reserves anything once nothing is left alive.
+        defer { RuntimeRecoveryLocalSurvivorTests.stopOrphans(under: h.rootURL.path) }
         let source = try task("source", runtime: .claudeCode, in: h)
         source.model = "claude-sonnet-4-6"
         func script(session: String, uncertain: Bool) -> String {
             HeadlessChatScenarioTests.claudeScript(body: """
             printf '%s\\n' '{"type":"system","subtype":"init","session_id":"\(session)","model":"\(source.model)"}'
-            \(uncertain ? "printf '%s\\n' '{\"type\":\"future_signal\"}'" : "")
+            \(uncertain ? "printf '%s\\n' '{\"type\":\"future_signal\"}'; " + RuntimeRecoveryLocalSurvivorTests.survivorLine : "")
             printf '%s\\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"Preserved answer"}]}}'
             printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Preserved answer","usage":{"input_tokens":3,"output_tokens":5}}'
             """)

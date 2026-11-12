@@ -6,10 +6,36 @@ import ASTRAPersistence
 
 struct WorkspaceCreationResult {
     let workspace: Workspace
-    /// True when the workspace itself was created but at least one selected
-    /// capability's credential could not be saved (e.g. a denied Keychain
-    /// prompt) — the workspace is usable, just missing that secret.
-    let hasCapabilityEnableFailures: Bool
+    /// One line per selected capability that could not be added, naming it
+    /// and the installer's own reason. The workspace is usable without them.
+    let capabilityEnableFailures: [String]
+
+    var hasCapabilityEnableFailures: Bool { !capabilityEnableFailures.isEmpty }
+}
+
+/// What a setup surface does next: close and report, or keep its draft.
+enum WorkspaceCreationOutcome: Equatable {
+    case notCreated
+    case created
+    /// The workspace was created, but these quick-start capabilities were
+    /// not added — surfaced so setup doesn't silently report success.
+    case createdWithCapabilityIssues([String])
+    /// Nothing was created: the selected capabilities need accounts, and the
+    /// account credential journal refuses this store until the person
+    /// recovers it. Asked first, so the typed setup survives the recovery.
+    case needsCredentialRecovery
+
+    var didCreate: Bool {
+        switch self {
+        case .created, .createdWithCapabilityIssues: return true
+        case .notCreated, .needsCredentialRecovery: return false
+        }
+    }
+}
+
+struct WorkspaceCreationAttempt {
+    let workspace: Workspace?
+    let outcome: WorkspaceCreationOutcome
 }
 
 struct WorkspaceImportResult {
@@ -29,6 +55,26 @@ struct ContentWorkspaceActionCoordinator {
     var resolvedRoot: String {
         if !workspacesRoot.isEmpty { return workspacesRoot }
         return AppChannel.current.defaultWorkspacesRoot
+    }
+
+    /// Creation behind its one admission check. Every other reason a
+    /// capability can't be added is reported after the workspace exists.
+    func attemptWorkspaceCreation(from draft: NewWorkspaceDraft, source: String) -> WorkspaceCreationAttempt {
+        guard draft.canCreate else { return WorkspaceCreationAttempt(workspace: nil, outcome: .notCreated) }
+        if selectedPackages(in: draft).contains(where: { !$0.connectors.isEmpty }),
+           CapabilityCatalogActionService().credentialEditingNeedsRecovery(modelContext: modelContext) {
+            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
+                // Short on purpose: the logger redacts long token-shaped values.
+                "source": source, "result": "needs_credential_recovery"
+            ], level: .warning)
+            return WorkspaceCreationAttempt(workspace: nil, outcome: .needsCredentialRecovery)
+        }
+        guard let result = createWorkspace(from: draft, source: source) else {
+            return WorkspaceCreationAttempt(workspace: nil, outcome: .notCreated)
+        }
+        let failures = result.capabilityEnableFailures
+        return WorkspaceCreationAttempt(workspace: result.workspace,
+            outcome: failures.isEmpty ? .created : .createdWithCapabilityIssues(failures))
     }
 
     func createWorkspace(from draft: NewWorkspaceDraft, source: String) -> WorkspaceCreationResult? {
@@ -54,8 +100,8 @@ struct ContentWorkspaceActionCoordinator {
             modelContext: modelContext,
             auditFields: ["operation": "save_workspace_instructions"]
         )
-        let hasCapabilityEnableFailures = applyNewWorkspaceCapabilities(to: workspace, from: draft, source: source)
-        return WorkspaceCreationResult(workspace: workspace, hasCapabilityEnableFailures: hasCapabilityEnableFailures)
+        let failures = applyNewWorkspaceCapabilities(to: workspace, from: draft, source: source)
+        return WorkspaceCreationResult(workspace: workspace, capabilityEnableFailures: failures)
     }
 
     func importWorkspaces(
@@ -71,31 +117,36 @@ struct ContentWorkspaceActionCoordinator {
             )
     }
 
-    /// Returns whether at least one selected capability failed to enable
-    /// (most commonly a denied/failed Keychain credential save) so the
-    /// caller can surface that to the user instead of reporting unqualified
-    /// success — see `WorkspaceCreationResult.hasCapabilityEnableFailures`.
-    @discardableResult
-    private func applyNewWorkspaceCapabilities(to workspace: Workspace, from draft: NewWorkspaceDraft, source: String) -> Bool {
+    /// The quick-start capabilities the draft selected, in the setup's order.
+    private func selectedPackages(in draft: NewWorkspaceDraft) -> [PluginPackage] {
         let selectedIDs = draft.selectedCapabilityIDs
-        guard !selectedIDs.isEmpty else { return false }
+        guard !selectedIDs.isEmpty else { return [] }
 
         var packagesByID: [String: PluginPackage] = [:]
         for package in PluginCatalog.builtInPackages {
             packagesByID[package.id] = package
         }
-        let packages = OnboardingCapabilitySetup.configurableOptions.compactMap { option -> PluginPackage? in
+        return OnboardingCapabilitySetup.configurableOptions.compactMap { option -> PluginPackage? in
             guard let packageID = option.packageID, selectedIDs.contains(packageID) else { return nil }
             return packagesByID[packageID]
         }
-        guard !packages.isEmpty else { return false }
+    }
+
+    /// Returns one line per selected capability that failed to enable, with
+    /// the installer's own reason, so the caller reports what happened
+    /// instead of unqualified success or a guessed cause — see
+    /// `WorkspaceCreationResult.capabilityEnableFailures`.
+    @discardableResult
+    private func applyNewWorkspaceCapabilities(to workspace: Workspace, from draft: NewWorkspaceDraft, source: String) -> [String] {
+        let packages = selectedPackages(in: draft)
+        guard !packages.isEmpty else { return [] }
 
         let installer = CapabilityInstaller()
         let policyContext = CapabilityCatalogPolicyContext.currentUser(
             workspace: workspace,
             approvalRecords: CapabilityApprovalStore().records()
         )
-        var hasFailure = false
+        var failures: [String] = []
         var enabledAnyCapability = false
         for package in packages {
             let inputs = draft.capabilityConfiguration.installationInputs(for: package.id)
@@ -123,7 +174,7 @@ struct ContentWorkspaceActionCoordinator {
                 )
                 enabledAnyCapability = true
             } catch {
-                hasFailure = true
+                failures.append("\(package.name): \(error.localizedDescription)")
                 AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
                     "source": source,
                     "trace_id": traceID,
@@ -141,7 +192,7 @@ struct ContentWorkspaceActionCoordinator {
             // single scoped invalidation after the batch completes.
             CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
         }
-        return hasFailure
+        return failures
     }
 }
 

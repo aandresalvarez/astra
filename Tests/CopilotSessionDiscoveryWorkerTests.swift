@@ -13,6 +13,9 @@ struct CopilotSessionDiscoveryWorkerTests {
     func discoveredSessionRemainsProtected(occupied: Bool) async throws {
         let h = try HeadlessChatHarness(persistentStore: true)
         defer { h.cleanup() }
+        // The source turn leaves a process behind, so its cleanup is really
+        // unproven and its session stays reserved; a clean exit would release it.
+        defer { RuntimeRecoveryLocalSurvivorTests.stopOrphans(under: h.rootURL.path) }
         // Distinct subdirectories share real repository guidance, without
         // sharing writable workspaces or requesting Git mutations.
         _ = try await GitService.shared.runGit(at: h.rootURL.path, arguments: ["init", "--quiet"])
@@ -30,6 +33,7 @@ struct CopilotSessionDiscoveryWorkerTests {
         let sessionDirectory = h.rootURL.appendingPathComponent(".copilot/session-state/\(sessionID)")
         let executable = try h.writeExecutable(named: "copilot", script: HeadlessChatScenarioTests.copilotScript(body: """
         echo launched >> launches
+        \(RuntimeRecoveryLocalSurvivorTests.survivorLine)
         mkdir -p \(HeadlessChatScenarioTests.shQuoteSandboxPath(sessionDirectory.path))
         printf '%s\\n' '{"type":"user.message","data":{"content":"Task thread: \(source.id.uuidString)"}}' > \(HeadlessChatScenarioTests.shQuoteSandboxPath(sessionDirectory.appendingPathComponent("events.jsonl").path))
         printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Saved result"}}'

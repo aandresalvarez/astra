@@ -199,6 +199,12 @@ extension TaskQueue {
                 .filter { !$0.status.isTerminal }
             if !jobs.isEmpty { return WorkspaceSSHWait.summary(jobs.map(\.jobID)) }
         }
+        // Name what the process table found: the wait ends when it exits.
+        if let holder, RuntimeHostNoToolReceiptReconciliation.awaitsLocalSurvivors(holder),
+           let alive = holder.stopProof?.localSurvivors?.survivors.filter({ $0.process.presence != .absent }), !alive.isEmpty {
+            return summary + " It left " + alive.map { "\($0.name) (process \($0.process.pid))" }.joined(separator: ", ")
+                + " running. This request continues when that stops."
+        }
         let awaitingCleanup = holder == nil || holder?.cancellationRequested == true
             || holder?.state == .unverified || holder?.appProcess.presence != .present
             || (holder?.state == .finished && holder?.canReplace != true)

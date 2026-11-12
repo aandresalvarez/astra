@@ -94,11 +94,26 @@ enum ConnectorCredentialEditor {
     /// edits. This action never reads/writes the vault or changes account rows.
     static func recoverJournal(on account: Connector, modelContext: ModelContext) throws {
         guard !modelContext.hasChanges else { throw Failure.pendingEdits }
-        try serializedAccount(account, modelContext: modelContext) {
-            guard let journal = try ConnectorCredentialGenerationJournal(modelContext: modelContext) else { return }
-            let lease = try journal.acquireLease()
-            try journal.recoverEditing(lease: lease)
-        }
+        try serializedAccount(account, modelContext: modelContext) { try recoverJournalLocked(modelContext: modelContext) }
+    }
+
+    /// The same explicit action where no account exists to start it from:
+    /// the journal belongs to the store, and it refuses the first account of
+    /// an Add or of a new workspace before there is a row to open. Without an
+    /// account to scope it, any unfinished change in any workspace comes first.
+    static func recoverJournal(modelContext: ModelContext) throws {
+        guard !modelContext.hasChanges else { throw Failure.pendingEdits }
+        let everyWorkspace: Set<UUID>
+        do { everyWorkspace = Set(try modelContext.fetch(FetchDescriptor<Workspace>()).map(\.id)) }
+        catch { throw Failure.unreadableChanges }
+        try requireReady(everyWorkspace, modelContext: modelContext)
+        try serialized(modelContext: modelContext) { try recoverJournalLocked(modelContext: modelContext) }
+    }
+
+    private static func recoverJournalLocked(modelContext: ModelContext) throws {
+        guard let journal = try ConnectorCredentialGenerationJournal(modelContext: modelContext) else { return }
+        let lease = try journal.acquireLease()
+        try journal.recoverEditing(lease: lease)
     }
 
     private static func serializedAccount<Result>(

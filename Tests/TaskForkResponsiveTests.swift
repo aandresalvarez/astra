@@ -135,7 +135,8 @@ struct TaskForkResponsiveTests {
         // must remain a separate obligation that termination can drain.
         #expect(fixture.context.hasChanges)
         #expect(WorkspacePersistenceCoordinator.pendingExportWorkspaceIDs.contains(fixture.workspace.id))
-        #expect(WorkspacePersistenceCoordinator.flushAllPendingExports(modelContext: fixture.context) == 1)
+        // The drain is process-wide: another suite's pending export may be counted with this one.
+        #expect(WorkspacePersistenceCoordinator.flushAllPendingExports(modelContext: fixture.context) >= 1)
         let reader = ModelContext(fixture.container)
         let id = fixture.source.id
         let saved = try #require(try reader.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == id })).first)

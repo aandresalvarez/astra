@@ -38,13 +38,41 @@ enum RuntimeHostNoToolReceiptReconciliation {
         return result
     }
 
+    /// A receipt that recorded live local survivors is asked again once those
+    /// processes are gone. The process table answers; no statement or decision does.
+    static func reobserved(_ saved: RuntimeExecutionOwnerRecord,
+                           observe: (RuntimeLocalSurvivorObservation.Launch) -> RuntimeLocalSurvivorObservation = { RuntimeExecutionLocalSurvivors.observe($0) }) -> RuntimeExecutionOwnerRecord? {
+        guard awaitsLocalSurvivors(saved), saved.cancellationRequested != true, saved.inheritedToolUncertainty != true,
+              saved.settlementInProgress == false, saved.settlementLocalWorkStopped == true, saved.settlementToolsStopped == true,
+              let proof = saved.stopProof, let earlier = proof.localSurvivors, proof.remoteWorkExcluded,
+              proof.executionID == saved.executionID, proof.process == saved.providerProcess, proof.process.presence == .absent,
+              earlier.launch.provider == proof.process,
+              earlier.survivors.allSatisfy({ $0.process.presence == .absent }) else { return nil }
+        let current = observe(earlier.launch)
+        guard current.clean else { return nil }
+        var result = saved
+        result.hostNoToolReconciliationOriginalProof = proof
+        result.stopProof = proof.observing(current)
+        guard result.canReplace else { return nil }
+        result.resourcesReleased = true
+        result.providerSharedStateReleased = true
+        result.updatedAt = Date()
+        return result
+    }
+
+    nonisolated static func awaitsLocalSurvivors(_ record: RuntimeExecutionOwnerRecord) -> Bool {
+        record.state == .finished && record.resourcesReleased == false && record.stopProof?.toolsStopped == false
+            && record.stopProof?.localSurvivors?.survivors.isEmpty == false
+    }
+
     /// Admission reconciliation owns both the global admission fence and the
     /// task lease. Live workers, unreadable receipts and uncertain tools stay fenced.
-    static func reconcile(in store: RuntimeExecutionOwnerStore, context: ModelContext) throws {
+    static func reconcile(in store: RuntimeExecutionOwnerStore, context: ModelContext,
+                          bootedAt: Date? = ProviderSharedStateReadObservation.hostBootTime()) throws {
         let candidates = try store.records().filter {
-            $0.state == .finished && $0.resourcesReleased == false
+            RuntimeHostRestartRelease.awaits($0, bootedAt: bootedAt) || awaitsLocalSurvivors($0) || ($0.state == .finished && $0.resourcesReleased == false
                 && ($0.stopProof?.toolsStopped == true || $0.stopProof?.managedSSHOnly == true)
-                && ($0.stopProof?.remoteWorkExcluded == false || $0.pendingSSHJobSetDigest != nil)
+                && ($0.stopProof?.remoteWorkExcluded == false || $0.pendingSSHJobSetDigest != nil))
         }
         guard !candidates.isEmpty else { return }
         let admission: RuntimeExecutionOwnerStore.Lease
@@ -69,7 +97,15 @@ enum RuntimeHostNoToolReceiptReconciliation {
                       RuntimeCompletedUserTurnContinuation.hasCompletedTurn(saved, task: task, context: context) else { continue }
                 repaired.pendingSSHJobSetDigest = nil
             }
-            if saved.stopProof?.remoteWorkExcluded == false || saved.stopProof?.toolsStopped == false {
+            // A saved SSH inventory is settled by its own evidence, never by a restart.
+            let restarted = saved.pendingSSHJobSetDigest != nil ? nil : try RuntimeHostRestartRelease.released(
+                repaired, task: task, journal: lease.recordURL, store: store, bootedAt: bootedAt)
+            if let restarted {
+                repaired = restarted
+            } else if awaitsLocalSurvivors(saved) {
+                guard let value = reobserved(repaired) else { continue }
+                repaired = value
+            } else if saved.stopProof?.remoteWorkExcluded == false || saved.stopProof?.toolsStopped == false {
                 guard let value = reconciled(repaired, task: task,
                     managedSSHJobsVerified: saved.pendingSSHJobSetDigest != nil && jobs.identity != nil) else { continue }
                 repaired = value
@@ -87,7 +123,9 @@ enum RuntimeHostNoToolReceiptReconciliation {
                 run: task.runs.first { $0.id == repaired.runID }))
             try WorkspacePersistenceCoordinator.saveWithoutAutoExportOrThrow(workspace: task.workspace,
                 modelContext: context, taskID: task.id,
-                auditFields: ["operation": saved.pendingSSHJobSetDigest == nil ? "reconcile_finished_host_no_tool_receipt" : "release_after_ssh_cancellation"])
+                auditFields: ["operation": restarted != nil ? "release_after_host_restart"
+                    : awaitsLocalSurvivors(saved) ? "release_after_local_survivors_exited"
+                    : (saved.pendingSSHJobSetDigest == nil ? "reconcile_finished_host_no_tool_receipt" : "release_after_ssh_cancellation")])
         }
     }
 }

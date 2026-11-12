@@ -250,6 +250,9 @@ struct WorkspaceImportOrchestratorTests {
         // credential save failed.
         #expect(result?.workspace.name == "Research Hub")
         #expect(result?.hasCapabilityEnableFailures == true)
+        // Named with the installer's own reason, not a guessed cause.
+        let failure = try #require(result?.capabilityEnableFailures.first)
+        #expect(failure.hasPrefix("REDCap: ") && failure.count > "REDCap: ".count)
     }
 
     @Test("importing discovered candidates saves them and selects the last import")
