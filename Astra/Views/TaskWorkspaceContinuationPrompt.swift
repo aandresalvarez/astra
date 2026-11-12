@@ -34,7 +34,14 @@ enum TaskWorkspaceContinuationPrompt {
             }
             alert.addButton(withTitle: action)
             alert.addButton(withTitle: "Keep waiting")
-            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            // The other choice the warning offers: look at the task that holds it.
+            let holder = proposal.sources.first?.receipt.taskID
+            if holder != nil { alert.addButton(withTitle: proposal.sources.count == 1 ? "Open Holding Task" : "Open a Holding Task") }
+            let choice = alert.runModal()
+            if choice == .alertThirdButtonReturn, let holder {
+                AstraExternalRouteStore.shared.submit(AstraExternalRoute(destination: .task(holder)))
+            }
+            guard choice == .alertFirstButtonReturn else { return }
             try RuntimeWorkspaceContinuation.authorize(proposal, task: task, request: request, context: context, rememberWorkspace: jobs.isEmpty)
             queue.refreshResourceOwnership(in: context)
             _ = queue.signalExecutionRequest(id: requestID, task: task, modelContext: context)

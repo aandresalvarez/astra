@@ -96,6 +96,26 @@ The person's decision stands in for proof that cannot exist; nothing else does.
 A journal that exists but has lost its record, and a modern `file-v1-` pointer,
 remain outside this path.
 
+### The workspace behind it
+
+Continuing past the reservation only exposed the next fence. The retry then
+waited for a workspace that a task finished on Nov 6 still held, because its
+tool effects were never confirmed stopped. The explicit workspace decision
+("Continue this workspace?") existed for exactly that holder, but only a first
+instruction, or a new message after a completed turn, could receive it. A task
+whose only attempt never launched had no way forward at all.
+
+`RuntimeWorkspaceContinuation.followsUnlaunchedAttempt` closes that gap without
+widening the decision itself. The person's own Retry, or their new message, may
+receive it when the task's saved execution ended with an explicit zero provider
+launches for its latest, failed run, spent nothing, was not cancelled, and
+carries no earlier execution of its own. Nothing of that task ran, so the
+request is the instruction still waiting to start, not recovery of unverified
+work. Schedules, chains, plan steps, relabelled requests, and any attempt that
+launched or spent anything stay excluded. The holder's journal is untouched and
+the decision still certifies nothing about it. The prompt also offers to open
+the holding task.
+
 ## Validation
 
 Regression coverage includes bootstrap registration, inherited UUIDs, malformed

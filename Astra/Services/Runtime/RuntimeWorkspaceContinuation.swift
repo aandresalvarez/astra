@@ -245,13 +245,41 @@ enum RuntimeWorkspaceContinuation {
               request.state.isActive, request.taskID == task.id,
               (try? TaskTurnRequestOwnership.resolve(request, in: context))?.persistentModelID == task.persistentModelID else { return false }
         guard let previous else { return isInitialInstruction(request, task: task, context: context) }
-        return RuntimeExecutionAdmission.resolve(request: request, task: task) == .userInstruction
-            && RuntimeCompletedUserTurnContinuation.hasCompletedTurn(previous, task: task, context: context)
+        return (RuntimeExecutionAdmission.resolve(request: request, task: task) == .userInstruction
+            && RuntimeCompletedUserTurnContinuation.hasCompletedTurn(previous, task: task, context: context))
+            || followsUnlaunchedAttempt(request, task: task, previous: previous, context: context)
+    }
+
+    /// Nothing of this task has run: its only saved execution ended with an
+    /// explicit zero provider launches for its latest, failed run, and it holds
+    /// no earlier execution of its own. The person's new message, or their own
+    /// retry of that attempt, is then the instruction itself still waiting to
+    /// start, not recovery of unverified work. A schedule, chain or plan step,
+    /// a cancelled attempt, and an attempt that launched or spent anything
+    /// stay excluded, exactly as before.
+    static func followsUnlaunchedAttempt(_ request: TaskTurnRequest, task: AgentTask,
+                                         previous: RuntimeExecutionOwnerRecord, context: ModelContext) -> Bool {
+        guard previous.endedBeforeLaunch, previous.canReplace, previous.cancellationRequested != true,
+              previous.taskID == task.id, previous.taskOwnerID == task.persistentModelID,
+              request.startedAt == nil, request.runID == nil,
+              let run = task.runs.max(by: { $0.startedAt < $1.startedAt }), run.status == .failed,
+              previous.provesNoProviderLaunch(for: run),
+              let source = TaskHistoryRead.event(id: request.sourceEventID, in: task), source.run == nil else { return false }
+        return request.kind == .retry ? isManualSource(request, task: task)
+            : RuntimeExecutionAdmission.resolve(request: request, task: task) == .userInstruction
     }
 
     static func isManualSource(_ request: TaskTurnRequest, task: AgentTask) -> Bool {
         if request.kind == .followUp {
             return TaskHistoryRead.event(id: request.sourceEventID, in: task)?.type == TaskEventTypes.Conversation.userMessage.rawValue
+        }
+        // Only the person's Retry submits this source. Whether a retry may use
+        // a decision at all is decided by `followsUnlaunchedAttempt`.
+        if request.kind == .retry {
+            guard let source = TaskHistoryRead.event(id: request.sourceEventID, in: task),
+                  source.type == TaskEventTypes.ExecutionRequest.retry.rawValue,
+                  let payload = ExecutionRequestSubmissionService.decodeSourcePayload(source) else { return false }
+            return payload.scheduleID == nil && payload.sourceTaskID == nil && payload.planSnapshot == nil
         }
         guard request.kind == .initial,
               let source = TaskHistoryRead.event(id: request.sourceEventID, in: task),
