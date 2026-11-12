@@ -3946,8 +3946,8 @@ struct TaskMainView: View {
             taskQueue?.recheckTimedOutRun(runID, task: task, context: modelContext)
         case .resume:
             onResumeTask?(task)
-        case .runRepair:
-            repairActionPresentation.start(events: sortedEvents, runID: latestRun?.id, task: task)
+        case .runRepair, .reviewProviderReservations:
+            repairActionPresentation.start(action.kind, events: sortedEvents, runID: latestRun?.id, task: task) { onRetryTask?(task) }
         case .reportProblem:
             reportCurrentFailure()
         case .openArtifact:

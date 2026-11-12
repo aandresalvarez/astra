@@ -53,6 +53,49 @@ flags into provider proof, or delete locks/journals to bypass admission. Recover
 such an old object requires independently verifiable evidence of its fixture
 identity and all execution/tool termination, retained locally for audit.
 
+## Continuing past an unverifiable reservation (2026-11-12)
+
+The boundary above left production with no way forward. 1,002 fixture pointers
+leaked into the user's shared coordination directory on Oct 26–29, and their
+journal folders under `$TMPDIR` were later purged. Admission reads every legacy
+pointer before a file-backed launch, so each Antigravity launch in the
+production app failed with `provider_shared_state_blocked` from Nov 4 onward,
+and "Check again" could never succeed.
+
+Admission is unchanged: it stays read-only and fails closed on a pointer it
+cannot verify. What changed is what the person is shown and may decide. A
+reservation block now presents as a warning, "Earlier run may be active", whose
+primary action, "Continue…", runs `ProviderReservationReview`:
+
+- Inspecting is read-only and sorts every legacy pointer by what is observed on
+  disk and from the kernel while its own lock is held. Nothing is inferred from
+  where a journal used to live.
+- A pointer whose journal root no longer exists can never be settled. It is
+  offered to the person, with the evidence stated: whether it was last written
+  before this Mac's most recent restart, which ended every local process from
+  that time, or since, in which case an earlier process may still be running
+  here. Either way the warning says work on another machine cannot be ruled out,
+  and that continuing means both runs would use the same settings file.
+- A pointer whose journal still reads belongs to its own task. Unreleased, it
+  is named in the warning with "Open Task" and is never offered; released, it
+  is ignored. The journal stays the only release authority while it exists.
+- A pointer that is in use (its lock is held), unsafe, malformed, missing its
+  lock, or pointing at a journal under `/Volumes` (possibly unmounted) is
+  reported as unexamined and never offered.
+- "Continue" examines each offered pointer again under its lock and requires
+  the exact bytes the person reviewed. The pointer is moved, not deleted or
+  rewritten, into `released-<review-UUID>/` inside the coordination directory,
+  after a `review.json` manifest naming the evidence, the restart time and the
+  requesting task is durable. Locks and journals are never touched. The task
+  then retries through ordinary admission.
+- The requesting task records the decision as a timeline event and the app log
+  as `worker.provider_reservations_released`. With nothing reviewable in the
+  way, "Continue…" is a plain retry.
+
+The person's decision stands in for proof that cannot exist; nothing else does.
+A journal that exists but has lost its record, and a modern `file-v1-` pointer,
+remain outside this path.
+
 ## Validation
 
 Regression coverage includes bootstrap registration, inherited UUIDs, malformed

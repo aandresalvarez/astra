@@ -99,6 +99,7 @@ public enum AuditEvent: String, CaseIterable, Sendable {
     case workerSessionStarted = "worker.session_started"
     case workerSessionCleared = "worker.session_cleared"
     case workerLegacyExecutionReconciled = "worker.legacy_execution_reconciled"
+    case workerProviderReservationsReleased = "worker.provider_reservations_released"
     case workerPermissionDenied = "worker.permission_denied"
     case workerEnvironmentInjected = "worker.environment_injected"
     /// A subagent's run ended; its `status` field says how. Deliberately not

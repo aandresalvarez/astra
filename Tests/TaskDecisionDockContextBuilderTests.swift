@@ -238,7 +238,7 @@ struct TaskDecisionDockContextBuilderTests {
             value.providerRecoveryAlternative = .init(runtime: .codexCLI, blockedRunID: runID)
         }
         let dock = try #require(TaskDecisionDockContextBuilder.build(value))
-        #expect(dock.primaryAction?.kind == (timeout ? .checkTimedOutRun : .retry))
+        #expect(dock.primaryAction?.kind == (timeout ? .checkTimedOutRun : .reviewProviderReservations))
         #expect(dock.primaryAction?.payload == (timeout ? runID.uuidString : nil))
         #expect(dock.secondaryActions.map(\.kind) == (timeout ? [] : [.switchRuntime]))
         #expect(dock.secondaryActions.first?.providerRetryRunID == (timeout ? nil : runID))

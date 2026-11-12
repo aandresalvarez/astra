@@ -197,8 +197,7 @@ enum TaskComposerCoordinator {
             .filter { $0.status == .completed }
             .compactMap { $0.runtimeID.flatMap(AgentRuntimeID.init(rawValue:)) }
             .first(where: ready.contains)
-        guard let runtime = previous ?? ready.first else { return nil }
-        return .init(runtime: runtime, blockedRunID: run.id)
+        return .init(runtime: previous ?? ready.first, blockedRunID: run.id)
     }
 
     /// The decision dock's "Switch to …" for a policy-blocked task: the same

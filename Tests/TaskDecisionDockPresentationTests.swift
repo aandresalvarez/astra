@@ -6,7 +6,7 @@ import ASTRAModels
 
 @Suite("Task decision dock presentation")
 struct TaskDecisionDockPresentationTests {
-    @Test("A blocked provider can be switched only when Retry has a ready alternative", arguments: [true, false])
+    @Test("A reservation block is a warning whose primary action reviews it; the switch needs a ready alternative", arguments: [true, false])
     func blockedProviderAlternative(canRetry: Bool) throws {
         var input = context(status: .pendingUser)
         let runID = UUID()
@@ -14,11 +14,25 @@ struct TaskDecisionDockPresentationTests {
         input.canRetry = canRetry
         input.providerRecoveryAlternative = .init(runtime: .codexCLI, blockedRunID: runID)
         let dock = try #require(TaskDecisionDockPresentation.build(input))
-        #expect(dock.primaryAction?.title == (canRetry ? "Check again" : nil))
+        #expect(dock.title == (canRetry ? "Earlier run may be active" : "Recovery blocked"))
+        #expect(dock.primaryAction?.kind == (canRetry ? .reviewProviderReservations : nil))
+        #expect(dock.primaryAction?.title == (canRetry ? "Continue…" : nil))
         #expect(dock.secondaryActions.map(\.kind) == (canRetry ? [.switchRuntime] : []))
         #expect(dock.secondaryActions.first?.providerRetryRunID == (canRetry ? runID : nil))
+        // With no other provider ready, the warning still leads with its review.
+        input.providerRecoveryAlternative = .init(runtime: nil, blockedRunID: runID)
+        var alone = try #require(TaskDecisionDockPresentation.build(input))
+        #expect(alone.primaryAction?.kind == (canRetry ? .reviewProviderReservations : nil) && alone.secondaryActions.isEmpty)
+        // A cancelled retry can leave the task queued; the way forward must not disappear with it.
+        input.status = .queued
+        alone = try #require(TaskDecisionDockPresentation.build(input))
+        #expect(alone.primaryAction?.kind == (canRetry ? .reviewProviderReservations : nil))
+        input.status = .pendingUser
+        // Any other recovery block keeps its plain re-check.
         input.providerRecoveryAlternative = nil
-        #expect(TaskDecisionDockPresentation.build(input)?.secondaryActions.isEmpty == true)
+        let plain = try #require(TaskDecisionDockPresentation.build(input))
+        #expect(plain.title == "Recovery blocked" && plain.primaryAction?.kind == (canRetry ? .retry : nil))
+        #expect(plain.secondaryActions.isEmpty)
     }
 
     @Test("An unlaunched provider reservation cannot expose result approval or blind retry")

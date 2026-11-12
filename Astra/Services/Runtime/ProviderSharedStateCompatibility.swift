@@ -10,7 +10,7 @@ enum ProviderSharedStateCompatibility {
             "The provider did not start. A shared-configuration reservation cannot be verified because its lock or ownership record is missing, unreadable or unsafe. ASTRA preserved it; a missing record is not proof that the execution and tools stopped. Review this reservation before retrying: \(path)"
         }
     }
-    private static func isLegacyLock(_ name: String) -> Bool {
+    static func isLegacyLock(_ name: String) -> Bool {
         name.count == 64 && name.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
     }
 
