@@ -136,6 +136,14 @@ struct TaskDecisionDockPresentationTests {
         let queued = RuntimeRecoveryPresentation.queuedRequestDock(waiting,
             hasOpenApprovalRequest: input.hasRuntimePermissionRequest, blockedMessage: input.recoveryBlockMessage)
         #expect(queued == nil)
+        // A provider reservation that stopped an earlier launch is checked again
+        // when this request starts. It is not why the request waits, so the
+        // wait keeps its own title and never reads as blocked recovery.
+        let reserved = try #require(RuntimeRecoveryPresentation.queuedRequestDock(waiting, hasOpenApprovalRequest: false,
+            blockedMessage: "The provider settings are reserved.", isLaunchGate: true))
+        #expect(reserved == waiting)
+        #expect(RuntimeRecoveryPresentation.queuedRequestDock(waiting, hasOpenApprovalRequest: false,
+            blockedMessage: "The saved execution owner could not be read.")?.title == "Recovery blocked")
         let presentation = try #require(queued ?? TaskDecisionDockPresentation.build(input))
         #expect(presentation.id == "runtime-permission")
         #expect(presentation.primaryAction?.kind == .allowOnce)

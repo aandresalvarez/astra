@@ -3540,7 +3540,7 @@ struct TaskMainView: View {
         if let waitingPresentation = RuntimeRecoveryPresentation.queuedRequestDock(
             taskTurnWaitingDockPresentation,
             hasOpenApprovalRequest: permission.hasOpenApprovalRequest,
-            blockedMessage: recoveryBlockMessage,
+            blockedMessage: recoveryBlockMessage, isLaunchGate: providerRecoveryAlternative != nil,
             timeoutRecoveryRunID: timeoutRecoveryRunID
         ) {
             return waitingPresentation
