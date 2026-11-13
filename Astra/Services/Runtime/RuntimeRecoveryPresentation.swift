@@ -39,12 +39,18 @@ enum RuntimeRecoveryPresentation {
     /// A live permission request keeps priority over a queued message. When
     /// recovery is blocked, that permission belongs to an execution we cannot
     /// reconnect to; preserve the saved message's cancellation controls instead.
+    ///
+    /// A provider reservation that stopped an earlier launch is a launch-time
+    /// gate. It is checked again when this request starts and is not why the
+    /// request waits now, so it must not relabel the wait as blocked recovery.
     static func queuedRequestDock(
         _ waiting: TaskDecisionDockPresentation?,
         hasOpenApprovalRequest: Bool,
-        blockedMessage: String?,
+        blockedMessage savedMessage: String?,
+        isLaunchGate: Bool = false,
         timeoutRecoveryRunID: UUID? = nil
     ) -> TaskDecisionDockPresentation? {
+        let blockedMessage = isLaunchGate ? nil : savedMessage
         guard let waiting, !hasOpenApprovalRequest || blockedMessage != nil else { return nil }
         var dock = waitingDock(waiting, blockedMessage: blockedMessage)
         if blockedMessage != nil, let timeoutRecoveryRunID {

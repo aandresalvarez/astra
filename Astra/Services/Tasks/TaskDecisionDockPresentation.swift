@@ -42,6 +42,7 @@ enum TaskDecisionDockActionKind: String, Equatable {
     case switchRuntime
     /// Run the repair a stopped run asked for (sign in, open a page).
     case runRepair
+    case reviewProviderReservations
 }
 
 enum TaskThreadAffordance: Hashable {
@@ -79,8 +80,10 @@ struct TaskDecisionDockDetail: Equatable, Identifiable {
 }
 
 struct TaskDecisionDockPresentation: Equatable {
+    /// The run a provider reservation blocked. `runtime` is the ready provider
+    /// to offer instead, when there is one.
     struct ProviderRecoveryAlternative: Equatable {
-        let runtime: AgentRuntimeID
+        let runtime: AgentRuntimeID?
         let blockedRunID: UUID
     }
 
@@ -196,17 +199,29 @@ struct TaskDecisionDockPresentation: Equatable {
     }
 
     static func build(_ context: Context) -> TaskDecisionDockPresentation? {
+        guard var presentation = dock(context) else { return nil }
+        if presentation.primaryAction?.kind != .reviewProviderReservations,
+           let review = providerReservationReviewAction(context, title: "Review earlier run") {
+            presentation.secondaryActions.append(review)
+        }
+        return presentation
+    }
+
+    private static func dock(_ context: Context) -> TaskDecisionDockPresentation? {
         if context.isClosed {
             return closedPresentation(context)
         }
 
         if let message = context.recoveryBlockMessage {
+            // A reservation block is a warning the person can act on: the
+            // primary action shows what is known and what continuing does.
+            let review = context.timeoutRecoveryRunID == nil ? providerReservationReviewAction(context, title: "Continue…") : nil
             return TaskDecisionDockPresentation(
-                id: "recovery-blocked", icon: "lock.fill", tone: .attention,
-                title: "Recovery blocked", summary: message,
+                id: "recovery-blocked", icon: review == nil ? "lock.fill" : "exclamationmark.triangle.fill", tone: .attention,
+                title: review == nil ? "Recovery blocked" : "Earlier run may be active", summary: message,
                 metrics: metrics(context), details: details(context),
                 primaryAction: context.canRetry ? (context.timeoutRecoveryRunID.map(checkTimedOutRun)
-                    ?? action(.retry, title: "Check again", systemImage: "arrow.clockwise")) : nil,
+                    ?? review ?? action(.retry, title: "Check again", systemImage: "arrow.clockwise")) : nil,
                 secondaryActions: [providerRecoverySwitchAction(context)].compactMap { $0 },
                 overflowActions: closeOverflowActions(context, closeTitle: nil),
                 prefersExpandedDetails: false
@@ -591,6 +606,15 @@ struct TaskDecisionDockPresentation: Equatable {
         guard context.status == .pendingUser || context.status == .failed else { return nil }
         return runtimeSwitchAction(context.providerRecoveryAlternative?.runtime, canRetry: context.canRetry,
             blockedRunID: context.providerRecoveryAlternative?.blockedRunID)
+    }
+
+    /// Offered wherever a reservation blocked the latest run, whatever status a
+    /// cancelled retry left behind. Inspecting is read-only; nothing is set
+    /// aside until the person reads the warning and continues.
+    private static func providerReservationReviewAction(_ context: Context, title: String) -> TaskDecisionDockAction? {
+        guard !context.isClosed, context.canRetry, context.providerRecoveryAlternative != nil else { return nil }
+        return action(.reviewProviderReservations, title: title, systemImage: "arrow.right.circle",
+            help: "See what is known about the earlier run holding this provider's settings, then choose whether to continue.")
     }
 
     private static func suggestedRuntimeSwitchAction(_ context: Context) -> TaskDecisionDockAction? {
@@ -1207,7 +1231,9 @@ struct TaskDecisionDockPresentation: Equatable {
 private extension TaskDecisionDockActionKind {
     var isDecisionDockUtility: Bool {
         switch self {
-        case .openArtifact, .openPlan, .reportProblem:
+        // Outside the recovery warning, where it is the primary action, the
+        // review sits beside Details and never widens the decision buttons.
+        case .openArtifact, .openPlan, .reportProblem, .reviewProviderReservations:
             true
         case .stop,
              .stopRun,

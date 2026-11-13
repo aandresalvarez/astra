@@ -10,6 +10,9 @@ struct RuntimeProviderOwnershipReference: Codable, Equatable, Sendable {
     let ownerID: UUID
     var taskOwnerID: PersistentIdentifier? = nil
 
+    /// The journal's own record for this pointer. Reading it never changes the journal.
+    func journalRecord() throws -> RuntimeExecutionOwnerRecord { try record() }
+
     private func record() throws -> RuntimeExecutionOwnerRecord {
         var info = stat()
         guard journalRoot.hasPrefix("/"), lstat(journalRoot, &info) == 0,
@@ -85,6 +88,12 @@ struct RuntimeProviderOwnershipReference: Codable, Equatable, Sendable {
     }
 
     private static func read(in directory: ProviderSharedStateDirectory, name: String) throws -> Self? {
+        try contents(in: directory, name: name)?.reference
+    }
+
+    /// The validated pointer with its exact bytes and inode times, for a review
+    /// that must prove the pointer did not change before retiring it.
+    static func contents(in directory: ProviderSharedStateDirectory, name: String) throws -> (reference: Self, bytes: Data, info: stat)? {
         let fd = openat(directory.descriptor, name, O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW)
         guard fd >= 0 else {
             if errno == ENOENT { return nil }
@@ -98,7 +107,7 @@ struct RuntimeProviderOwnershipReference: Codable, Equatable, Sendable {
         }
         var bytes = [UInt8](repeating: 0, count: Int(info.st_size))
         guard Darwin.read(fd, &bytes, bytes.count) == bytes.count else { throw RuntimeExecutionOwnerStore.Failure.unreadable }
-        do { return try JSONDecoder().decode(Self.self, from: Data(bytes)) }
+        do { return (try JSONDecoder().decode(Self.self, from: Data(bytes)), Data(bytes), info) }
         catch { throw RuntimeExecutionOwnerStore.Failure.unreadable }
     }
 

@@ -9,6 +9,15 @@ enum TaskWorkspaceContinuationPrompt {
         do {
             guard let request = try TaskTurnRequestRepository.request(id: requestID, in: context) else { return }
             let previous = try RuntimeTaskOwnerJournal.read(task: task, context: context)
+            // Say which rule refused, instead of three unrelated guesses.
+            guard RuntimeWorkspaceContinuation.isNewManualInstruction(request, task: task, previous: previous, context: context) else {
+                let alert = NSAlert()
+                alert.messageText = "This request cannot continue the workspace"
+                alert.informativeText = "ASTRA offers this decision only for your own new message or first instruction, and only when nothing this task ran earlier is still unverified. This request does not qualify. It stays saved; you can cancel it and send the message again, or wait for the holding task to be settled."
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+                return
+            }
             let proposal = try RuntimeWorkspaceContinuation.preview(task: task, request: request, context: context,
                 previous: previous, reviewSSHJobs: true)
             let names = proposal.sources.compactMap { source -> String? in
@@ -34,7 +43,14 @@ enum TaskWorkspaceContinuationPrompt {
             }
             alert.addButton(withTitle: action)
             alert.addButton(withTitle: "Keep waiting")
-            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            // The other choice the warning offers: look at the task that holds it.
+            let holder = proposal.sources.first?.receipt.taskID
+            if holder != nil { alert.addButton(withTitle: proposal.sources.count == 1 ? "Open Holding Task" : "Open a Holding Task") }
+            let choice = alert.runModal()
+            if choice == .alertThirdButtonReturn, let holder {
+                AstraExternalRouteStore.shared.submit(AstraExternalRoute(destination: .task(holder)))
+            }
+            guard choice == .alertFirstButtonReturn else { return }
             try RuntimeWorkspaceContinuation.authorize(proposal, task: task, request: request, context: context, rememberWorkspace: jobs.isEmpty)
             queue.refreshResourceOwnership(in: context)
             _ = queue.signalExecutionRequest(id: requestID, task: task, modelContext: context)

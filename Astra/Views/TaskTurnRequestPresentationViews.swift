@@ -109,13 +109,13 @@ extension TaskMainView {
         }()
         let workspaceAction: TaskDecisionDockAction? = {
             guard taskQueue != nil, taskActivityPresentation.kind == .waitingForResource,
-                  let dockRequest, [.initial, .followUp].contains(dockRequest.kind), dockRequest.blockingTaskID != nil else { return nil }
+                  let dockRequest, [.initial, .followUp, .retry].contains(dockRequest.kind), dockRequest.blockingTaskID != nil else { return nil }
             return TaskDecisionDockAction(kind: .reviewWorkspaceContinuation,
                 title: "Review workspace", systemImage: "arrow.triangle.branch",
                 payload: dockRequest.id.uuidString,
                 help: "Review whether this saved request can continue the reserved workspace.")
         }()
-        return TaskDecisionDockPresentation(
+        var presentation = TaskDecisionDockPresentation(
             id: "turn-request-\(dockRequest?.id.uuidString ?? task.id.uuidString)",
             icon: taskActivityPresentation.sidebarSystemImage ?? "clock",
             tone: taskActivityPresentation.kind == .running ? .running : .attention,
@@ -128,5 +128,10 @@ extension TaskMainView {
             overflowActions: [],
             prefersExpandedDetails: false
         )
+        // Name what the request waits for in the row itself, not only in its tooltip.
+        if taskActivityPresentation.kind == .waitingForResource, let blocker = dockRequest?.blockerSummary, blocker != title {
+            presentation.compactMeta = blocker
+        }
+        return presentation
     }
 }
