@@ -198,7 +198,7 @@ enum RuntimeWorkspaceContinuation {
                 && (resumesPreparation(previous, task: task, request: request, context: context)
                     || RuntimeCompletedUserTurnContinuation.permits(previous, task: task, request: request, context: context))) else { return nil }
         } else {
-            guard isInitialInstruction(request, task: task, context: context) else { return nil }
+            guard isNewManualInstruction(request, task: task, previous: nil, context: context) else { return nil }
         }
         let requested = claims ?? TaskExecutionResourceAdmissionPolicy.lockClaims(for: request, task: task,
             runMode: "workspace_continuation", sandboxEnforcement: .off)
@@ -244,10 +244,26 @@ enum RuntimeWorkspaceContinuation {
         guard task.isLive, task.modelContext === context, request.modelContext === context,
               request.state.isActive, request.taskID == task.id,
               (try? TaskTurnRequestOwnership.resolve(request, in: context))?.persistentModelID == task.persistentModelID else { return false }
-        guard let previous else { return isInitialInstruction(request, task: task, context: context) }
+        guard let previous else {
+            return isInitialInstruction(request, task: task, context: context)
+                || followsLegacySettlement(request, task: task)
+        }
         return (RuntimeExecutionAdmission.resolve(request: request, task: task) == .userInstruction
             && RuntimeCompletedUserTurnContinuation.hasCompletedTurn(previous, task: task, context: context))
             || followsUnlaunchedAttempt(request, task: task, previous: previous, context: context)
+    }
+
+    /// History from before the execution journal has no receipt. Ordinary
+    /// admission already starts such a task on the older app's own settlement
+    /// (`RuntimeRecoveryLegacyReconciliation`), so the person's new message
+    /// there may receive the workspace decision on that same basis and no
+    /// other. A task the journal ever tracked is not legacy: its missing
+    /// receipt stays blocked. A retry replays an instruction that may have run.
+    static func followsLegacySettlement(_ request: TaskTurnRequest, task: AgentTask) -> Bool {
+        request.startedAt == nil && request.runID == nil
+            && !RuntimeExecutionOwner.requiresExistingReceipt(task)
+            && RuntimeRecoveryLegacyReconciliation.settledRun(of: task) != nil
+            && RuntimeExecutionAdmission.resolve(request: request, task: task) == .userInstruction
     }
 
     /// Nothing of this task has run: its only saved execution ended with an

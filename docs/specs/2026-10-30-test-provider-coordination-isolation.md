@@ -116,6 +116,18 @@ launched or spent anything stay excluded. The holder's journal is untouched and
 the decision still certifies nothing about it. The prompt also offers to open
 the holding task.
 
+A task from before the execution journal had the same dead end. It has runs
+but no receipt, so it was neither a first instruction nor a task with a
+completed, journaled turn, and "Review workspace" answered with a message about
+an active execution on a task idle for weeks.
+`RuntimeWorkspaceContinuation.followsLegacySettlement` lets the person's new
+message there receive the decision on exactly the basis ordinary admission
+already uses to start such a task: `RuntimeRecoveryLegacyReconciliation`'s
+record that every earlier run ended on this host before the app started. A task
+the journal ever tracked is not legacy and stays blocked without its receipt; a
+retry replays an instruction that may have run and stays excluded. The prompt
+now names this rule when it refuses, instead of three unrelated possibilities.
+
 ## Validation
 
 Regression coverage includes bootstrap registration, inherited UUIDs, malformed

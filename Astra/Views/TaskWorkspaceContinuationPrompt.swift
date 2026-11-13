@@ -9,6 +9,15 @@ enum TaskWorkspaceContinuationPrompt {
         do {
             guard let request = try TaskTurnRequestRepository.request(id: requestID, in: context) else { return }
             let previous = try RuntimeTaskOwnerJournal.read(task: task, context: context)
+            // Say which rule refused, instead of three unrelated guesses.
+            guard RuntimeWorkspaceContinuation.isNewManualInstruction(request, task: task, previous: previous, context: context) else {
+                let alert = NSAlert()
+                alert.messageText = "This request cannot continue the workspace"
+                alert.informativeText = "ASTRA offers this decision only for your own new message or first instruction, and only when nothing this task ran earlier is still unverified. This request does not qualify. It stays saved; you can cancel it and send the message again, or wait for the holding task to be settled."
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+                return
+            }
             let proposal = try RuntimeWorkspaceContinuation.preview(task: task, request: request, context: context,
                 previous: previous, reviewSSHJobs: true)
             let names = proposal.sources.compactMap { source -> String? in

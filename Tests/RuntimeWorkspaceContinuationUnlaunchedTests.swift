@@ -154,4 +154,63 @@ struct RuntimeWorkspaceContinuationUnlaunchedTests {
         try h.context.save()
         #expect(RuntimeExecutionOwner.acquire(task: b, context: h.context, maxRunSeconds: 60, userRequest: retry) == nil)
     }
+
+    /// A task whose runs an older ASTRA settled before this process started, with no journal receipt.
+    private func legacy(_ h: HeadlessChatHarness, beside other: AgentTask, fault: String = "none") throws -> AgentTask {
+        let launched = try #require(RuntimeRecoveryLegacyReconciliation.appStartedAt)
+        let task = h.makeTask(runtime: .antigravityCLI, goal: "Work from before receipts", model: "test")
+        task.workspace = other.workspace
+        task.status = .completed
+        let run = TaskRun(task: task)
+        run.status = fault == "stillRunning" ? .running : .completed
+        run.typedStopReason = fault == "appRestarted" ? .appRestarted : .completed
+        run.startedAt = launched.addingTimeInterval(-7_200)
+        run.completedAt = fault == "endedThisSession" ? Date() : launched.addingTimeInterval(-3_600)
+        h.context.insert(run)
+        // A task the journal ever tracked is not legacy, whatever became of its receipt.
+        if fault == "trackedBefore" {
+            h.context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.runtimeExecutionOwnership, payload: "{}"))
+        }
+        try h.context.save()
+        return task
+    }
+
+    @Test("A new message on a task from before receipts existed can receive the workspace decision and start")
+    func legacyTaskContinues() throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (a, original) = try holder(h)
+        let b = try legacy(h, beside: a)
+        #expect(try RuntimeTaskOwnerJournal.read(task: b, context: h.context) == nil)
+        let saved = try request(ExecutionRequestSubmissionService.submitFollowUp(message: "Compare the new code", for: b, into: h.context).get(), h)
+        let queue = TaskQueue(poolSize: 0)
+        queue.refreshResourceOwnership(in: h.context)
+        let claims = queue.resourceLockClaims(for: saved, task: b, runMode: "request", sandboxEnforcement: .off)
+        #expect(!queue.canAcquireResourceLocks(claims, task: b, context: h.context))
+
+        let proposal = try review(h, task: b, request: saved)
+        #expect(proposal.sources.map(\.receipt) == [original])
+        try RuntimeWorkspaceContinuation.authorize(proposal, task: b, request: saved, context: h.context)
+        queue.refreshResourceOwnership(in: h.context)
+        #expect(queue.canAcquireResourceLocks(claims, task: b, context: h.context))
+        let owner = try #require(RuntimeExecutionOwner.acquire(task: b, context: h.context, maxRunSeconds: 60,
+            newUserTurn: true, newUserRequest: true, userRequest: saved, resourceClaims: claims))
+        defer { owner.finish() }
+        #expect(owner.record.workspaceContinuationRequestID == saved.id && owner.record.legacySettledRunID != nil)
+        #expect(try RuntimeExecutionOwner.store(in: h.context).read(taskID: a.id, taskOwnerID: a.persistentModelID) == original)
+    }
+
+    @Test("History the older app did not settle, a task the journal once tracked, and a replayed instruction get no decision",
+          arguments: ["stillRunning", "endedThisSession", "appRestarted", "trackedBefore", "retry"])
+    func legacyFences(fault: String) throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (a, original) = try holder(h)
+        let b = try legacy(h, beside: a, fault: fault)
+        let saved = try fault == "retry"
+            ? request(ExecutionRequestSubmissionService.submitRetry(message: "Earlier instruction", continuation: true, for: b, into: h.context).get(), h)
+            : request(ExecutionRequestSubmissionService.submitFollowUp(message: "Compare the new code", for: b, into: h.context).get(), h)
+        #expect(throws: (any Error).self) { _ = try review(h, task: b, request: saved) }
+        #expect(RuntimeExecutionOwner.acquire(task: b, context: h.context, maxRunSeconds: 60,
+            newUserTurn: true, newUserRequest: true, userRequest: saved) == nil)
+        #expect(try RuntimeExecutionOwner.store(in: h.context).read(taskID: a.id, taskOwnerID: a.persistentModelID) == original)
+    }
 }
