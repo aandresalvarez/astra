@@ -1,4 +1,5 @@
 import Foundation
+import JavaScriptCore
 import SwiftData
 import ASTRAModels
 import ASTRAPersistence
@@ -15,7 +16,7 @@ struct TaskDeliverableVerificationEnvironment: Sendable {
 
     static let live = TaskDeliverableVerificationEnvironment(
         checkJavaScriptSyntax: { source, sourceLabel in
-            await TaskDeliverableVerificationService.checkJavaScriptSyntaxWithNode(
+            TaskDeliverableVerificationService.checkJavaScriptSyntaxInProcess(
                 source: source,
                 sourceLabel: sourceLabel
             )
@@ -227,40 +228,42 @@ enum TaskDeliverableVerificationService {
         TaskDeliverableVerificationCodec.decodeResult(payload)
     }
 
-    static func checkJavaScriptSyntaxWithNode(
+    /// Parses `source` with JavaScriptCore without running it.
+    ///
+    /// Settlement runs this check. Any process it launched there would leave
+    /// the turn's tools unverified (`RuntimeSettlementExecutionScope`), which
+    /// keeps the workspace reserved with nothing able to continue it. `node`
+    /// can't be launched instead: it is found through `PATH`, so it could run
+    /// anything. A parse starts nothing and executes no code.
+    ///
+    /// The public JavaScriptCore API parses classic scripts only. A script
+    /// that fails because it uses module syntax is reported as unchecked, not
+    /// as a syntax error.
+    nonisolated static func checkJavaScriptSyntaxInProcess(
         source: String,
         sourceLabel: String
-    ) async -> JavaScriptSyntaxCheckResult {
-        let directory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-            .appendingPathComponent("astra-js-syntax-\(UUID().uuidString)", isDirectory: true)
-        do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            defer { try? FileManager.default.removeItem(at: directory) }
-
-            let sourceURL = directory.appendingPathComponent("check.js")
-            try source.write(to: sourceURL, atomically: true, encoding: .utf8)
-
-            var env = ProcessInfo.processInfo.environment
-            env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.shellPathSuffix)"
-            let output = await RuntimeValidationCommandRunner.run(path: "/usr/bin/env",
-                arguments: ["node", "--check", sourceURL.path], environment: env,
-                directory: directory.path, timeout: 5)
-            if output.exitCode == 0 {
-                return .passed
-            }
-            let detail = [output.stderr, output.stdout]
-                .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-                .joined(separator: "\n")
-            if output.exitCode == -1 {
-                return .unavailable(detail.isEmpty ? "Could not run JavaScript syntax check for \(sourceLabel)." : detail)
-            }
-            if output.exitCode == 127 || detail.lowercased().contains("no such file") {
-                return .unavailable("Node.js is not available to syntax-check \(sourceLabel).")
-            }
-            return .failed(detail.isEmpty ? "JavaScript syntax check failed for \(sourceLabel)." : detail)
-        } catch {
-            return .unavailable("Could not run JavaScript syntax check for \(sourceLabel): \(error.localizedDescription)")
+    ) -> JavaScriptSyntaxCheckResult {
+        guard let context = JSContext() else {
+            return .unavailable("Could not start the JavaScript syntax checker for \(sourceLabel).")
         }
+        let script = JSStringCreateWithCFString(source as CFString)
+        defer { JSStringRelease(script) }
+        var exception: JSValueRef?
+        if JSCheckScriptSyntax(context.jsGlobalContextRef, script, nil, 1, &exception) { return .passed }
+        if usesModuleSyntax(source) {
+            return .unavailable("\(sourceLabel) uses JavaScript module syntax, which ASTRA can't syntax-check without running another program. Review it.")
+        }
+        let error = exception.flatMap { JSValue(jsValueRef: $0, in: context) }
+        let line = error?.forProperty("line").flatMap { $0.isNumber ? " at line \($0.toInt32())" : nil } ?? ""
+        let message = error?.toString() ?? "SyntaxError"
+        return .failed("JavaScript syntax check failed for \(sourceLabel)\(line): \(message)")
+    }
+
+    /// An `import` or `export` declaration, or `import.meta`: syntax only a
+    /// module accepts. A dynamic `import(...)` is valid in a classic script.
+    nonisolated static func usesModuleSyntax(_ source: String) -> Bool {
+        source.range(of: #"(?m)^\s*(import\s*[\w{*'"]|export[\s{*])|\bimport\s*\.\s*meta\b"#,
+                     options: .regularExpression) != nil
     }
 
     private static func result(
