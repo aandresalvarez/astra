@@ -122,7 +122,8 @@ person's decision), when, and the boot time read. The original proof is kept as 
 `runtime.execution_ownership` event and an audit line with the basis are saved in the same step.
 
 `saveReconciliation` accepts today only a receipt that became replaceable (`canReplace`). It will
-also accept one that carries a release record. That is the one change to the protected store.
+also accept one that carries a release record, saved as its own kind of entry that builds from
+before this change do not read. That is the one change to the protected store.
 Where today's rules upgrade the stop proof (`observing`, `restarted`), they keep doing so under
 their existing conditions, because that upgrade is what Retry reads. A release that only this rule
 or a decision grants leaves the stop proof as written at exit.
@@ -176,14 +177,14 @@ saved stay readable and valid until their holders release.
 | Today | What it requires beyond the facts | Under this spec |
 | --- | --- | --- |
 | `RuntimeExecutionOwner.finish()` releases when `canReplace` | nothing | Kept. It is rule A read at exit, the fast path for a clean run. |
-| Survivors check at exit (`AgentExecutionScopedProcess.stopProof(observingLocalSurvivors:)`, called from `AgentRuntimeProcessRunner`) | host placement, no SSH route | Kept as evidence capture; it records the scope value fact 3 asks about later. One change: the scope is recorded for every host launch, also with an SSH route open, so the local answer no longer depends on the remote one. |
+| Survivors check at exit (`AgentExecutionScopedProcess.stopProof(observingLocalSurvivors:)`, called from `AgentRuntimeProcessRunner`) | host placement, no SSH route | Kept as evidence capture; it records the scope value fact 3 asks about later. One change, in 1b: the scope is recorded for every host launch, also with an SSH route open, so the local answer no longer depends on the remote one. |
 | `RuntimeHostNoToolReceiptReconciliation.reobserved` | `finished`, remote excluded, no inherited uncertainty, not cancelled | Subsumed by fact 3 (process table, now). Kept only as the stop-proof upgrade Retry reads. |
 | `RuntimeHostRestartRelease.awaits` / `released` | `finished`, latest run completed, remote excluded, not cancelled, no registration folder | Subsumed by facts 2 to 4 (ended before this boot). Kept only as the stop-proof upgrade, with its conditions unchanged. |
 | `RuntimeHostNoToolReceiptReconciliation.reconciled` | `finished`, latest run completed, host, no inherited uncertainty | Subsumed. A tool-free transcript is one way fact 3 holds; withdrawn SSH jobs are fact 5. |
 | `RuntimeHostNoToolReceiptReconciliation.reconcile` (driver) | a candidate filter per exit | Replaced by one driver that evaluates every unreleased receipt. Its leases, `saveReconciliation`, event and audit are reused. |
 | `ProviderSharedStateReadObservation.noRemoteRegistrations` | no `remote-jobs/<task>` folder | Replaced inside the rule by the job inventory: a registration with no job is not remote work. The settings-reader rule that owns this helper is not changed. |
 | `RuntimeWorkspaceContinuation.preview` / `authorize` | holder's turn completed successfully (`hasCompletedTurn`), holder claims limited to three kinds | Replaced by the review in B. A refusal carries what is running; an unknown is named. |
-| `RuntimeWorkspaceContinuation.admission`, `Admission.excludedClaims`, `inheritedToolUncertainty` | a saved decision per request | Not used by new decisions: the holder is released, so ordinary admission applies. Still honored for decisions saved before this change. |
+| `RuntimeWorkspaceContinuation.admission`, `Admission.excludedClaims`, `inheritedToolUncertainty` | a saved decision per request, and every holder it names unchanged since | Not used by new decisions: the holder is released, so ordinary admission applies. Still honored for decisions saved before this change, with one correction that 1a needs. As `lockSources` reads, a task once admitted by a decision re-checks that decision's holders on every later message and is refused when one of them changed; 1a pins that with a test first. A holder whose reservation has ended is skipped, and when none is left the request is admitted the ordinary way. |
 | `RuntimeWorkspaceContinuationScope` ("remember") | same claims, manual successor | Kept as the store of remembered answers. `inherited` resolves holders instead of building a per-request authorization. |
 | `RuntimeCompletedUserTurnContinuation.hasCompletedTurn` | success | No longer called by release or review. Removed once the saved-decision path is its last caller. |
 | `RuntimeCompletedUserTurnContinuation.hasSettledTurn` / `permits` | settlement closed, exit recorded | Kept: it admits a person's next message in the same task. It also accepts a released receipt (C). |
@@ -348,23 +349,24 @@ Each is one draft PR from `main`. Narrow tests first, then `script/test_architec
 
 **1a. The release rule (A).** One typed service evaluates the six facts and returns release,
 running or unknown with the named fact. `refreshResourceOwnership` calls its driver in place of
-`RuntimeHostNoToolReceiptReconciliation.reconcile`, the admission loop re-asks it for the holders
-of waiting requests, and the scope value is recorded for every host launch. The banner reads the
-returned fact. No dialog change.
+`RuntimeHostNoToolReceiptReconciliation.reconcile`, the admission loop re-asks it while a request
+waits, and a saved decision whose holders have all released needs no exception. No wording or
+dialog change.
 Tests: one table over the verdict, each fact failing alone and all passing, for every `state` and
 run outcome; a failed, timed-out and cancelled run that ended before the boot is released; a live
 child process holds (running); a live survivor holds and is named; an SSH route, an open SSH job,
 a container and a same-boot lost run are unknown; a registration folder with no job does not hold;
 inherited uncertainty is ignored; the release keeps the original proof, writes the event and the
 audit line, is idempotent, and skips a busy lease; the stop proof is upgraded only where it is
-today; Retry of a failed holder stays blocked. Rehearsal on a production copy: 5C892B2E releases
+today; Retry of a failed holder stays blocked; a task admitted by an earlier decision accepts its
+next message after its holders released. Rehearsal on a production copy: 5C892B2E releases
 and a request waiting on `starr-docs-omop` is admitted with no decision; the other 14 hold with
 the facts in the validation table.
 
 **1b. The override (B).** `preview` returns the review (holders, kind, named facts) instead of
 throwing `.busy`; confirming releases the reviewed holders with basis "decision"; "remember"
-resolves later holders; a released receipt accepts the task's own next message. Banner and dialog
-wording as above.
+resolves later holders; a released receipt accepts the task's own next message; the scope value
+is recorded for every host launch. Banner and dialog wording as above.
 Tests: preview never refuses a holder whose processes are gone; a running holder refuses and
 carries what runs; confirming releases every reviewed holder, records the event on each holder and
 on the waiter, and the waiter is admitted by ordinary admission with no inherited uncertainty; a
@@ -419,12 +421,13 @@ code until the owner uses schedules (production has none).
   holders' journals and, for a holder with recorded survivors, the process table. It runs on a
   counted pass and only for holders a waiting request names. The 2 Hz re-render that fed the
   October menu live-lock is the reason it must not write unless a receipt changes.
-- **Two shapes of reconciliation entry, and rollback.** A build from before this change that reads
-  an entry which is released but not replaceable refuses it (`reconciledRecord` requires
-  `canReplace`) and then admits nothing until the newer build runs again. Increment 1a has to
-  either keep such entries out of the path older builds read or state that rolling back needs the
-  store backup. That is rehearsed with the current production build on a copy before 1a leaves
-  draft.
+- **Two kinds of reconciliation entry, and rollback.** A build from before this change refuses a
+  reconciliation entry that is released but not replaceable (`reconciledRecord` requires
+  `canReplace`) and then admits nothing. So 1a saves such a release under its own entry name, which
+  older builds never look up. After a rollback an older build still reads the receipt as released;
+  what it cannot do is accept a new message in that one task if a decision had archived the
+  receipt before its release. That is rehearsed with the current production build on a copy
+  before 1a leaves draft.
 - **One new evaluator can become a second owner.** It must replace the conjunctions in the same
   PR that adds it, and the fitness test pins the single assignment. If review starts adding
   per-case conditions back, stop at round two and return to this document.
