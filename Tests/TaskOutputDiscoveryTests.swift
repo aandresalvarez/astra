@@ -210,7 +210,7 @@ struct TaskOutputDiscoveryTests {
         let result = await TaskDeliverableVerificationService.evaluate(
             task: fixture.task,
             run: fixture.run,
-            environment: .init(checkJavaScriptSyntax: { _, _ in .passed })
+            environment: .init(checkJavaScriptSyntax: { _, _, _ in .passed })
         )
 
         #expect(result.canComplete)

@@ -38,7 +38,7 @@ struct TaskDeliverableVerificationServiceTests {
         let result = await TaskDeliverableVerificationService.evaluate(
             task: fixture.task,
             run: fixture.run,
-            environment: TaskDeliverableVerificationEnvironment(checkJavaScriptSyntax: { _, _ in .passed })
+            environment: TaskDeliverableVerificationEnvironment(checkJavaScriptSyntax: { _, _, _ in .passed })
         )
 
         #expect(result.canComplete)
@@ -66,7 +66,7 @@ struct TaskDeliverableVerificationServiceTests {
             task: fixture.task,
             run: fixture.run,
             environment: TaskDeliverableVerificationEnvironment(
-                checkJavaScriptSyntax: { _, _ in .failed("Unexpected token") }
+                checkJavaScriptSyntax: { _, _, _ in .failed("Unexpected token") }
             )
         )
 
@@ -97,7 +97,7 @@ struct TaskDeliverableVerificationServiceTests {
             task: fixture.task,
             run: fixture.run,
             environment: TaskDeliverableVerificationEnvironment(
-                checkJavaScriptSyntax: { _, _ in .unavailable("JavaScript checker unavailable") }
+                checkJavaScriptSyntax: { _, _, _ in .unavailable("JavaScript checker unavailable") }
             )
         )
 
@@ -116,7 +116,7 @@ struct TaskDeliverableVerificationServiceTests {
         let result = await TaskDeliverableVerificationService.evaluate(
             task: fixture.task,
             run: fixture.run,
-            environment: TaskDeliverableVerificationEnvironment(checkJavaScriptSyntax: { _, _ in .passed })
+            environment: TaskDeliverableVerificationEnvironment(checkJavaScriptSyntax: { _, _, _ in .passed })
         )
 
         #expect(!result.canComplete)
@@ -139,7 +139,7 @@ struct TaskDeliverableVerificationServiceTests {
         let result = await TaskDeliverableVerificationService.evaluate(
             task: fixture.task,
             run: fixture.run,
-            environment: TaskDeliverableVerificationEnvironment(checkJavaScriptSyntax: { _, _ in .passed })
+            environment: TaskDeliverableVerificationEnvironment(checkJavaScriptSyntax: { _, _, _ in .passed })
         )
 
         #expect(!result.canComplete)
@@ -239,7 +239,7 @@ struct TaskDeliverableVerificationServiceTests {
         let result = await TaskDeliverableVerificationService.evaluate(
             task: fixture.task,
             run: fixture.run,
-            environment: .init(checkJavaScriptSyntax: { _, _ in .passed })
+            environment: .init(checkJavaScriptSyntax: { _, _, _ in .passed })
         )
 
         #expect(result.canComplete)
@@ -318,7 +318,7 @@ struct TaskDeliverableVerificationServiceTests {
         let result = await TaskDeliverableVerificationService.evaluate(
             task: fixture.task,
             run: fixture.run,
-            environment: .init(checkJavaScriptSyntax: { _, _ in .passed })
+            environment: .init(checkJavaScriptSyntax: { _, _, _ in .passed })
         )
 
         #expect(!result.canComplete)
@@ -359,7 +359,7 @@ struct TaskDeliverableVerificationServiceTests {
         let result = await TaskDeliverableVerificationService.evaluate(
             task: fixture.task,
             run: fixture.run,
-            environment: .init(checkJavaScriptSyntax: { _, _ in .passed })
+            environment: .init(checkJavaScriptSyntax: { _, _, _ in .passed })
         )
 
         #expect(result.canComplete)
@@ -391,7 +391,7 @@ struct TaskDeliverableVerificationServiceTests {
         let result = await TaskDeliverableVerificationService.evaluate(
             task: fixture.task,
             run: fixture.run,
-            environment: .init(checkJavaScriptSyntax: { _, _ in .passed })
+            environment: .init(checkJavaScriptSyntax: { _, _, _ in .passed })
         )
 
         #expect(result.canComplete)
@@ -422,7 +422,7 @@ struct TaskDeliverableVerificationServiceTests {
         let result = await TaskDeliverableVerificationService.evaluate(
             task: fixture.task,
             run: fixture.run,
-            environment: .init(checkJavaScriptSyntax: { _, _ in .passed })
+            environment: .init(checkJavaScriptSyntax: { _, _, _ in .passed })
         )
 
         #expect(result.canComplete)
@@ -564,7 +564,7 @@ struct TaskDeliverableVerificationServiceTests {
         let result = await TaskDeliverableVerificationService.evaluate(
             task: fixture.task,
             run: fixture.run,
-            environment: TaskDeliverableVerificationEnvironment(checkJavaScriptSyntax: { source, _ in
+            environment: TaskDeliverableVerificationEnvironment(checkJavaScriptSyntax: { source, _, _ in
                 checked.append(source)
                 return .failed("SyntaxError: missing ) after argument list")
             })
@@ -573,6 +573,40 @@ struct TaskDeliverableVerificationServiceTests {
         #expect(checked.sources.count == 1)
         #expect(!result.canComplete)
         #expect(TaskCompletionPolicy.decide(deliverableVerification: result).stopReason == "deliverable_verification_failed")
+    }
+
+    @Test("Each script reaches the checker with the kind its container declares")
+    func scriptKindReachesTheChecker() async throws {
+        let fixture = try makeFixture(goal: "create a web page with html and javascript")
+        defer { try? FileManager.default.removeItem(atPath: fixture.root) }
+        let files = [
+            "index.html": "<!doctype html><html><body><script>start()</script><script type=\"module\">boot()</script></body></html>",
+            "app.mjs": "export const ready = true;",
+            "util.js": "const helper = 1;"
+        ]
+        for (name, text) in files {
+            try text.write(
+                toFile: (fixture.folder as NSString).appendingPathComponent(name),
+                atomically: true,
+                encoding: .utf8
+            )
+        }
+        let checked = CheckedSources()
+
+        _ = await TaskDeliverableVerificationService.evaluate(
+            task: fixture.task,
+            run: fixture.run,
+            environment: TaskDeliverableVerificationEnvironment(checkJavaScriptSyntax: { _, label, kind in
+                checked.append("\(label)=\(kind)")
+                return .passed
+            })
+        )
+
+        let seen = checked.sources
+        for expected in ["index.html inline script 1=classicScript", "index.html inline script 2=module",
+                         "app.mjs=module", "util.js=unknown"] {
+            #expect(seen.contains { $0.hasSuffix(expected) }, "missing \(expected) in \(seen)")
+        }
     }
 
     @Test("inline script type attribute decides whether a block is JavaScript")
@@ -657,7 +691,7 @@ private final class CheckedSources: @unchecked Sendable {
 }
 
 private func nodeLikeEnvironment(recording checked: CheckedSources) -> TaskDeliverableVerificationEnvironment {
-    TaskDeliverableVerificationEnvironment(checkJavaScriptSyntax: { source, _ in
+    TaskDeliverableVerificationEnvironment(checkJavaScriptSyntax: { source, _, _ in
         checked.append(source)
         return source.hasPrefix("{") ? .failed("SyntaxError: Unexpected token ':'") : .passed
     })
