@@ -94,6 +94,10 @@ The rule does not read: `run.status`, `typedStopReason`, `task.status`, `state`,
 the task's latest, `cancellationRequested`, or `inheritedToolUncertainty`. Uncertainty a receipt
 inherited belongs to other receipts, which the same rule judges on their own.
 
+A release is final. An earlier execution whose reservation already ended is not asked again when
+a later turn of the same task is judged; otherwise that turn's journal, written in this boot,
+would send the earlier one back to "unknown" and the task would hold its folder again.
+
 Each fact that fails is one of two kinds, and the rule returns which:
 
 - **Running on this Mac**: the provider process is present, a survivor is alive, a live ASTRA
@@ -107,10 +111,10 @@ Each fact that fails is one of two kinds, and the rule returns which:
 - At startup recovery and in every `TaskQueue.refreshResourceOwnership`, where today's
   reconciliation already runs: when the queue wakes, when a lock is taken or released, on every
   pass of a task's own lock wait (250 ms), and when an SSH job changes.
-- New: while the admission loop keeps a request in `waitingForResource` behind a saved holder. That
-  loop re-asserts the wait every 500 ms but never refreshes ownership today, so a holder whose
-  process exits is noticed only when something else wakes the queue. It will re-ask the rule for
-  the holders that waiting requests name, on a counted pass, not on every pass.
+- New: while the admission loop keeps a request in `waitingForResource`. That loop re-asserts the
+  wait every 500 ms but never refreshes ownership today, so a holder whose process exits is
+  noticed only when something else wakes the queue. It asks the rule on every tenth pass, and
+  re-reads ownership only when the rule ended a reservation.
 - When "Review workspace" opens, and again under the leases when the person confirms.
 
 The rule has no timer of its own and writes only when a receipt changes from held to released.
@@ -166,9 +170,10 @@ saved stay readable and valid until their holders release.
   termination proof (`canReplace`) and remaining limits. Releasing a folder does not make an
   unfinished execution replayable.
 - A new human message inside a task still continues the same owner through
-  `RuntimeCompletedUserTurnContinuation.permits`. One addition: a receipt released by rule A or by
-  a decision also accepts a new human message, so a task whose last turn left a stale settlement
-  barrier is not stuck behind itself.
+  `RuntimeCompletedUserTurnContinuation.permits`. One addition, in 1a: a receipt whose reservation
+  ended also accepts a new human message, so a task whose last turn left a stale settlement
+  barrier, a timed-out process group or a cancellation is not stuck behind itself. It carries no
+  earlier claims over, and "Check again" on such a timed-out run has nothing left to do.
 - The journal is the authority. Events explain it; they never grant a release.
 - Unreadable ownership never admits work.
 
@@ -216,6 +221,11 @@ The rule was written as a throwaway probe and run on the copy, with the real boo
 
 Result: 1 released, 14 held, each with a named fact. None of the 15 has anything running, so the
 "running" refusal is covered by tests and not by this data.
+
+The implementation in #601 reproduces this table on a fresh copy taken 2026-11-19: the rule gives
+the same 15 verdicts, the driver releases exactly that one receipt, the request waiting behind it
+is admitted with no decision, and Retry on the released holder stays refused. A build of `main`
+then opened that copy without trouble, which is the rollback case.
 
 - The one release is the dead end reported on 2026-11-18: a request waiting on `starr-docs-omop`
   starts with no decision. Nothing the rule releases should stay held.
@@ -336,7 +346,7 @@ anything a person reads.
 | Holder ended, an SSH job has not ended | Waiting for you: "Duke Delivery" has an SSH job on `alvaro-pcornet-backup` that has not ended: "Step 8 CSV export". | **Start in `pcornet` now?** Nothing from "Duke Delivery" is running on this Mac. Its SSH job "Step 8 CSV export" on `alvaro-pcornet-backup` is still running (or: could not be confirmed stopped). Starting now does not stop it. Buttons: Start now, Open task, Keep waiting. No checkbox. |
 | Holder ended, SSH route, no job | Waiting for you: "Run C2STAN Cycle 20" could run commands on `alvaro-pcornet-backup`, and ASTRA cannot see that machine. | **Start in `pcornet-data-curation` now?** Nothing from "Run C2STAN Cycle 20" is running on this Mac. It could run commands on `alvaro-pcornet-backup` over SSH, and ASTRA cannot see whether something is still running there. Checkbox: Don't ask again for SSH work in this workspace. Buttons: Start now, Keep waiting. |
 | Holder ran in a container | Waiting for you: "…" ran in a container ASTRA cannot inspect. | Same shape; names the container. No checkbox. |
-| ASTRA lost track of the run (quit or crash, same boot) | Waiting for you: ASTRA lost track of "…" when it quit and cannot confirm its commands ended. | **Start in `clew` now?** ASTRA sees no process from "…", but it lost its record of that run. Restarting the Mac settles this without a decision. Buttons: Start now, Keep waiting. |
+| ASTRA lost track of the run (quit or crash, same boot) | Waiting for you: ASTRA lost track of "…" when it quit and cannot confirm its commands ended. | **Start in `clew` now?** ASTRA sees no process from "…", but it lost its record of that run. Buttons: Start now, Keep waiting. When the run did leave an exit record, the dialog adds: Restarting the Mac settles this without a decision. |
 | Ownership unreadable | ASTRA cannot read its record of who is using `clew`. Nothing was started. | No dialog. |
 
 After "Start now" the holder's task shows one line in its history: "You let other tasks use
@@ -349,9 +359,9 @@ Each is one draft PR from `main`. Narrow tests first, then `script/test_architec
 
 **1a. The release rule (A).** One typed service evaluates the six facts and returns release,
 running or unknown with the named fact. `refreshResourceOwnership` calls its driver in place of
-`RuntimeHostNoToolReceiptReconciliation.reconcile`, the admission loop re-asks it while a request
-waits, and a saved decision whose holders have all released needs no exception. No wording or
-dialog change.
+`RuntimeHostNoToolReceiptReconciliation.reconcile`, the admission loop asks it while a request
+waits, a saved decision whose holders have all released needs no exception, and a receipt whose
+reservation ended accepts its task's next message. No wording or dialog change.
 Tests: one table over the verdict, each fact failing alone and all passing, for every `state` and
 run outcome; a failed, timed-out and cancelled run that ended before the boot is released; a live
 child process holds (running); a live survivor holds and is named; an SSH route, an open SSH job,
@@ -365,8 +375,8 @@ the facts in the validation table.
 
 **1b. The override (B).** `preview` returns the review (holders, kind, named facts) instead of
 throwing `.busy`; confirming releases the reviewed holders with basis "decision"; "remember"
-resolves later holders; a released receipt accepts the task's own next message; the scope value
-is recorded for every host launch. Banner and dialog wording as above.
+resolves later holders; the scope value is recorded for every host launch. Banner and dialog
+wording as above.
 Tests: preview never refuses a holder whose processes are gone; a running holder refuses and
 carries what runs; confirming releases every reviewed holder, records the event on each holder and
 on the waiter, and the waiter is admitted by ordinary admission with no inherited uncertainty; a
@@ -381,7 +391,10 @@ see the refusal.
 **2. Task folders (D1) and fork folders.** The workspace root stops being a writable root when it
 is not a repository; the claim resolver stops claiming it; shared workspace files keep their
 ASTRA-side serialization; a fork starts from copies in its own folder, and a fork that keeps the
-parent's folder claims it.
+parent's folder claims it. The claim that replaces the workspace root is the task folder itself,
+held exclusively: two tasks never conflict on it, an older request that still claims the whole
+workspace folder contains it and so still excludes them, and a fork that shares its parent's
+folder conflicts with the parent. Not started; it waits for open question 8.
 Tests: two tasks in a non-code workspace hold no conflicting claim and run together; a task with a
 non-git additional folder still excludes another with the same folder; the launch plan, sandbox
 grants and provider directory arguments all show the task folder and not the workspace root; a
@@ -390,11 +403,13 @@ not in its writable set; the stray-write notice fires for a change outside the f
 Development app: two analysis tasks in one synthetic workspace overlap; a fork writes only its own
 folder.
 
-**3. Worktrees with detection (D2, E) and the folders without an undo (D3, D4).** With enforcement
-Off, a worktree task no longer re-claims its source checkout or the Git directory; the source
-checkout is compared before and after the turn and a change is reported on the task; a
-cloud-synced or non-local folder is classified and stays one writer at a time, with approval when
-enforcement is Off.
+**3. Worktrees with detection (D2, E) and the folders without an undo (D3, D4).** In two parts.
+3a: with enforcement Off, a worktree task holds its source checkout and the repository's Git
+directory as a reader instead of a writer, so sibling worktrees run together and a task that
+writes the checkout itself still excludes them; the source checkout is compared before and after
+the turn and a change is recorded on the task. 3b: a cloud-synced or non-local folder is
+classified and stays one writer at a time, with approval when enforcement is Off; it waits for
+open question 6.
 Tests: two worktree tasks of one repository run together with enforcement Off; a same-directory
 task still excludes them; a planted change in the source checkout is detected and named; a folder
 under `~/Library/CloudStorage` and a ubiquitous folder classify as cloud-synced, a plain folder
@@ -460,3 +475,11 @@ code until the owner uses schedules (production has none).
 7. **Writing the workspace root.** In a non-code workspace a task would write its own folder and
    the extra folders, not the workspace folder itself. Is there anything you rely on agents
    writing directly there (the playbook files, for example)?
+8. **How to stage increment 2.** With a sandbox on, "the workspace folder is not in the task's
+   policy" makes the provider's launch directory read-only, and providers write there themselves
+   (Claude Code keeps `.claude/settings.local.json` in it). That needs a run with real providers
+   in the development app before it ships. Two ways to stage it: change only what is claimed when
+   enforcement is Off, which is how production runs and gives parallel analysis tasks now, and do
+   the enforced case after that check (proposed); or do both together after the check. Either way
+   most of the runtime tests assume that two tasks in one plain workspace folder conflict, so the
+   test harness has to give them a repository or an extra folder first.
