@@ -3,8 +3,8 @@ import ASTRACore
 
 extension AntigravityCLIRuntimeAdapter {
     /// How long `agy` itself waits on the model before giving up. It gives up
-    /// first: it then exits 0 with empty stdout about two seconds later and
-    /// names the timeout on stderr, which is no evidence about the account.
+    /// first: about two seconds later it exits (0 before agy 1.5.12, 3 since)
+    /// and names the timeout on stderr, which is no evidence about the account.
     static let liveCheckPrintTimeoutSeconds = 25
     /// ASTRA's own kill timer, the backstop when `agy` cannot stop itself. It
     /// sits above `liveCheckPrintTimeoutSeconds` plus `agy`'s exit lag so the
@@ -64,6 +64,11 @@ extension AntigravityCLIRuntimeAdapter {
                     fixAction: .switchAntigravityToADC
                 )
             }
+            // agy 1.5.12 exits 3 at its own print timeout, where earlier
+            // versions exited 0. The model was slow; the account is untested.
+            if let unanswered = antigravityPrintTimeout(result, title: title) {
+                return unanswered
+            }
             return RuntimeReadinessCheck(
                 id: "antigravity-account",
                 title: title,
@@ -113,23 +118,28 @@ extension AntigravityCLIRuntimeAdapter {
             }
     }
 
-    /// `agy` exits 0 with nothing on stdout when its own print timeout fires,
-    /// and also when it printed nothing at all. Neither shows the account is
-    /// broken, so neither may block a launch. Anything else it said on a
+    /// `agy` names its own print timeout on stderr whatever its exit code.
+    /// The model did not answer in time, which shows nothing about the account.
+    private func antigravityPrintTimeout(_ result: RunResult, title: String) -> RuntimeReadinessCheck? {
+        guard result.stderr.lowercased().contains("print timeout") else { return nil }
+        return RuntimeReadinessCheck.inconclusive(
+            id: "antigravity-account",
+            title: title,
+            reason: "Antigravity stopped waiting for the model after \(Self.liveCheckPrintTimeoutSeconds)s"
+        )
+    }
+
+    /// On a clean exit, `agy` may still have printed nothing: its own print
+    /// timeout (before 1.5.12), or no output at all. Neither shows the account
+    /// is broken, so neither may block a launch. Anything else it said on a
     /// clean exit is left to the caller as evidence.
     private func antigravityLiveCheckWithoutAnswer(
         _ result: RunResult,
         title: String
     ) -> RuntimeReadinessCheck? {
+        if let unanswered = antigravityPrintTimeout(result, title: title) { return unanswered }
         let stdout = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         let stderr = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-        if stderr.lowercased().contains("print timeout") {
-            return RuntimeReadinessCheck.inconclusive(
-                id: "antigravity-account",
-                title: title,
-                reason: "Antigravity stopped waiting for the model after \(Self.liveCheckPrintTimeoutSeconds)s"
-            )
-        }
         guard stdout.isEmpty, stderr.isEmpty else { return nil }
         return RuntimeReadinessCheck.inconclusive(
             id: "antigravity-account",

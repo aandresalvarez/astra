@@ -88,6 +88,36 @@ struct RuntimeReadinessInconclusiveProbeTests {
         #expect(report.state == .warning)
     }
 
+    /// agy 1.5.12 exits 3 at its own print timeout, where earlier versions
+    /// exited 0. Every slow probe then blocked the run and told the user to
+    /// redo the gcloud sign-in, although ADC had authenticated. The stderr
+    /// below follows what ASTRA showed; agy's JSON tail was cut off there.
+    @Test("agy's own print timeout warns even when agy exits with an error code")
+    func agyPrintTimeoutWithErrorExitWarns() async throws {
+        let stderr = "[agy] print timeout after 25s with turn in progress; returning partial output\n"
+            + "error: print timeout after 25s with the turn still in progress; the response is partial\n"
+            + #"AGY_ERROR: {"status":"error"}"#
+        let report = await antigravityReport(
+            live: RunResult(outcome: .exited(code: 3), stdout: "", stderr: stderr),
+            authMode: .adc
+        )
+
+        #expect(report.state == .warning)
+        let account = try #require(report.checks.first { $0.id == "antigravity-account" })
+        #expect(account.state == .warning)
+        #expect(account.detail.contains("stopped waiting for the model after 25s"))
+        #expect(account.remediation?.contains("gcloud") == false)
+
+        // The same exit code without agy's timeout message is still a failure.
+        let failed = await antigravityReport(
+            live: RunResult(outcome: .exited(code: 3), stdout: "", stderr: #"AGY_ERROR: {"status":"error"}"#),
+            authMode: .adc
+        )
+        #expect(failed.state == .blocked)
+        let refused = try #require(failed.checks.first { $0.id == "antigravity-account" })
+        #expect(refused.remediation?.contains("gcloud auth application-default login") == true)
+    }
+
     @Test("An Antigravity live check that cannot start warns")
     func unstartedLiveCheckWarns() async throws {
         let report = await antigravityReport(
