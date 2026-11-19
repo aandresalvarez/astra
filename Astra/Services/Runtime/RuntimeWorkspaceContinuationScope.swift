@@ -4,8 +4,9 @@ import ASTRACore
 import ASTRAModels
 
 /// A remembered human decision for one persistent workspace and exact resource
-/// scope (or a narrower subset). It never certifies cleanup. Only completed executions in that decision's
-/// lineage are eligible; an unrelated owner or changed predecessor stays fenced.
+/// scope (or a narrower subset). It never certifies cleanup. Only the exact receipts the person acknowledged
+/// and completed executions in that decision's lineage are eligible; an unrelated owner, a changed
+/// predecessor, or a later holder whose turn failed stays fenced.
 @MainActor
 enum RuntimeWorkspaceContinuationScope {
     static func inherited(task: AgentTask, request: TaskTurnRequest, context: ModelContext,
@@ -70,6 +71,12 @@ enum RuntimeWorkspaceContinuationScope {
                   let sourceOwner = try owner(of: grant, context: context),
                   sourceOwner.workspace?.persistentModelID == scope.workspaceOwnerID,
                   sourceOwner.workspace?.id == scope.workspaceID else { return false }
+            // The person saw the receipts they acknowledged, failed turns
+            // included. A holder that failed afterwards is new uncertainty
+            // and needs their own decision. The receiving task's receipt is
+            // judged by `isNewManualInstruction`, not here.
+            guard source.taskOwnerID == task.persistentModelID
+                || RuntimeCompletedUserTurnContinuation.hasCompletedTurn(receipt, task: sourceOwner, context: context) else { return false }
         }
         return true
     }
