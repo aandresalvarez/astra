@@ -9,7 +9,7 @@ extension TaskQueue {
         let store = RuntimeExecutionOwner.store(in: context)
         resourceOwnershipStore = store
         do {
-            try RuntimeHostNoToolReceiptReconciliation.reconcile(in: store, context: context)
+            try RuntimeReservationRelease.reconcile(in: store, context: context)
             persistedResourceLocks = try RuntimeResourceOwnership.claims(in: store, context: context)
             resourceOwnershipReadFailed = false
         } catch {
@@ -17,6 +17,21 @@ extension TaskQueue {
             resourceOwnershipReadFailed = true
         }
     }
+
+    /// The loop that keeps a request waiting never refreshed ownership, so a
+    /// holder whose process exited was noticed only when something else woke
+    /// the queue. A counted pass, not a timer: every tenth pass of a loop
+    /// that parks for half a second. Only the release rule is asked; the full
+    /// ownership read follows when it ended a reservation.
+    @MainActor
+    func refreshOwnershipWhileWaiting(blocked: Bool, in context: ModelContext) {
+        guard blocked else { waitingOwnershipPasses = 0; return }
+        waitingOwnershipPasses += 1
+        guard waitingOwnershipPasses % Self.waitingOwnershipRefreshInterval == 0 else { return }
+        let ended = (try? RuntimeReservationRelease.reconcile(in: RuntimeExecutionOwner.store(in: context), context: context)) ?? 0
+        if ended > 0 { refreshResourceOwnership(in: context) }
+    }
+    static let waitingOwnershipRefreshInterval = 10
 
     @MainActor
     func resourceAccess(for task: AgentTask) -> TaskResourceAccessMode {
@@ -106,7 +121,8 @@ extension TaskQueue {
               let saved = try? RuntimeExecutionOwner.existing(task: task, context: context),
               RuntimeCompletedUserTurnContinuation.permits(saved, task: task, request: request, context: context)
                 || RuntimeWorkspaceContinuation.resumesPreparation(saved, task: task, request: request, context: context) else { return [] }
-        return saved.resourceClaims ?? []
+        // An owner whose reservation ended keeps no place in line for it.
+        return saved.resourcesReleased == true ? [] : saved.resourceClaims ?? []
     }
 
     @MainActor

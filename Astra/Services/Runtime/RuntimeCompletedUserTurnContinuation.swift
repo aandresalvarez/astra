@@ -14,7 +14,7 @@ enum RuntimeCompletedUserTurnContinuation {
               let request, request.modelContext === context, request.state.isActive,
               request.taskID == task.id else { return false }
         if RuntimeExecutionAdmission.resolve(request: request, task: task) == .userInstruction,
-           hasSettledTurn(saved, task: task, context: context) { return true }
+           hasSettledTurn(saved, task: task, context: context) || hasEndedReservation(saved, task: task, context: context) { return true }
         guard hasUnlaunchedPreparation(saved, task: task, context: context),
               request.kind == .followUp,
               let source = TaskHistoryRead.event(id: request.sourceEventID, in: task),
@@ -45,6 +45,19 @@ enum RuntimeCompletedUserTurnContinuation {
     static func hasSettledTurn(_ saved: RuntimeExecutionOwnerRecord, task: AgentTask,
                                context: ModelContext) -> Bool {
         settledBasis(saved, task: task, context: context, excluding: [], requiresSuccess: false)
+    }
+
+    /// `RuntimeReservationRelease` ended this owner's reservation: nothing it
+    /// started can still act, whatever its last turn left behind (a stale
+    /// settlement barrier, a timed-out process group, a cancellation). A new
+    /// human message may then continue the task. It is not a replay: Retry
+    /// and recovery still need `canReplace`.
+    static func hasEndedReservation(_ saved: RuntimeExecutionOwnerRecord, task: AgentTask,
+                                    context: ModelContext) -> Bool {
+        saved.resourcesReleased == true && saved.reservationRelease != nil
+            && saved.taskID == task.id && saved.taskOwnerID == task.persistentModelID
+            && !task.runs.contains(where: { $0.status == .running })
+            && (try? RuntimeExecutionOwner.store(in: context).retainedExecutions(of: saved)) != nil
     }
 
     static func hasUnlaunchedPreparation(_ saved: RuntimeExecutionOwnerRecord, task: AgentTask,
@@ -150,7 +163,10 @@ enum RuntimeCompletedUserTurnContinuation {
         // Admission archives the predecessor before saving this successor.
         // Session protection is projected from that chain; copying its sessions
         // into every successor would eventually make the receipt unreadable.
-        let inherited = (prior.resourceClaims ?? []).filter { $0.resourceKind != .nativeSession }
+        // A prior whose reservation ended holds nothing to carry over: its
+        // folders may have other writers now, and admission only checked `additional`.
+        let inherited = prior.resourcesReleased == true ? []
+            : (prior.resourceClaims ?? []).filter { $0.resourceKind != .nativeSession }
         let claims = (inherited + additional).map {
             TaskExecutionResourceClaim(kind: $0.resourceKind, key: $0.resourceKey,
                 access: $0.accessMode == .write ? .exclusive : .shared, readConsistency: $0.readConsistency)

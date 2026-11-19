@@ -23,9 +23,9 @@ enum TaskTurnRequestRecoveryService {
     ) -> Summary {
         let requests: [TaskTurnRequest]
         do {
-            // Repair a proved tool-free host completion before deciding whether
-            // its saved follow-up lost an unresolved connection on restart.
-            try RuntimeHostNoToolReceiptReconciliation.reconcile(
+            // End the reservations nothing can still act on before deciding
+            // whether a saved follow-up lost an unresolved connection on restart.
+            try RuntimeReservationRelease.reconcile(
                 in: RuntimeExecutionOwner.store(in: modelContext), context: modelContext)
             // The table is append-only; recovery only ever acts on active
             // (non-terminal) rows, so bound the fetch at the store rather

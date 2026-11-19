@@ -132,6 +132,8 @@ struct RuntimeExecutionOwnerRecord: Codable, Equatable, Sendable {
     /// Successful launches in the bound run, retained when a fallback clears its current process.
     var providerLaunchCount: Int? = nil
     var resourcesReleased: Bool? = nil
+    /// Why the reservation ended, when `RuntimeReservationRelease` ended it.
+    var reservationRelease: RuntimeReservationReleaseRecord? = nil
     /// Exact registered SSH inventory for a settled process; managed helper
     /// attempts still need protected no-dispatch evidence before release.
     var pendingSSHJobSetDigest: String? = nil

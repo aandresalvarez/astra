@@ -336,8 +336,8 @@ struct RuntimeWorkspaceContinuationTests {
         #expect(!queue.canAcquireResourceLocks(otherClaims, task: c, context: h.context))
     }
 
-    @Test("An SSH observation cannot release missing jobs or inherited tool effects",
-          arguments: ["missing", "newIdentity", "unreachable", "executed", "inherited", "v3", "missingPermit", "issuedPermit"])
+    @Test("An SSH observation cannot release missing, executed or unconfirmed jobs",
+          arguments: ["missing", "newIdentity", "unreachable", "executed", "v3", "missingPermit", "issuedPermit"])
     func incompleteSSHRelease(condition: String) throws {
         let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
         let (a, initial) = try completed(h)
@@ -350,7 +350,6 @@ struct RuntimeWorkspaceContinuationTests {
         owner.stopProof = .init(executionID: owner.executionID, process: proof.process, reaped: true,
             processGroupEmpty: true, toolsStopped: true, remoteWorkExcluded: true, capturedAt: proof.capturedAt)
         owner.resourcesReleased = false
-        owner.inheritedToolUncertainty = condition == "inherited"
         owner.pendingSSHJobSetDigest = try RuntimeWorkspaceRemoteJobs.releaseEvidence(task: a, owner: owner, context: h.context).identity
         try save(owner, h)
         try jobs.update(jobID: job.jobID) {
@@ -362,7 +361,7 @@ struct RuntimeWorkspaceContinuationTests {
             if condition == "newIdentity" { $0.launchNonce = UUID().uuidString.lowercased() }
         }
         if condition == "missing" { try FileManager.default.removeItem(at: jobs.recordURL(jobID: job.jobID)) }
-        try RuntimeHostNoToolReceiptReconciliation.reconcile(in: RuntimeExecutionOwner.store(in: h.context), context: h.context)
+        try RuntimeReservationRelease.reconcile(in: RuntimeExecutionOwner.store(in: h.context), context: h.context)
         #expect(try RuntimeExecutionOwner.existing(task: a, context: h.context) == owner)
     }
 
@@ -525,12 +524,12 @@ struct RuntimeWorkspaceContinuationTests {
             $0.cancellationRequestedAt = Date(); $0.launchFence = .cancelledBeforeStart
             $0.lastObservation = .init(at: Date(), outcome: .reachable)
         }
-        try RuntimeHostNoToolReceiptReconciliation.reconcile(in: store, context: h.context)
+        try RuntimeReservationRelease.reconcile(in: store, context: h.context)
         let released = try #require(try RuntimeExecutionOwner.existing(task: a, context: h.context))
         #expect(released.resourcesReleased == true && released.canReplace)
         // Repeating after an interrupted journal save reuses the immutable attestation.
         try save(original, h)
-        try RuntimeHostNoToolReceiptReconciliation.reconcile(in: store, context: h.context)
+        try RuntimeReservationRelease.reconcile(in: store, context: h.context)
         #expect(try RuntimeExecutionOwner.existing(task: a, context: h.context) == released)
         let attestation = store.root.appendingPathComponent("reconciliations/\(original.executionID.uuidString).release")
         let attestedBytes = try Data(contentsOf: attestation)
@@ -1159,7 +1158,12 @@ struct RuntimeWorkspaceContinuationTests {
             """))
         let worker = h.makeWorker(runtime: .copilotCLI, executablePath: fake, permissionPolicy: .autonomous,
             sandboxEnforcementOverride: .off)
-        worker.maxRunSeconds = 5
+        // Launch preparation counts against this budget, and in a cold test
+        // process it can take several seconds (the hourly `codex mcp list`
+        // warm-up alone ran for about three here). With five seconds the
+        // budget ran out before the provider started, which ends the run as
+        // `recovery_limits_exhausted` instead of the timeout this test is about.
+        worker.maxRunSeconds = 15
         let queue = TaskQueue(poolSize: 1, workerFactory: { worker }, sandboxEnforcementProvider: { .off })
         await queue.signalExecutionRequest(id: expired.id, task: task, modelContext: h.context).value
         let run = try #require(task.runs.first)
@@ -1324,7 +1328,16 @@ struct RuntimeWorkspaceContinuationTests {
             let queue = TaskQueue(poolSize: 0); queue.refreshResourceOwnership(in: h.context)
             let claims = queue.resourceLockClaims(for: request, task: old, runMode: "follow_up", sandboxEnforcement: .off)
             #expect(queue.canAcquireResourceLocks(claims, task: old, context: h.context))
-            #expect(try Data(contentsOf: url) == bytes)
+            if mode == "legacy" {
+                #expect(try Data(contentsOf: url) == bytes)
+            } else {
+                // A clean stop whose release a crash never saved holds nothing:
+                // the rule ends that reservation, and the proof that made it
+                // replaceable is the one it already had.
+                let ended = try #require(try RuntimeExecutionOwner.existing(task: old, context: h.context))
+                #expect(ended.resourcesReleased == true && ended.canReplace && ended.reservationRelease?.basis == .exitProof)
+                #expect(ended.stopProof == (try JSONDecoder().decode(RuntimeExecutionOwnerRecord.self, from: bytes)).stopProof)
+            }
         }
         let candidate = RuntimeExecutionOwner.acquire(task: old, context: h.context, maxRunSeconds: 60, userRequest: request)
         if ["ownChanged", "cancelled", "retry", "consumed", "liveOther"].contains(mode) {
