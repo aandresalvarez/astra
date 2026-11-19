@@ -1159,7 +1159,10 @@ struct RuntimeWorkspaceContinuationTests {
             """))
         let worker = h.makeWorker(runtime: .copilotCLI, executablePath: fake, permissionPolicy: .autonomous,
             sandboxEnforcementOverride: .off)
-        worker.maxRunSeconds = 5
+        // The limit bounds the whole run, launch preparation included. Preparation
+        // alone has taken over five seconds on a busy Mac, which ends the run
+        // before the provider starts and never reaches the wall-clock stop.
+        worker.maxRunSeconds = 15
         let queue = TaskQueue(poolSize: 1, workerFactory: { worker }, sandboxEnforcementProvider: { .off })
         await queue.signalExecutionRequest(id: expired.id, task: task, modelContext: h.context).value
         let run = try #require(task.runs.first)
