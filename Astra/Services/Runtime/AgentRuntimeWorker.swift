@@ -1022,6 +1022,7 @@ final class AgentRuntimeWorker {
         }
         let taskFolderBeforeRun = await TaskFolderRunSnapshot.capture(for: task)
         await TaskFolderRunSnapshot.persistBaseline(taskFolderBeforeRun, task: task, run: run)
+        let sourceCheckoutsBeforeRun = await TaskWorktreeSourceCheckoutWatch.capture(for: task, sandboxEnforcement: executionPolicy.sandboxEnforcementSnapshot)
         // Preparation now suspends for Git and filesystem work. Cancellation
         // during that work must win before any provider process is launched.
         guard !cancellationRequested, !Task.isCancelled, task.status != .cancelled else {
@@ -1353,6 +1354,7 @@ final class AgentRuntimeWorker {
             runStartedAt: startTime,
             executionPath: executionPath
         )
+        await TaskWorktreeSourceCheckoutWatch.record(since: sourceCheckoutsBeforeRun, task: task, run: run, modelContext: modelContext)
         run.completedAt = Date()
         run.exitCode = result.exitCode
         run.providerVersion = result.providerVersion

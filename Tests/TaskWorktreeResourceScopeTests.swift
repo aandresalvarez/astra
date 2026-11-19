@@ -324,8 +324,8 @@ struct TaskWorktreeResourceScopeTests {
         #expect(!AgentRuntimeProcessRunner.runtimeWritablePaths(for: task).contains(fixture.checkout.path))
     }
 
-    @Test("Without sandboxing, sibling worktrees still serialize on their source checkout")
-    func unenforcedSourceCheckoutIsClaimedWhenSandboxIsOff() throws {
+    @Test("Without sandboxing, sibling worktrees run together and hold their source checkout as readers")
+    func unenforcedSourceCheckoutIsHeldAsAReaderWhenSandboxIsOff() throws {
         let fixture = try WorktreeFixture(worktrees: ["wt-a", "wt-b"])
         defer { fixture.remove() }
         let workspace = fixture.workspace(additionalPaths: [fixture.checkout.path])
@@ -340,10 +340,22 @@ struct TaskWorktreeResourceScopeTests {
 
         // The sandbox keeps the replaced checkout read-only, so siblings run together.
         #expect(TaskExecutionResourceBroker.canAcquire(lease(second, .bestEffort), active: lease(first, .bestEffort)))
-        // With sandboxing Off nothing enforces that, so the checkout is claimed as a writer.
+        // With sandboxing Off nothing enforces that. The checkout and the Git
+        // directory are held as a reader and the checkout is watched
+        // (`TaskWorktreeSourceCheckoutWatch`), so siblings still run together.
         let unenforced = lease(first, .off)
-        #expect(unenforced.contains { $0.resourceKey == fixture.checkout.path && $0.accessMode == .write })
-        #expect(!TaskExecutionResourceBroker.canAcquire(lease(second, .off), active: unenforced))
+        #expect(unenforced.contains { $0.resourceKey == fixture.checkout.path && $0.accessMode == .readOnly })
+        #expect(unenforced.contains { $0.resourceKind == .gitCommonDirectory && $0.accessMode == .readOnly })
+        #expect(!unenforced.contains { $0.resourceKey != fixture.path("wt-a") && $0.accessMode == .write })
+        #expect(TaskExecutionResourceBroker.canAcquire(lease(second, .off), active: unenforced))
+        // A task that writes the checkout itself still waits for them, and they for it:
+        // what the watch finds changed there was not another ASTRA task's work.
+        let direct = AgentTask(title: "Edit main", goal: "Update the parser.",
+                               workspace: Workspace(name: "Main", primaryPath: fixture.checkout.path))
+        #expect(!TaskExecutionResourceBroker.canAcquire(lease(direct, .off), active: unenforced))
+        #expect(!TaskExecutionResourceBroker.canAcquire(unenforced, active: lease(direct, .off)))
+        #expect(TaskExecutionResourceAdmissionPolicy.watchedKeys(for: first, sandboxEnforcement: .bestEffort).isEmpty)
+        #expect(TaskExecutionResourceAdmissionPolicy.watchedKeys(for: direct, sandboxEnforcement: .off).isEmpty)
     }
 
     @Test("Every read-only workspace folder is labeled in the prompt")

@@ -60,6 +60,9 @@ public enum TaskEventTypes {
         public static let worktreePrepared: TaskEventType = "task.worktree.prepared"
         /// Draft-only intent; payload is `TaskWorktreeRequestPayload`.
         public static let worktreeRequested: TaskEventType = "task.worktree.requested"
+        /// The checkout a task's worktree replaced changed while a run worked
+        /// with sandboxing Off; payload is `[TaskWorktreeSourceCheckoutWatch.Change]`.
+        public static let worktreeSourceChanged: TaskEventType = "task.worktree.source_changed"
     }
 
     public enum Conversation {
@@ -369,6 +372,7 @@ public enum TaskEventTypes {
         Task.stats,
         Task.chained,
         Task.worktreeRequested,
+        Task.worktreeSourceChanged,
         Tool.permissionApprovalRequested,
         Tool.permissionGrantTask,
         System.skillActive,
