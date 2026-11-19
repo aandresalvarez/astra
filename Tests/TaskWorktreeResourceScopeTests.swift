@@ -358,6 +358,30 @@ struct TaskWorktreeResourceScopeTests {
         #expect(TaskExecutionResourceAdmissionPolicy.watchedKeys(for: direct, sandboxEnforcement: .off).isEmpty)
     }
 
+    @Test("Without sandboxing, a checkout that keeps its Git directory elsewhere holds it as a writer, not as a linked worktree")
+    func separateGitDirectoryIsNotALinkedWorktree() throws {
+        let fixture = try WorktreeFixture(worktrees: ["wt-a"])
+        defer { fixture.remove() }
+        // The on-disk shape of a submodule's checkout: `.git` is a file, and
+        // the directory it names is the repository's own Git directory, not
+        // an admin directory inside another one.
+        let checkout = try fixture.makeDirectory("detached")
+        let gitDirectory = try fixture.makeDirectory("detached.git")
+        try "gitdir: \(gitDirectory)\n".write(toFile: checkout + "/.git", atomically: true, encoding: .utf8)
+        #expect(GitCheckoutLayout.commonDirectory(for: checkout) == gitDirectory)
+        #expect(GitCheckoutLayout.linkedWorktreeCommonDirectory(containing: checkout) == nil)
+        #expect(GitCheckoutLayout.linkedWorktreeCommonDirectory(containing: fixture.checkout.path) == nil)
+        #expect(GitCheckoutLayout.linkedWorktreeCommonDirectory(containing: fixture.path("wt-a")) == fixture.path("main/.git"))
+
+        let task = AgentTask(title: "Edit detached", goal: "Update the parser.",
+                             workspace: Workspace(name: "Detached", primaryPath: checkout))
+        let claims = TaskExecutionResourceAdmissionPolicy.lockClaims(
+            for: nil, task: task, runMode: "test", sandboxEnforcement: .off)
+        #expect(claims.contains {
+            $0.resourceKind == .gitCommonDirectory && $0.resourceKey == gitDirectory && $0.accessMode == .write
+        })
+    }
+
     @Test("Every read-only workspace folder is labeled in the prompt")
     func readOnlyWorkspaceFolderIsLabeled() throws {
         let fixture = try WorktreeFixture(worktrees: [])

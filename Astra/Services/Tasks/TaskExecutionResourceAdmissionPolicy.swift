@@ -179,17 +179,11 @@ enum TaskExecutionResourceAdmissionPolicy {
                   let commonDirectory = GitCheckoutLayout.commonDirectory(for: claim.key) else { return nil }
             let key = URL(fileURLWithPath: commonDirectory).standardizedFileURL.path
             guard seen.insert(key).inserted else { return nil }
-            return TaskExecutionResourceClaim(kind: .gitCommonDirectory, key: key,
-                                              access: isInLinkedWorktree(claim.key, commonDirectory: commonDirectory) ? .shared : .exclusive)
+            // A checkout that keeps its own Git directory elsewhere (a submodule,
+            // a separate Git directory) is a main checkout, not a linked worktree.
+            let linkedWorktree = GitCheckoutLayout.linkedWorktreeCommonDirectory(containing: claim.key) == commonDirectory
+            return TaskExecutionResourceClaim(kind: .gitCommonDirectory, key: key, access: linkedWorktree ? .shared : .exclusive)
         }
-    }
-
-    /// A linked worktree's `.git` is a file that points into the repository's
-    /// Git directory; the main checkout's is that directory itself.
-    private static func isInLinkedWorktree(_ path: String, commonDirectory: String) -> Bool {
-        guard let root = GitCheckoutLayout.worktreeRoot(containing: path) else { return false }
-        let own = URL(fileURLWithPath: root).appendingPathComponent(".git").standardizedFileURL.path
-        return own != URL(fileURLWithPath: commonDirectory).standardizedFileURL.path
     }
 
     private static func effectiveClaims(
