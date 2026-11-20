@@ -479,6 +479,9 @@ struct RuntimeReservationReleaseTests {
         #expect(try store.records().first { $0.taskID == task.id } == read)
         // A basis this build does not know cannot be read at all, which is
         // why that one is declared here ahead of the build that writes it.
+        // A launch in any test checks every registered journal folder, so
+        // this one leaves the registry before it holds an unreadable receipt.
+        RuntimeProviderResourceRegistry.unregister(store.root)
         json["reservationRelease"] = ["basis": "not_known_here"]
         try JSONSerialization.data(withJSONObject: json).write(to: url)
         #expect(throws: (any Error).self) { try store.records() }
