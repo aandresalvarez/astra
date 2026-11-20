@@ -846,7 +846,7 @@ struct ChatPanelView: View {
                 activeSlashContext = nil
                 isPlanMode = false
                 composerRuntimeExplicitlySelected = false
-                worktreeSelection.resetTaskChoice()
+                resetWorktreeTaskChoice()
                 taskCreationError = nil
             } label: {
                 HStack(spacing: 5) {
@@ -1457,7 +1457,7 @@ struct ChatPanelView: View {
                 pendingPlan = nil
                 isApprovedPlanHistoryExpanded = false
                 isPlanMode = false
-                worktreeSelection.resetTaskChoice()
+                resetWorktreeTaskChoice()
 
                 onQuickRun?(task)
             }
@@ -1696,7 +1696,7 @@ struct ChatPanelView: View {
                 attachedFiles = []
                 chainedGoal = ""
                 isPlanMode = false
-                worktreeSelection.resetTaskChoice()
+                resetWorktreeTaskChoice()
 
                 onTaskCreated?(task)
             }

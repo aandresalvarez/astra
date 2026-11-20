@@ -181,8 +181,19 @@ enum NewTaskWorktreeComposerFlow {
         task.draftMessages = String(decoding: try JSONEncoder().encode(history), as: UTF8.self)
     }
 
+    /// A brand-new composer starts from the workspace's setting. A saved
+    /// draft never does: it keeps the choice it recorded, or off.
+    static func applyWorkspaceDefault(
+        to selection: inout NewTaskWorktreeSelection, draft: AgentTask?, workspace: Workspace?,
+        defaults: UserDefaults = .standard
+    ) {
+        guard draft == nil, let workspace else { return }
+        selection.applyWorkspaceDefault(NewTaskWorktreeDefaultStore.startsEnabled(workspaceID: workspace.id, in: defaults))
+    }
+
     static func restoreChoice(_ selection: inout NewTaskWorktreeSelection, from draft: AgentTask) {
         guard let request = TaskWorktreeService.latestRequest(for: draft) else { return }
+        selection.awaitsWorkspaceDefault = false
         selection.isEnabled = request.enabled
         selection.base = request.base
         if let repository = request.repositoryPath, !repository.isEmpty {

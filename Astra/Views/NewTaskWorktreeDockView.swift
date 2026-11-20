@@ -149,6 +149,7 @@ struct NewTaskWorktreeDockView: View {
         }
         guard !Task.isCancelled, request == scanRequest else { return }
         Self.applyScan(scan, repositories: repositories, to: &selection)
+        NewTaskWorktreeComposerFlow.applyWorkspaceDefault(to: &selection, draft: draft, workspace: workspace)
         guard let repository = selection.selectedRepository else { return }
         let base = TaskWorktreeRequest(repositoryPath: repository.path, checkoutPath: selection.checkoutPath)
         var current = base
@@ -304,6 +305,8 @@ struct NewTaskWorktreeDockView: View {
     private func updateChoice(_ update: (inout NewTaskWorktreeSelection) -> Void) {
         let previous = selection
         update(&selection)
+        // The person decided; the workspace's starting value no longer applies.
+        selection.awaitsWorkspaceDefault = false
         guard allowsChoice,
               let draft = NewTaskWorktreeComposerFlow.liveDraft(draft, in: workspace) else { return }
         do {

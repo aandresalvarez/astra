@@ -47,6 +47,13 @@ extension ChatPanelView {
     /// A draft that already has its worktree keeps it; anything else may opt in.
     var allowsWorktreeChoice: Bool { worktreeBinding == nil }
 
+    /// The composer is fresh again: the per-task choice resets and then
+    /// takes the workspace's starting value, as a new composer does.
+    func resetWorktreeTaskChoice() {
+        worktreeSelection.resetTaskChoice()
+        NewTaskWorktreeComposerFlow.applyWorkspaceDefault(to: &worktreeSelection, draft: nil, workspace: workspace)
+    }
+
     /// The worktree the next planning step or run creates, if any.
     var requestedWorktree: TaskWorktreeRequest? {
         allowsWorktreeChoice ? NewTaskWorktreeComposerFlow.launchRequest(worktreeSelection, recordedOn: composerDraft) : nil
