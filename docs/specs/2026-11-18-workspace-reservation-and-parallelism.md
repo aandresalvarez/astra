@@ -262,6 +262,18 @@ Result: 14 released, 2 held. Of the 14 receipts in a workspace with an SSH conne
 and one holds for its two jobs, which is what decision 1 expected. C2CF2F7A is new since the
 first run of this validation and is not in an SSH workspace.
 
+- **In the development app, 2026-11-20.** One build with #600, 1a, the override, the banner, 3a
+  and 5 ran as the development app, with enforcement Off and a real provider, in two scratch
+  workspaces. A task that ran a command and finished did not make the next one wait. A task that
+  left `sleep` running made the next one wait with the banner naming the process; "Review
+  workspace" offered "Start now", the waiting task then ran, the process kept running, the
+  holder's history got its line, and a further task was not asked. A second task behind one that
+  was still working got "Waiting for … to finish" and a dialog with no "Start now". One run
+  ended unverified by itself, because the provider moved a long command into its own background
+  task: the banner changed to "Waiting for you: ASTRA lost track of a run of …" and the person's
+  decision started the next task. Two worktree tasks of one repository ran at the same time, and
+  a file one of them wrote into the source checkout was named in its history. The worktree
+  setting pre-checked the composer's choice and survived a relaunch.
 - **The override on a copy, 2026-11-20.** The review of 1b ran against a fresh copy for a new task
   next to each of the two receipts the rule keeps. Opening it released the other 14 first. Next to
   C2CF2F7A it showed one holder, not at work, with nine leftover processes (`keyboxd` and eight
@@ -408,12 +420,29 @@ anything a person reads.
 
 | Case | Banner on the waiting task | "Review workspace" dialog |
 | --- | --- | --- |
-| Holder is working | Waiting for "Export report" to finish in `reports`. | No dialog. The action is "Open task". |
-| Holder ended, a process it started is alive | "Export report" ended but left `python3` (process 4821) running in `reports`. This starts when that stops, or you can start it now. | **Start in `reports` now?** "Export report" has ended, but `python3` (process 4821), which it started, is still running in `reports`. Starting now does not stop it, and it can still change files there. Buttons: Start now, Open task, Keep waiting. No button stops the process (decision 4). |
-| Holder ended, an SSH job has not ended | Waiting for you: "Export report" has an SSH job on `build-host` that has not ended: "Nightly export". | **Start in `reports` now?** Nothing from "Export report" is running on this Mac. Its SSH job "Nightly export" on `build-host` is still running (or: could not be confirmed stopped). Starting now does not stop it. Buttons: Start now, Open task, Keep waiting. Nothing is remembered. |
-| Holder ran in a container | Waiting for you: "…" ran in a container ASTRA cannot inspect. | Same shape; names the container. |
-| ASTRA lost track of the run (quit or crash, same boot) | Waiting for you: ASTRA lost track of "…" when it quit and cannot confirm its commands ended. | **Start in `reports` now?** ASTRA sees no process from "…", but it lost its record of that run. Buttons: Start now, Keep waiting. When the run did leave an exit record, the dialog adds: Restarting the Mac settles this without a decision. |
-| Ownership unreadable | ASTRA cannot read its record of who is using `reports`. Nothing was started. | No dialog. |
+| Holder is working | Waiting for “Export report” to finish in `reports`. | **Something is still running in `reports`.** “Export report” is still working. This request starts when that ends. Open the task to see it or stop it. Buttons: Open task, Keep waiting. |
+| Holder ended, a process it started is alive | “Export report” ended but left `python3` (process 4821) running in `reports`. This starts when that stops, or you can start it now. | **Start in `reports` now?** “Export report” has ended, but `python3` (process 4821), which it started, is still running. Starting now does not stop it, and it can still change files there. Buttons: Start now, Open task, Keep waiting. No button stops the process (decision 4). |
+| Holder ended, an SSH job has not ended | Waiting for you: “Export report” has an SSH job that has not ended: “Nightly export” on `build-host`. | **Start in `reports` now?** “Export report” has an SSH job that has not ended: “Nightly export” on `build-host`. Starting now does not stop it. Same buttons. Nothing is remembered. |
+| Holder ran in a container | Waiting for you: “Export report” ran in a container that ASTRA cannot look inside. | Same shape, with that sentence. |
+| ASTRA lost track of the run | Waiting for you: ASTRA lost track of a run of “Export report” and cannot confirm its commands ended. | Same shape, with: Restarting the Mac also settles this. |
+| Anything else the rule cannot answer | Waiting for you: ASTRA cannot confirm that “Export report” has stopped using `reports`. | Same shape, with a sentence for the one thing: a process list it could not read, SSH job records it could not read, an interrupted close of a run, a provider session it cannot confirm ended, a run with no record of where it ran, earlier runs it cannot read. |
+| Ownership unreadable | ASTRA cannot read its record of who is using `reports`. Nothing was started. | **Nothing was started.** ASTRA cannot read its record of who is using this folder. Your request stays saved. |
+
+Every "Start now" dialog ends the same way: "Starting now lets this request, and any later one,
+use `reports`. After that, Retry is not available in “Export report” for that run. A new message
+there still works." When the holder was using other folders it adds: "Starting now also frees
+`side`, which “Export report” was using."
+
+As built: a banner that begins "Waiting for you:" turns the dock title into "Waiting for you". A
+request nobody can decide for (a schedule, a chained task) is told the same fact without that
+prefix and without "or you can start it now". When the folder the request names and the folder
+the holder uses differ and one contains the other, both paths follow in brackets. A holder that is
+still working has a dialog after all, because the dock's action stays "Review workspace"; it
+offers no "Start now". The loop that keeps a request waiting asks for the banner twice a second,
+so the rule's answer is kept per holder until ownership is next refreshed or the rule is next
+asked. The banner and the dialog are plain text, so names appear there without the marks this
+table uses; the line in a task's history renders them as code. The dock does not repeat "Waiting
+for you" under its title.
 
 A holder that could reach another machine over SSH and has no tracked job open has no row: it does
 not wait for anyone (decision 1).
@@ -457,8 +486,8 @@ built on a local combination of the two and opens as a draft PR when they are me
 moved out of it. The release basis `decision` is declared in 1a (#601), one build before anything
 writes it: a build that cannot decode a basis cannot read that receipt, and one unreadable receipt
 stops every admission, so a rollback from 1b to 1a would have admitted nothing. The banner on the
-waiting task is its own PR after this one: it needs the rule's answer for the holder on the
-waiting loop, with a cache so that it is not computed twice a second.
+waiting task is its own PR after this one, and is built: it needs the rule's answer for the holder
+on the waiting loop, kept between passes so that it is not computed twice a second.
 Tests: preview never refuses a holder whose processes are gone; a holder that is working, whose
 provider process is alive or that is being settled refuses and carries what runs; a holder that
 ended with a live survivor is offered with the process name and PID, and confirming releases it
@@ -537,6 +566,9 @@ fits the architecture rules.
 Tests: a new draft in a workspace with the setting on starts with the choice checked, one in a
 workspace without it does not; clearing it for one task does not change the setting; the setting
 survives a relaunch.
+Found in the development app: the switch for the setting was put in the Workspace Settings sheet,
+and nothing has opened that sheet since #524 took its last entry point away. The stored setting
+and the composer work; the switch needs a place a person can reach before #604 leaves draft.
 
 ## Risks
 
