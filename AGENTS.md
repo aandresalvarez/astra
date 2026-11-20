@@ -114,6 +114,9 @@ Push feature branches and open draft PRs unless the user asks otherwise:
 git push -u origin codex/<feature-name>
 ```
 
+When the PR is ready, follow "Merging Agent PRs" below instead of waiting for
+the owner to click merge.
+
 ## Repository Protections
 
 `main` should be protected by GitHub branch protection. Apply the current repo
@@ -123,20 +126,49 @@ default with:
 script/configure_branch_protection.sh
 ```
 
-The protection requires pull requests, one code-owner review for non-admin
-merges, stale-review dismissal, resolved conversations, no force-pushes, no
-branch deletion, and the required status checks from `.github/workflows/ci.yml`:
+The protection requires pull requests, an up-to-date branch, resolved
+conversations, stale-review dismissal, no force-pushes, no branch deletion, and
+the required status checks from `.github/workflows/ci.yml`:
 
 - `Focused Swift tests`
+- `Full Swift test suite`
 - `Whitespace`
 
-Changes to runtime, persistence, models, package metadata, scripts, GitHub
-configuration, hooks, or architecture fitness tests are covered by
-`.github/CODEOWNERS` and should receive explicit owner review. Branch
-protection does not enforce these rules for repository admins so the owner can
-merge without an additional reviewer when intentionally choosing to do so. Do
-not use that bypass for agent-authored changes unless the repository owner
-explicitly directs it.
+No general approval is required. Only PRs that touch a path in
+`.github/CODEOWNERS` need a code-owner approval: SwiftData models and schemas,
+persistence and Keychain, package metadata, CI, hooks, the guardrail and release
+scripts, and the fitness tests that pin them. Keep that list narrow; adding a
+broad source folder puts the owner back in front of every agent PR.
+
+## Merging Agent PRs
+
+A PR that does not touch a CODEOWNERS path merges itself once it is ready.
+When the work is done, local checks pass, and every review comment is fixed or
+answered and resolved:
+
+```bash
+gh pr ready <number>
+gh pr merge <number> --auto --squash
+```
+
+GitHub then merges when all required checks are green and the branch is up to
+date. If another merge leaves the branch behind `main`, update it and let CI
+re-run; auto-merge stays armed:
+
+```bash
+gh pr update-branch <number>
+```
+
+Leave the PR as a draft, and do not arm auto-merge, when the user asked to
+review it first, when it is a schema or data migration, or when its own checks
+were skipped or failed. Fix a red check by pushing a new commit, never by
+merging around it.
+
+Never pass `--admin` to `gh pr merge` and never merge a PR whose required checks
+are not green. Branch protection does not bind repository admins
+(`enforce_admins: false`), and agents running with the owner's token are admins,
+so this rule is the only thing stopping that bypass. A PR that touches a
+CODEOWNERS path waits for the owner's approval or the owner's own merge.
 
 ## Sparkle Release Cycle
 
