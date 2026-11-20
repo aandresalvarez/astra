@@ -7,11 +7,11 @@ import ASTRAPersistence
 /// Why a reservation ended, saved with the release. It is evidence for a
 /// person reading the journal; nothing reads the basis back to decide anything.
 ///
-/// Nothing here writes `decision` yet: the override that lets a person start
-/// past a holder does (design, B). It is declared with the record so that a
-/// build with this rule can still read a journal that a later build wrote.
-/// An unknown basis would fail to decode, and one unreadable receipt stops
-/// every admission.
+/// `decision` is written by `RuntimeReservationRelease.release(_:decidedFor:)`
+/// when a person starts past a holder in "Review workspace". The basis was
+/// declared one build before anything wrote it, because an unknown basis
+/// fails to decode and one unreadable receipt stops every admission. A new
+/// basis needs the same head start.
 struct RuntimeReservationReleaseRecord: Codable, Equatable, Sendable {
     enum Basis: String, Codable, Sendable {
         /// The exit record already showed nothing was left.
@@ -46,10 +46,13 @@ struct RuntimeReservationReleaseRecord: Codable, Equatable, Sendable {
 ///
 /// This is the one place that decides a saved reservation has ended
 /// (`RuntimeExecutionOwner.finish()` asks the same question at exit through
-/// `canReplace`). Retry and recovery do not read it: they keep `canReplace`,
-/// which a release granted here does not change.
+/// `canReplace`). That includes a person's decision to start past what the
+/// rule cannot answer (`release(_:decidedFor:)`), which ends a reservation
+/// the same way and records who decided instead of which fact answered.
+/// Retry and recovery do not read it: they keep `canReplace`, which a
+/// release granted here does not change.
 ///
-/// Design: docs/specs/2026-11-18-workspace-reservation-and-parallelism.md, A.
+/// Design: docs/specs/2026-11-18-workspace-reservation-and-parallelism.md, A and B.
 @MainActor
 enum RuntimeReservationRelease {
     /// One fact that keeps a reservation. `isRunning` facts are observed on
@@ -77,6 +80,35 @@ enum RuntimeReservationRelease {
             switch self {
             case .taskWorking, .providerAlive, .survivors, .settling: true
             default: false
+            }
+        }
+
+        /// The holder is itself still at work. A person cannot start past
+        /// that. A process a finished holder left behind (`survivors`) they
+        /// can, once it has been named to them.
+        var holderIsActive: Bool {
+            switch self {
+            case .taskWorking, .providerAlive, .settling: true
+            default: false
+            }
+        }
+
+        /// What a decision record says the person was told.
+        var auditNames: [String] {
+            switch self {
+            case .taskWorking: ["task_working"]
+            case .providerAlive(let pid): ["provider:\(pid)"]
+            case .survivors(let found): found.map { "process:\($0.name):\($0.process.pid)" }
+            case .settling: ["settling"]
+            case .sshJobs(let ids): ids.map { "ssh_job:\($0)" }
+            case .sshJobsUnreadable: ["ssh_jobs_unreadable"]
+            case .container: ["container"]
+            case .placementUnrecorded: ["placement_unrecorded"]
+            case .lostRun: ["lost_run"]
+            case .processTableUnreadable: ["process_table_unreadable"]
+            case .settlementUnconfirmed: ["settlement_unconfirmed"]
+            case .sessionUnverified: ["session_unverified"]
+            case .lineageUnreadable: ["lineage_unreadable"]
             }
         }
     }
@@ -187,10 +219,14 @@ enum RuntimeReservationRelease {
             guard let earlier = proof.localSurvivors else { hold(.lostRun); return }
             // A recorded survivor that is still there answers without a scan.
             let alive = earlier.survivors.filter { $0.process.presence != .absent }
-            if !alive.isEmpty { hold(.survivors(alive)); return }
+            // In one order, so that the same processes read as the same answer.
+            func ordered(_ found: [RuntimeLocalSurvivorObservation.Survivor]) -> [RuntimeLocalSurvivorObservation.Survivor] {
+                found.sorted { $0.process.pid < $1.process.pid }
+            }
+            if !alive.isEmpty { hold(.survivors(ordered(alive))); return }
             let now = observe(earlier.launch)
             if !now.complete { hold(.processTableUnreadable) }
-            else if !now.survivors.isEmpty { hold(.survivors(now.survivors)) }
+            else if !now.survivors.isEmpty { hold(.survivors(ordered(now.survivors))) }
             else { askedProcessTable = true }
         }
 
@@ -219,6 +255,83 @@ enum RuntimeReservationRelease {
         return .release(answeredByRestart ? .hostRestart : askedProcessTable ? .processTable : .exitProof)
     }
 
+    /// The one task row a saved reservation belongs to.
+    static func owner(of record: RuntimeExecutionOwnerRecord, context: ModelContext) throws -> AgentTask? {
+        let taskID = record.taskID
+        let tasks = try context.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID }))
+        let matching = tasks.filter { record.taskOwnerID == nil || $0.persistentModelID == record.taskOwnerID }
+        return matching.count == 1 ? matching.first : nil
+    }
+
+    /// Throws `busy` while a worker of that task holds it.
+    private static func lease(for record: RuntimeExecutionOwnerRecord,
+                              store: RuntimeExecutionOwnerStore) throws -> RuntimeExecutionOwnerStore.Lease {
+        let legacy = try store.read(taskID: record.taskID) == record
+        return try store.acquire(taskID: record.taskID, taskOwnerID: legacy ? nil : record.taskOwnerID)
+    }
+
+    /// What keeps one saved reservation now, for a person to read: the
+    /// rule's answer under the task lease. A lease held elsewhere is a
+    /// worker still at work. Empty when the rule would end the reservation.
+    static func standing(_ record: RuntimeExecutionOwnerRecord, task: AgentTask, store: RuntimeExecutionOwnerStore,
+                         context: ModelContext, bootedAt: Date? = ProviderSharedStateReadObservation.hostBootTime(),
+                         observe: (RuntimeLocalSurvivorObservation.Launch) -> RuntimeLocalSurvivorObservation
+                             = { RuntimeExecutionLocalSurvivors.observe($0) }) throws -> [Blocker] {
+        let lease: RuntimeExecutionOwnerStore.Lease
+        do { lease = try self.lease(for: record, store: store) }
+        catch RuntimeExecutionOwnerStore.Failure.busy { return [.taskWorking] }
+        defer { withExtendedLifetime(lease) {} }
+        guard try lease.read() == record else { throw RuntimeExecutionOwnerStore.Failure.busy }
+        guard case .held(let blockers) = verdict(record, task: task, journal: lease.recordURL, store: store,
+            context: context, bootedAt: bootedAt, observe: observe) else { return [] }
+        return blockers
+    }
+
+    /// A reservation as a person reviewed it: the receipt shown, and what
+    /// the rule answered for it then.
+    struct Reviewed: Equatable {
+        let receipt: RuntimeExecutionOwnerRecord
+        let blockers: [Blocker]
+    }
+
+    /// A person's decision ends the reservations they reviewed, past what
+    /// the rule cannot observe and past a process a finished holder left
+    /// behind. Every holder is asked again under its lease and must answer
+    /// exactly as it did in the dialog; one that is itself at work is never
+    /// released, and nothing is written unless all of them pass. The stop
+    /// proof stays as written at exit, so Retry in a holder stays refused.
+    /// The caller holds the admission fence.
+    static func release(_ reviewed: [Reviewed], decidedFor requestID: UUID, store: RuntimeExecutionOwnerStore,
+                        context: ModelContext, bootedAt: Date? = ProviderSharedStateReadObservation.hostBootTime(),
+                        observe: (RuntimeLocalSurvivorObservation.Launch) -> RuntimeLocalSurvivorObservation
+                            = { RuntimeExecutionLocalSurvivors.observe($0) }) throws {
+        var holders: [(saved: RuntimeExecutionOwnerRecord, task: AgentTask, lease: RuntimeExecutionOwnerStore.Lease, named: [String])] = []
+        for item in reviewed {
+            guard let task = try owner(of: item.receipt, context: context) else { throw RuntimeExecutionOwnerStore.Failure.unreadable }
+            let lease = try self.lease(for: item.receipt, store: store)
+            guard try lease.read() == item.receipt, !item.blockers.isEmpty,
+                  !item.blockers.contains(where: \.holderIsActive),
+                  verdict(item.receipt, task: task, journal: lease.recordURL, store: store, context: context,
+                      bootedAt: bootedAt, observe: observe) == .held(item.blockers) else { throw RuntimeExecutionOwnerStore.Failure.busy }
+            holders.append((item.receipt, task, lease, item.blockers.flatMap(\.auditNames)))
+        }
+        for holder in holders {
+            var released = holder.saved
+            released.resourcesReleased = true
+            released.providerSharedStateReleased = true
+            released.reservationRelease = .init(basis: .decision, requestID: requestID, named: Array(holder.named.prefix(64)))
+            released.updatedAt = Date()
+            released = try holder.lease.saveReconciliation(from: holder.saved, to: released)
+            context.insert(TaskEvent(task: holder.task, eventType: TaskEventTypes.System.runtimeExecutionOwnership,
+                payload: TaskEvent.payloadString(released, fallback: "{}"),
+                run: holder.task.runs.first { $0.id == released.runID }))
+            try WorkspacePersistenceCoordinator.saveWithoutAutoExportOrThrow(workspace: holder.task.workspace,
+                modelContext: context, taskID: holder.task.id,
+                auditFields: ["operation": "release_by_decision", "basis": RuntimeReservationReleaseRecord.Basis.decision.rawValue,
+                              "request_id": requestID.uuidString])
+        }
+    }
+
     /// Asks the rule for every saved reservation and releases those that
     /// pass. It holds the admission fence and the task lease; a live worker,
     /// a changed receipt and an unreadable one are skipped and asked again on
@@ -240,14 +353,10 @@ enum RuntimeReservationRelease {
         var ended = 0
         for candidate in candidates {
             let lease: RuntimeExecutionOwnerStore.Lease
-            let legacy = try store.read(taskID: candidate.taskID) == candidate
-            do { lease = try store.acquire(taskID: candidate.taskID, taskOwnerID: legacy ? nil : candidate.taskOwnerID) }
+            do { lease = try self.lease(for: candidate, store: store) }
             catch RuntimeExecutionOwnerStore.Failure.busy { continue }
             defer { withExtendedLifetime(lease) {} }
-            let taskID = candidate.taskID
-            let tasks = try context.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID }))
-            let matching = tasks.filter { candidate.taskOwnerID == nil || $0.persistentModelID == candidate.taskOwnerID }
-            guard matching.count == 1, let task = matching.first, let saved = try lease.read(), saved == candidate else { continue }
+            guard let task = try owner(of: candidate, context: context), let saved = try lease.read(), saved == candidate else { continue }
             // One process-table answer per launch per pass, shared with the proof upgrade below.
             var observations: [String: RuntimeLocalSurvivorObservation] = [:]
             func observeOnce(_ launch: RuntimeLocalSurvivorObservation.Launch) -> RuntimeLocalSurvivorObservation {

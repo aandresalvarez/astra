@@ -1,76 +1,58 @@
 import AppKit
 import SwiftData
 import ASTRAModels
-import WorkspaceToolSupport
 
+/// The "Review workspace" dialog. It shows what `RuntimeWorkspaceReview`
+/// found and offers to start only when nothing a holder is doing itself is
+/// in the way. The words come from `RuntimeWorkspaceReviewWording`.
 @MainActor
 enum TaskWorkspaceContinuationPrompt {
-    /// A holder whose last run failed did not "finish". Say that it stopped,
-    /// and name the tasks whose last run ended without completing.
-    nonisolated static func opening(names: [String], unfinished: [String]) -> String {
-        let all = names.joined(separator: ", ")
-        let uncertainty = "earlier tool effects remain unverified and could still be active."
-        guard !unfinished.isEmpty else { return "The provider finished in \(all), but \(uncertainty)" }
-        return "The provider has stopped in \(all), but the last run in \(unfinished.joined(separator: ", ")) ended without completing, and \(uncertainty)"
-    }
-
     static func present(task: AgentTask, requestID: UUID, queue: TaskQueue, context: ModelContext) {
         do {
             guard let request = try TaskTurnRequestRepository.request(id: requestID, in: context) else { return }
-            let previous = try RuntimeTaskOwnerJournal.read(task: task, context: context)
-            // Say which rule refused, instead of three unrelated guesses.
-            guard RuntimeWorkspaceContinuation.isNewManualInstruction(request, task: task, previous: previous, context: context) else {
+            guard RuntimeWorkspaceReview.qualifies(request, task: task, context: context) else {
                 let alert = NSAlert()
-                alert.messageText = "This request cannot continue the workspace"
-                alert.informativeText = "ASTRA offers this decision only for your own new message or first instruction, and only when nothing this task ran earlier is still unverified. This request does not qualify. It stays saved; you can cancel it and send the message again, or wait for the holding task to be settled."
+                alert.messageText = "Only your own request can start past another task"
+                alert.informativeText = "ASTRA asks this only about a message or a task you started yourself. A scheduled or chained request waits until the folder is free. This one stays saved."
                 alert.addButton(withTitle: "OK")
                 alert.runModal()
                 return
             }
-            let proposal = try RuntimeWorkspaceContinuation.preview(task: task, request: request, context: context,
-                previous: previous, reviewSSHJobs: true)
-            let holders = proposal.sources.compactMap { source -> (title: String, completed: Bool)? in
-                let id = source.receipt.taskID
-                guard let owner = try? context.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == id }))
-                    .first(where: { $0.persistentModelID == source.taskOwnerID }) else { return nil }
-                return (owner.title, owner.runs.first { $0.id == source.receipt.runID }?.status == .completed)
+            guard let review = try RuntimeWorkspaceReview.preview(task: task, request: request, context: context) else {
+                // Nothing saved holds it any more: it starts without a decision.
+                queue.refreshResourceOwnership(in: context)
+                _ = queue.signalExecutionRequest(id: requestID, task: task, modelContext: context)
+                return
             }
-            let names = holders.map(\.title)
-            let unfinished = holders.filter { !$0.completed }.map(\.title)
+            var jobs: [String: RuntimeWorkspaceReviewWording.SSHJob] = [:]
+            for holder in review.holders {
+                guard let owner = try RuntimeReservationRelease.owner(of: holder.receipt, context: context) else { continue }
+                for (id, name) in RuntimeWorkspaceRemoteJobs.names(task: owner, owner: holder.receipt, context: context) {
+                    jobs[id] = .init(label: name.label, host: name.host)
+                }
+            }
+            let dialog = RuntimeWorkspaceReviewWording.dialog(review, jobs: jobs)
             let alert = NSAlert()
-            alert.messageText = "Continue this workspace?"
-            alert.informativeText = "\(Self.opening(names: names, unfinished: unfinished)) Continue to resume this workspace despite that uncertainty. ASTRA will remember this decision for tasks you start here after each previous task finishes. Active work, failed cleanup, changed resources and scheduled tasks remain blocked. Your history and execution evidence stay preserved."
-            let jobs = proposal.sources.flatMap { $0.reviewedSSHJobs ?? [] }
-            var action = "Continue workspace"
-            if !jobs.isEmpty {
-                let allSealed = jobs.allSatisfy(\.sealed)
-                alert.messageText = allSealed ? "Continue after an unconfirmed SSH launch?" : "Continue when the SSH jobs finish?"
-                let lines = jobs.prefix(8).map { "\($0.jobID.prefix(8)) — \($0.sealed ? "cancellation observed; effects unverified" : $0.status.rawValue)" }
-                let legacy = jobs.contains(where: \.legacy)
-                    ? " For older attempts the host can block a delayed launch and check for its supervisor, but their earlier effects remain unknown."
-                    : ""
-                alert.informativeText = "\(names.joined(separator: ", ")) \(unfinished.isEmpty ? "finished" : "ended") locally. ASTRA will recheck these jobs before starting this saved request.\(legacy) Continuing accepts earlier unverified tool effects for this request only.\n\n" + lines.joined(separator: "\n")
-                if jobs.count > lines.count { alert.informativeText += "\n…and \(jobs.count - lines.count) more." }
-                action = allSealed ? "Continue this request" : "Continue when verified"
-            }
-            alert.addButton(withTitle: action)
-            alert.addButton(withTitle: "Keep waiting")
-            // The other choice the warning offers: look at the task that holds it.
-            let holder = proposal.sources.first?.receipt.taskID
-            if holder != nil { alert.addButton(withTitle: proposal.sources.count == 1 ? "Open Holding Task" : "Open a Holding Task") }
-            let choice = alert.runModal()
-            if choice == .alertThirdButtonReturn, let holder {
+            alert.messageText = dialog.title
+            alert.informativeText = dialog.message
+            let buttons = (dialog.canStart ? ["Start now"] : [])
+                + [review.holders.count == 1 ? "Open task" : "Open a task", "Keep waiting"]
+            buttons.forEach { alert.addButton(withTitle: $0) }
+            let pressed = alert.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+            let choice = buttons.indices.contains(pressed) ? buttons[pressed] : "Keep waiting"
+            if choice.hasPrefix("Open"), let holder = (review.holders.first(where: \.isActive) ?? review.holders.first)?.taskID {
                 AstraExternalRouteStore.shared.submit(AstraExternalRoute(destination: .task(holder)))
             }
-            guard choice == .alertFirstButtonReturn else { return }
-            try RuntimeWorkspaceContinuation.authorize(proposal, task: task, request: request, context: context, rememberWorkspace: jobs.isEmpty)
+            guard choice == "Start now" else { return }
+            try RuntimeWorkspaceReview.start(review, task: task, request: request, context: context)
             queue.refreshResourceOwnership(in: context)
             _ = queue.signalExecutionRequest(id: requestID, task: task, modelContext: context)
         } catch {
             let alert = NSAlert()
-            alert.messageText = "Workspace cannot continue yet"
-            alert.informativeText = (error as? WorkspaceSSHWait)?.errorDescription ?? (error as? RemoteWorkspaceJobError)?.errorDescription ??
-                "A previous execution is still active, its completion cannot be verified, or the saved request changed. Your request and history remain saved. Review the holding task before trying again."
+            alert.messageText = "Nothing was started"
+            alert.informativeText = error as? RuntimeExecutionOwnerStore.Failure == .busy
+                ? "The folder's state changed while this was open. Your request stays saved. Choose Review workspace again to see where it stands now."
+                : "ASTRA cannot read its record of who is using this folder. Your request stays saved."
             alert.addButton(withTitle: "OK")
             alert.runModal()
         }

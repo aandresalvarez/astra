@@ -376,18 +376,6 @@ final class RuntimeExecutionOwnerStore {
             beneficiaryReceiptDigest: header.beneficiaryReceiptDigest, workspaceScope: header.workspaceScope, inheritedAuthorizationID: header.inheritedAuthorizationID)
     }
 
-    func workspaceAuthorizations(workspaceOwnerID: PersistentIdentifier) throws -> [RuntimeWorkspaceContinuationAuthorization] {
-        guard FileManager.default.fileExists(atPath: root.path) else { return [] }
-        return try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
-            .filter { $0.pathExtension == "handoff" }.compactMap { url in
-                guard let header: WorkspaceContinuationHeader = try Self.readValue(url),
-                      header.workspaceScope?.workspaceOwnerID == workspaceOwnerID,
-                      header.inheritedAuthorizationID == nil,
-                      url.lastPathComponent == header.requestID.uuidString + ".handoff" else { return nil }
-                return try workspaceContinuation(requestID: header.requestID)
-            }.sorted { $0.approvedAt > $1.approvedAt }
-    }
-
     static func read(_ url: URL) throws -> RuntimeExecutionOwnerRecord? { try readValue(url) }
 
     private static func readValue<T: Decodable>(_ url: URL) throws -> T? {

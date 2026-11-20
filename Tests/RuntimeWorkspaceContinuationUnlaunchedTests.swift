@@ -10,7 +10,7 @@ import ASTRAModels
 /// workspace, the person's retry or new message must be able to receive the
 /// same explicit workspace decision a first instruction can, or the task has
 /// no way forward at all.
-@Suite("Workspace continuation after an attempt that never launched", .serialized)
+@Suite("A waiting request after an attempt that never launched", .serialized)
 @MainActor
 struct RuntimeWorkspaceContinuationUnlaunchedTests {
     private func save(_ record: RuntimeExecutionOwnerRecord, _ h: HeadlessChatHarness) throws {
@@ -65,12 +65,15 @@ struct RuntimeWorkspaceContinuationUnlaunchedTests {
         try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: h.context))
     }
 
-    private func review(_ h: HeadlessChatHarness, task: AgentTask, request: TaskTurnRequest) throws -> RuntimeWorkspaceContinuationAuthorization {
-        try RuntimeWorkspaceContinuation.preview(task: task, request: request, context: h.context,
+    /// The workspace decision an earlier build saved for this request. None
+    /// is written any more; what "Review workspace" does today is at the end.
+    @discardableResult
+    private func savedDecision(_ h: HeadlessChatHarness, task: AgentTask, request: TaskTurnRequest) throws -> RuntimeWorkspaceContinuationAuthorization {
+        try RuntimeWorkspaceLegacyDecision.save(task: task, request: request, context: h.context,
             previous: try RuntimeTaskOwnerJournal.read(task: task, context: h.context))
     }
 
-    @Test("The person's retry, or their new message, after a never-launched attempt can receive the workspace decision and start",
+    @Test("A decision saved for the person's retry, or their new message, after a never-launched attempt still starts it",
           arguments: ["retry", "followUp"])
     func continuesAfterDecision(kind: String) throws {
         let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
@@ -92,9 +95,8 @@ struct RuntimeWorkspaceContinuationUnlaunchedTests {
         #expect(try RuntimeWorkspaceContinuation.admission(task: b, request: saved,
             previous: try RuntimeTaskOwnerJournal.read(task: b, context: h.context), context: h.context) == nil)
 
-        let proposal = try review(h, task: b, request: saved)
+        let proposal = try savedDecision(h, task: b, request: saved)
         #expect(proposal.sources.map(\.receipt) == [original])
-        try RuntimeWorkspaceContinuation.authorize(proposal, task: b, request: saved, context: h.context)
         queue.refreshResourceOwnership(in: h.context)
         #expect(queue.canAcquireResourceLocks(claims, task: b, context: h.context))
         let owner = try #require(RuntimeExecutionOwner.acquire(task: b, context: h.context,
@@ -107,7 +109,7 @@ struct RuntimeWorkspaceContinuationUnlaunchedTests {
         #expect(try store.read(taskID: a.id, taskOwnerID: a.persistentModelID) == original)
     }
 
-    @Test("An attempt that launched, spent, was cancelled, carries its own earlier execution, or is not the saved one gets no decision",
+    @Test("An attempt that launched, spent, was cancelled, carries its own earlier execution, or is not the saved one is not covered by a saved decision",
           arguments: ["launched", "spent", "cancelled", "ownEarlierExecution", "otherRun", "completedRun"], ["retry", "followUp"])
     func attemptFences(fault: String, kind: String) throws {
         let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
@@ -116,12 +118,12 @@ struct RuntimeWorkspaceContinuationUnlaunchedTests {
         let saved = try kind == "retry"
             ? request(ExecutionRequestSubmissionService.submitRetry(message: "Saved instruction", continuation: true, for: b, into: h.context).get(), h)
             : request(ExecutionRequestSubmissionService.submitFollowUp(message: "Try again", for: b, into: h.context).get(), h)
-        #expect(throws: (any Error).self) { _ = try review(h, task: b, request: saved) }
+        try savedDecision(h, task: b, request: saved)
         #expect(RuntimeExecutionOwner.acquire(task: b, context: h.context, maxRunSeconds: 60, userRequest: saved) == nil)
         #expect(try RuntimeExecutionOwner.store(in: h.context).read(taskID: a.id, taskOwnerID: a.persistentModelID) == original)
     }
 
-    @Test("A request that already started, is bound to a run, or only claims to be a retry gets no decision",
+    @Test("A request that already started, is bound to a run, or only claims to be a retry is not covered by a saved decision",
           arguments: ["started", "boundRun", "sourceRun", "relabelled", "cancelledRequest"])
     func requestFences(fault: String) throws {
         let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
@@ -139,7 +141,7 @@ struct RuntimeWorkspaceContinuationUnlaunchedTests {
         default: _ = TaskTurnRequestStateMachine.transition(saved, to: .cancelled)
         }
         try h.context.save()
-        #expect(throws: (any Error).self) { _ = try review(h, task: b, request: saved) }
+        try savedDecision(h, task: b, request: saved)
         #expect(RuntimeExecutionOwner.acquire(task: b, context: h.context, maxRunSeconds: 60, userRequest: saved) == nil)
     }
 
@@ -149,7 +151,7 @@ struct RuntimeWorkspaceContinuationUnlaunchedTests {
         let (a, _) = try holder(h)
         let (b, _) = try blocked(h, beside: a)
         let retry = try request(ExecutionRequestSubmissionService.submitRetry(message: "Saved instruction", continuation: true, for: b, into: h.context).get(), h)
-        try RuntimeWorkspaceContinuation.authorize(try review(h, task: b, request: retry), task: b, request: retry, context: h.context)
+        try savedDecision(h, task: b, request: retry)
         retry.kind = .scheduled
         try h.context.save()
         #expect(RuntimeExecutionOwner.acquire(task: b, context: h.context, maxRunSeconds: 60, userRequest: retry) == nil)
@@ -175,7 +177,7 @@ struct RuntimeWorkspaceContinuationUnlaunchedTests {
         return task
     }
 
-    @Test("A new message on a task from before receipts existed can receive the workspace decision and start")
+    @Test("A decision saved for a new message on a task from before receipts existed still starts it")
     func legacyTaskContinues() throws {
         let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
         let (a, original) = try holder(h)
@@ -187,9 +189,8 @@ struct RuntimeWorkspaceContinuationUnlaunchedTests {
         let claims = queue.resourceLockClaims(for: saved, task: b, runMode: "request", sandboxEnforcement: .off)
         #expect(!queue.canAcquireResourceLocks(claims, task: b, context: h.context))
 
-        let proposal = try review(h, task: b, request: saved)
+        let proposal = try savedDecision(h, task: b, request: saved)
         #expect(proposal.sources.map(\.receipt) == [original])
-        try RuntimeWorkspaceContinuation.authorize(proposal, task: b, request: saved, context: h.context)
         queue.refreshResourceOwnership(in: h.context)
         #expect(queue.canAcquireResourceLocks(claims, task: b, context: h.context))
         let owner = try #require(RuntimeExecutionOwner.acquire(task: b, context: h.context, maxRunSeconds: 60,
@@ -199,7 +200,7 @@ struct RuntimeWorkspaceContinuationUnlaunchedTests {
         #expect(try RuntimeExecutionOwner.store(in: h.context).read(taskID: a.id, taskOwnerID: a.persistentModelID) == original)
     }
 
-    @Test("History the older app did not settle, a task the journal once tracked, and a replayed instruction get no decision",
+    @Test("History the older app did not settle, a task the journal once tracked, and a replayed instruction are not covered by a saved decision",
           arguments: ["stillRunning", "endedThisSession", "appRestarted", "trackedBefore", "retry"])
     func legacyFences(fault: String) throws {
         let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
@@ -208,9 +209,49 @@ struct RuntimeWorkspaceContinuationUnlaunchedTests {
         let saved = try fault == "retry"
             ? request(ExecutionRequestSubmissionService.submitRetry(message: "Earlier instruction", continuation: true, for: b, into: h.context).get(), h)
             : request(ExecutionRequestSubmissionService.submitFollowUp(message: "Compare the new code", for: b, into: h.context).get(), h)
-        #expect(throws: (any Error).self) { _ = try review(h, task: b, request: saved) }
+        try savedDecision(h, task: b, request: saved)
         #expect(RuntimeExecutionOwner.acquire(task: b, context: h.context, maxRunSeconds: 60,
             newUserTurn: true, newUserRequest: true, userRequest: saved) == nil)
         #expect(try RuntimeExecutionOwner.store(in: h.context).read(taskID: a.id, taskOwnerID: a.persistentModelID) == original)
+    }
+
+    // What "Review workspace" does today for the same two tasks. The decision
+    // is about the holder, so the task that waits needs no exception of its
+    // own: once the holder is released it starts like any other.
+
+    @Test("In Review workspace, the person's retry or new message after a never-launched attempt starts past the holder",
+          arguments: ["retry", "followUp"])
+    func startsPastHolder(kind: String) throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (a, _) = try holder(h)
+        let (b, _) = try blocked(h, beside: a)
+        let saved = try kind == "retry"
+            ? request(ExecutionRequestSubmissionService.submitRetry(message: "Saved instruction", continuation: true, for: b, into: h.context).get(), h)
+            : request(ExecutionRequestSubmissionService.submitFollowUp(message: "Try again", for: b, into: h.context).get(), h)
+        let claims = TaskExecutionResourceAdmissionPolicy.lockClaims(for: saved, task: b, runMode: "request", sandboxEnforcement: .off)
+        let review = try #require(try RuntimeWorkspaceReview.preview(task: b, request: saved, context: h.context))
+        #expect(review.holders.map(\.taskID) == [a.id] && review.canStart)
+        try RuntimeWorkspaceReview.start(review, task: b, request: saved, context: h.context)
+        let owner = try #require(RuntimeExecutionOwner.acquire(task: b, context: h.context,
+            maxRunSeconds: 60, userRequest: saved, resourceClaims: claims))
+        defer { owner.finish() }
+        #expect(owner.record.workspaceContinuationRequestID == nil && owner.record.inheritedToolUncertainty == false)
+        #expect(try RuntimeExecutionOwner.store(in: h.context).workspaceContinuation(requestID: saved.id) == nil)
+    }
+
+    @Test("In Review workspace, a new message on a task from before receipts existed starts past the holder")
+    func legacyTaskStartsPastHolder() throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (a, _) = try holder(h)
+        let b = try legacy(h, beside: a)
+        let saved = try request(ExecutionRequestSubmissionService.submitFollowUp(message: "Compare the new code", for: b, into: h.context).get(), h)
+        let claims = TaskExecutionResourceAdmissionPolicy.lockClaims(for: saved, task: b, runMode: "request", sandboxEnforcement: .off)
+        let review = try #require(try RuntimeWorkspaceReview.preview(task: b, request: saved, context: h.context))
+        #expect(review.holders.map(\.taskID) == [a.id] && review.canStart)
+        try RuntimeWorkspaceReview.start(review, task: b, request: saved, context: h.context)
+        let owner = try #require(RuntimeExecutionOwner.acquire(task: b, context: h.context, maxRunSeconds: 60,
+            newUserTurn: true, newUserRequest: true, userRequest: saved, resourceClaims: claims))
+        defer { owner.finish() }
+        #expect(owner.record.workspaceContinuationRequestID == nil && owner.record.legacySettledRunID != nil)
     }
 }

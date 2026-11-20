@@ -8,11 +8,11 @@ import ASTRAModels
 
 /// A task whose last turn failed keeps its workspace reserved exactly like a
 /// completed one: the provider is reaped, its group is empty, settlement is
-/// done, and only its tool effects are unverified. The person's workspace
-/// decision in another task must be able to accept that, or one failed turn
-/// fences the folder from every other task for good. Nothing about the
-/// process evidence is relaxed, and the holder's receipt is never changed.
-@Suite("Workspace continuation over a holder whose last turn failed", .serialized)
+/// done, and only its tool effects are unverified. A workspace decision an
+/// earlier build saved in another task accepts that, and nothing about the
+/// process evidence is relaxed for it. No such decision is written any more:
+/// what a person can start past today is in `RuntimeWorkspaceReviewTests`.
+@Suite("A saved workspace decision over a holder whose last turn failed", .serialized)
 @MainActor
 struct RuntimeWorkspaceContinuationFailedHolderTests {
     private func save(_ record: RuntimeExecutionOwnerRecord, _ h: HeadlessChatHarness) throws {
@@ -57,31 +57,7 @@ struct RuntimeWorkspaceContinuationFailedHolderTests {
         return (next, try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: h.context)))
     }
 
-    /// Ends the turn `request` was admitted for with a settled receipt, as the worker would.
-    private func settle(_ h: HeadlessChatHarness, task: AgentTask, request: TaskTurnRequest, succeeded: Bool) throws {
-        let owner = try #require(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60, userRequest: request))
-        let acquired = owner.record
-        owner.finish()
-        let run = TaskRun(task: task)
-        run.status = succeeded ? .completed : .failed; run.typedStopReason = succeeded ? .completed : .failed
-        run.completedAt = Date()
-        run.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(.host)
-        h.context.insert(run); task.status = succeeded ? .completed : .failed
-        var record = try RuntimeRecoveryTestReceipt.install(task: task, run: run, context: h.context, toolsStopped: false)
-        if succeeded { record.state = .finished }
-        record.inheritedToolUncertainty = true
-        record.settlementInProgress = false; record.settlementLocalWorkStopped = true; record.settlementToolsStopped = true
-        record.resourceClaims = acquired.resourceClaims
-        record.workspaceContinuationRequestID = acquired.workspaceContinuationRequestID
-        record.continuingUserRequestID = request.id
-        try save(record, h)
-        _ = TaskTurnRequestStateMachine.transition(request, to: .admitted)
-        _ = TaskTurnRequestStateMachine.transition(request, to: .running)
-        _ = TaskTurnRequestStateMachine.transition(request, to: succeeded ? .completed : .failed)
-        try h.context.save()
-    }
-
-    @Test("A new task can receive the workspace decision over a holder whose last turn failed, timed out or ran out of budget",
+    @Test("A decision saved over a holder whose last turn failed, timed out or ran out of budget still admits its request",
           arguments: ["failed", "timeout", "budgetExceeded"])
     func continuesOverEndedHolder(outcome: String) throws {
         let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
@@ -101,9 +77,8 @@ struct RuntimeWorkspaceContinuationFailedHolderTests {
         #expect(!queue.canAcquireResourceLocks(claims, task: b, context: h.context))
         #expect(try RuntimeWorkspaceContinuation.admission(task: b, request: request, previous: nil, context: h.context) == nil)
 
-        let proposal = try RuntimeWorkspaceContinuation.preview(task: b, request: request, context: h.context)
+        let proposal = try RuntimeWorkspaceLegacyDecision.save(task: b, request: request, context: h.context)
         #expect(proposal.sources.map(\.receipt) == [original])
-        try RuntimeWorkspaceContinuation.authorize(proposal, task: b, request: request, context: h.context, rememberWorkspace: true)
         queue.refreshResourceOwnership(in: h.context)
         #expect(queue.canAcquireResourceLocks(claims, task: b, context: h.context))
         do {
@@ -125,7 +100,7 @@ struct RuntimeWorkspaceContinuationFailedHolderTests {
         #expect(RuntimeExecutionOwner.acquire(task: c, context: h.context, maxRunSeconds: 60, userRequest: other) == nil)
     }
 
-    @Test("A failed holder that may still be running, is unsettled, or was cancelled still refuses the decision", arguments:
+    @Test("A failed holder that may still be running, is unsettled, or was cancelled is not covered by a saved decision", arguments:
         ["liveProvider", "unreaped", "groupNotEmpty", "laterObservationOnly", "running", "newerRun", "settling",
          "settlementTools", "settlementLocalWork", "cancelledAttempt", "noEnvironment", "noEndTime"])
     func unsettledHolderRefuses(fault: String) throws {
@@ -173,19 +148,17 @@ struct RuntimeWorkspaceContinuationFailedHolderTests {
             try #require(RuntimeCompletedUserTurnContinuation.hasSettledTurn(current, task: a, context: h.context))
         }
         let (b, request) = try next(h, after: a)
-        #expect(throws: (any Error).self) { try RuntimeWorkspaceContinuation.preview(task: b, request: request, context: h.context) }
+        try RuntimeWorkspaceLegacyDecision.save(task: b, request: request, context: h.context)
         #expect(RuntimeExecutionOwner.acquire(task: b, context: h.context, maxRunSeconds: 60, userRequest: request) == nil)
-        #expect(try RuntimeExecutionOwner.store(in: h.context).workspaceContinuation(requestID: request.id) == nil)
     }
 
-    @Test("A failed holder that changes after the review invalidates the decision, before and after it is saved",
-          arguments: ["running", "liveLease", "changed"], [false, true])
-    func decisionIsRevalidated(fault: String, saved: Bool) throws {
+    @Test("A failed holder that changes after the decision was saved is no longer covered by it",
+          arguments: ["running", "liveLease", "changed"])
+    func decisionIsRevalidated(fault: String) throws {
         let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
         let (a, original) = try holder(h)
         let (b, request) = try next(h, after: a)
-        let proposal = try RuntimeWorkspaceContinuation.preview(task: b, request: request, context: h.context)
-        if saved { try RuntimeWorkspaceContinuation.authorize(proposal, task: b, request: request, context: h.context) }
+        try RuntimeWorkspaceLegacyDecision.save(task: b, request: request, context: h.context)
         let store = RuntimeExecutionOwner.store(in: h.context)
         var live: RuntimeExecutionOwnerStore.Lease?
         defer { withExtendedLifetime(live) {} }
@@ -196,66 +169,10 @@ struct RuntimeWorkspaceContinuationFailedHolderTests {
             var changed = original; changed.limits.tokensSpent += 1
             try save(changed, h)
         }
-        if saved {
-            let queue = TaskQueue(poolSize: 0)
-            queue.refreshResourceOwnership(in: h.context)
-            let claims = queue.resourceLockClaims(for: request, task: b, runMode: "initial", sandboxEnforcement: .off)
-            #expect(!queue.canAcquireResourceLocks(claims, task: b, context: h.context))
-            #expect(RuntimeExecutionOwner.acquire(task: b, context: h.context, maxRunSeconds: 60, userRequest: request) == nil)
-        } else {
-            #expect(throws: (any Error).self) { try RuntimeWorkspaceContinuation.authorize(proposal, task: b, request: request, context: h.context) }
-            #expect(try store.workspaceContinuation(requestID: request.id) == nil)
-        }
-    }
-
-    @Test("A remembered decision keeps covering the failed holder the person acknowledged")
-    func rememberedDecisionCoversAcknowledgedHolder() throws {
-        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
-        let (a, original) = try holder(h)
-        let (b, root) = try next(h, after: a)
-        let proposal = try RuntimeWorkspaceContinuation.preview(task: b, request: root, context: h.context)
-        try RuntimeWorkspaceContinuation.authorize(proposal, task: b, request: root, context: h.context, rememberWorkspace: true)
-        try settle(h, task: b, request: root, succeeded: true)
-        let (c, request) = try next(h, after: b)
-        let owner = try #require(RuntimeExecutionOwner.acquire(task: c, context: h.context, maxRunSeconds: 60, userRequest: request))
-        defer { owner.finish() }
-        let store = RuntimeExecutionOwner.store(in: h.context)
-        #expect(try store.workspaceContinuation(requestID: request.id)?.inheritedAuthorizationID == root.id)
-        #expect(try store.read(taskID: a.id, taskOwnerID: a.persistentModelID) == original)
-    }
-
-    @Test("A remembered decision does not cover a later holder whose turn failed; the person decides again")
-    func rememberedDecisionStopsAtLaterFailure() throws {
-        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
-        let (a, _) = try holder(h)
-        let (b, root) = try next(h, after: a)
-        let proposal = try RuntimeWorkspaceContinuation.preview(task: b, request: root, context: h.context)
-        try RuntimeWorkspaceContinuation.authorize(proposal, task: b, request: root, context: h.context, rememberWorkspace: true)
-        try settle(h, task: b, request: root, succeeded: true)
-        // C is admitted through the remembered decision, then fails.
-        let (c, inherited) = try next(h, after: b)
-        try settle(h, task: c, request: inherited, succeeded: false)
-        let store = RuntimeExecutionOwner.store(in: h.context)
-        try #require(try store.workspaceContinuation(requestID: inherited.id)?.inheritedAuthorizationID == root.id)
-
-        let (d, request) = try next(h, after: c)
-        #expect(RuntimeExecutionOwner.acquire(task: d, context: h.context, maxRunSeconds: 60, userRequest: request) == nil)
-        #expect(try store.workspaceContinuation(requestID: request.id) == nil)
-        // Their own decision, naming the failed task, admits it.
-        let review = try RuntimeWorkspaceContinuation.preview(task: d, request: request, context: h.context)
-        #expect(Set(review.sources.map(\.receipt.taskID)) == [a.id, b.id, c.id])
-        try RuntimeWorkspaceContinuation.authorize(review, task: d, request: request, context: h.context)
-        let owner = try #require(RuntimeExecutionOwner.acquire(task: d, context: h.context, maxRunSeconds: 60, userRequest: request))
-        owner.finish()
-    }
-
-    @Test("The prompt does not say a failed holder finished")
-    func promptNamesUnfinishedHolder() {
-        let completed = TaskWorkspaceContinuationPrompt.opening(names: ["Docs"], unfinished: [])
-        #expect(completed == "The provider finished in Docs, but earlier tool effects remain unverified and could still be active.")
-        let failed = TaskWorkspaceContinuationPrompt.opening(names: ["Docs", "Notes"], unfinished: ["Notes"])
-        #expect(!failed.contains("finished"))
-        #expect(failed.contains("stopped in Docs, Notes") && failed.contains("the last run in Notes ended without completing"))
-        #expect(failed.hasSuffix("earlier tool effects remain unverified and could still be active."))
+        let queue = TaskQueue(poolSize: 0)
+        queue.refreshResourceOwnership(in: h.context)
+        let claims = queue.resourceLockClaims(for: request, task: b, runMode: "initial", sandboxEnforcement: .off)
+        #expect(!queue.canAcquireResourceLocks(claims, task: b, context: h.context))
+        #expect(RuntimeExecutionOwner.acquire(task: b, context: h.context, maxRunSeconds: 60, userRequest: request) == nil)
     }
 }

@@ -445,6 +445,20 @@ struct RuntimeReservationReleaseTests {
         #expect(released.resourcesReleased == true && released.reservationRelease?.basis == .exitProof && !released.canReplace)
     }
 
+    @Test("A clean stop whose release a crash never saved is ended on its own exit record and stays replaceable")
+    func cleanStopNeverSaved() throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (task, run) = try holder(h)
+        var saved = record(task, run: run, state: .stopped)
+        proof(&saved, toolsStopped: true)
+        try save(saved, h)
+        try RuntimeReservationRelease.reconcile(in: RuntimeExecutionOwner.store(in: h.context), context: h.context,
+            bootedAt: Date().addingTimeInterval(-600))
+        let ended = try #require(try RuntimeExecutionOwner.existing(task: task, context: h.context))
+        #expect(ended.resourcesReleased == true && ended.canReplace && ended.reservationRelease?.basis == .exitProof)
+        #expect(ended.stopProof == saved.stopProof)
+    }
+
     @Test("Receipts written before the release record existed decode and encode unchanged")
     func olderReceipts() throws {
         let h = try HeadlessChatHarness(); defer { h.cleanup() }

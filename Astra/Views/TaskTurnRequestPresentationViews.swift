@@ -113,7 +113,7 @@ extension TaskMainView {
             return TaskDecisionDockAction(kind: .reviewWorkspaceContinuation,
                 title: "Review workspace", systemImage: "arrow.triangle.branch",
                 payload: dockRequest.id.uuidString,
-                help: "Review whether this saved request can continue the reserved workspace.")
+                help: "See what is using the folder this request waits for, and whether it can start now.")
         }()
         var presentation = TaskDecisionDockPresentation(
             id: "turn-request-\(dockRequest?.id.uuidString ?? task.id.uuidString)",

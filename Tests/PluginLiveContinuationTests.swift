@@ -129,12 +129,12 @@ struct PluginLiveContinuationTests {
             try harness.context.save()
             let submission = try ExecutionRequestSubmissionService.submitInitial(for: next, into: harness.context).get()
             let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: harness.context))
-            if successor == 0 {
-                // Native tools retain uncertainty even after provider exit. Use
-                // the normal one-time workspace decision, never erase its journal.
-                let preview = try RuntimeWorkspaceContinuation.preview(task: next, request: request, context: harness.context)
-                try RuntimeWorkspaceContinuation.authorize(preview, task: next, request: request,
-                    context: harness.context, rememberWorkspace: true)
+            // Native tools leave the earlier task holding the folder after its
+            // provider exits. Start past it as a person would in "Review
+            // workspace". Nothing is remembered, so every successor is asked,
+            // and no holder's exit record is rewritten.
+            if let review = try RuntimeWorkspaceReview.preview(task: next, request: request, context: harness.context) {
+                try RuntimeWorkspaceReview.start(review, task: next, request: request, context: harness.context)
             }
             let events = try await E2ETestSupport.withLiveProviderSlot {
                 var events: [ParsedEvent] = []
@@ -147,7 +147,7 @@ struct PluginLiveContinuationTests {
             try requireValidationTools(events)
             try #require(task.runs.count == 3 && task.runs.allSatisfy { $0.status == .completed })
             try #require(try Data(contentsOf: sshFile) == originalSSH)
-            print("PLUGIN_LIVE_ACCEPTANCE successor=\(successor + 1) completed=true reused_workspace_authorization=\(successor > 0)")
+            print("PLUGIN_LIVE_ACCEPTANCE successor=\(successor + 1) completed=true")
         }
         let receipts = try String(contentsOf: harness.rootURL.appendingPathComponent("guard-receipts.jsonl"), encoding: .utf8)
             .split(separator: "\n").map { try JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }

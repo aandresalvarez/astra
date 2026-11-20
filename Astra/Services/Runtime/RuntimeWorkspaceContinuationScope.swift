@@ -3,36 +3,14 @@ import SwiftData
 import ASTRACore
 import ASTRAModels
 
-/// A remembered human decision for one persistent workspace and exact resource
-/// scope (or a narrower subset). It never certifies cleanup. Only the exact receipts the person acknowledged
-/// and completed executions in that decision's lineage are eligible; an unrelated owner, a changed
-/// predecessor, or a later holder whose turn failed stays fenced.
+/// A decision an earlier build remembered for one workspace and resource
+/// scope. Nothing is remembered any more and no new request resolves one
+/// ("Review workspace" ends the holders' reservations instead). This still
+/// validates a request that was saved under such a decision before the change:
+/// only the exact receipts the person acknowledged and completed executions
+/// in that decision's lineage are eligible.
 @MainActor
 enum RuntimeWorkspaceContinuationScope {
-    static func inherited(task: AgentTask, request: TaskTurnRequest, context: ModelContext,
-                          claims: [TaskResourceLockClaim]?, previous: RuntimeExecutionOwnerRecord?) throws -> RuntimeWorkspaceContinuationAuthorization? {
-        guard RuntimeWorkspaceContinuation.isNewManualInstruction(request, task: task, previous: previous, context: context),
-              let workspace = task.workspace else { return nil }
-        let store = RuntimeExecutionOwner.store(in: context)
-        let roots = try store.workspaceAuthorizations(workspaceOwnerID: workspace.persistentModelID).filter {
-            guard let scope = $0.workspaceScope else { return false }
-            return matches(scope, task: task, request: request, claims: claims)
-        }
-        guard !roots.isEmpty else { return nil }
-        let requested = claims ?? TaskExecutionResourceAdmissionPolicy.lockClaims(for: request, task: task,
-            runMode: "workspace_continuation", sandboxEnforcement: .off)
-        let held = try RuntimeResourceOwnership.claims(in: store, context: context, excluding: task.id, excludingOwner: task.persistentModelID)
-        guard !TaskExecutionResourceBroker.canAcquire(requested, active: held) else { return nil }
-        var proposed = try RuntimeWorkspaceContinuation.preview(task: task, request: request, context: context, previous: previous)
-        for root in roots {
-            proposed.inheritedAuthorizationID = root.requestID
-            if try validates(proposed, task: task, request: request, context: context, claims: claims, previous: previous) {
-                return proposed
-            }
-        }
-        return nil
-    }
-
     static func validates(_ authorization: RuntimeWorkspaceContinuationAuthorization, task: AgentTask,
                           request: TaskTurnRequest, context: ModelContext,
                           claims: [TaskResourceLockClaim]?, previous: RuntimeExecutionOwnerRecord?) throws -> Bool {
