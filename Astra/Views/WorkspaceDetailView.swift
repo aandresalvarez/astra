@@ -5,9 +5,6 @@ import ASTRAPersistence
 import ASTRACore
 
 struct WorkspaceDetailView: View {
-    /// Says what the setting changes and what it leaves to the person.
-    static let startsInWorktreeHelp = "Checks \"Start in a new worktree\" when you begin a task in one of this workspace's "
-        + "repositories, so tasks there can run side by side. You can still clear it for a single task."
     @Bindable var workspace: Workspace
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
@@ -19,7 +16,6 @@ struct WorkspaceDetailView: View {
     @State private var exportMessage = ""
     @State private var folderRefusal: String?
     @State private var pendingRemoval: PendingRemoval?
-    @State private var startsNewTasksInWorktree = false
     let onDelete: () -> Void
 
     private let iconOptions = [
@@ -121,25 +117,6 @@ struct WorkspaceDetailView: View {
                                 Button("Browse") { browsePrimaryPath() }
                             }
                         }
-                        .padding(.vertical, 4)
-                    }
-
-                    GroupBox("New Tasks") {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Toggle("Start new tasks in a new worktree", isOn: Binding(
-                                get: { startsNewTasksInWorktree },
-                                set: { value in
-                                    startsNewTasksInWorktree = value
-                                    NewTaskWorktreeDefaultStore.setStartsEnabled(value, workspaceID: workspace.id)
-                                }
-                            ))
-                            .accessibilityIdentifier("WorkspaceStartsNewTasksInWorktreeToggle")
-                            Text(Self.startsInWorktreeHelp)
-                                .font(Stanford.caption(12))
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.vertical, 4)
                     }
 
@@ -343,7 +320,6 @@ struct WorkspaceDetailView: View {
         }
         .onAppear {
             sshConnections = SSHConnectionManager.load(workspacePath: workspace.primaryPath)
-            startsNewTasksInWorktree = NewTaskWorktreeDefaultStore.startsEnabled(workspaceID: workspace.id)
         }
         .onChange(of: workspace.primaryPath) {
             sshConnections = SSHConnectionManager.load(workspacePath: workspace.primaryPath)

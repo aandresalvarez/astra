@@ -169,6 +169,17 @@ struct NewTaskWorktreeDockPresentation: Equatable {
 
     static let toggleTitle = "Start in a new worktree"
     static let toggleHelp = "Give this task its own branch and folder, started from the default branch. The original checkout is not changed."
+    static let workspaceDefaultTitle = "Always in this workspace"
+    static let workspaceDefaultHelp = "Check \"Start in a new worktree\" for every new task in this workspace, so tasks there can run side by side. You can still clear it for one task."
+
+    /// The workspace's default sits beside the task's own choice, the one
+    /// place a person is looking when they would want it. It is offered once
+    /// they pick a worktree, and stays in view while it is on so that it can
+    /// be turned off again.
+    static func showsWorkspaceDefault(showsToggle: Bool, isEnabled: Bool, workspaceDefault: Bool) -> Bool {
+        showsToggle && (isEnabled || workspaceDefault)
+    }
+
     static let chooseRepositoryTitle = "Choose repository"
     static let repositorySectionTitle = "Repository"
     static let baseSectionTitle = "Start from"

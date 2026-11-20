@@ -128,4 +128,33 @@ struct NewTaskWorktreeWorkspaceDefaultTests {
         NewTaskWorktreeComposerFlow.applyWorkspaceDefault(to: &orphan, draft: nil, workspace: nil, defaults: store)
         #expect(!orphan.isEnabled && orphan.awaitsWorkspaceDefault)
     }
+
+    @Test("The workspace default is offered beside the task's choice once a worktree is picked, and stays in view while it is on")
+    func defaultControlVisibility() {
+        typealias Row = NewTaskWorktreeDockPresentation
+        #expect(!Row.showsWorkspaceDefault(showsToggle: true, isEnabled: false, workspaceDefault: false))
+        #expect(Row.showsWorkspaceDefault(showsToggle: true, isEnabled: true, workspaceDefault: false))
+        // Still there after the person clears this one task, so the default can be turned off.
+        #expect(Row.showsWorkspaceDefault(showsToggle: true, isEnabled: false, workspaceDefault: true))
+        // A draft pinned to its checkout offers no choice at all.
+        #expect(!Row.showsWorkspaceDefault(showsToggle: false, isEnabled: true, workspaceDefault: true))
+    }
+
+    @Test("The switch for the default is in a view a person can reach, and in no other")
+    func defaultControlIsReachable() throws {
+        // The first version put the switch in a sheet nothing opened. The
+        // composer's worktree row is on screen for every new task in a
+        // repository, so the switch lives there, beside the checkbox.
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let views = root.appendingPathComponent("Astra/Views")
+        let setters = try FileManager.default.subpathsOfDirectory(atPath: views.path).filter { $0.hasSuffix(".swift") }.filter {
+            try String(contentsOf: views.appendingPathComponent($0), encoding: .utf8).contains("NewTaskWorktreeDefaultStore.setStartsEnabled")
+        }
+        #expect(setters == ["NewTaskWorktreeDockView.swift"])
+        let row = try String(contentsOf: views.appendingPathComponent("NewTaskWorktreeDockView.swift"), encoding: .utf8)
+        #expect(row.contains("NewTaskWorktreeWorkspaceDefaultToggle"))
+        // The row itself is built by the composer of a new task.
+        let composer = try String(contentsOf: views.appendingPathComponent("ChatPanelView.swift"), encoding: .utf8)
+        #expect(composer.contains("NewTaskWorktreeDockView("))
+    }
 }
