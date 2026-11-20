@@ -129,7 +129,8 @@ extension TaskMainView {
             prefersExpandedDetails: false
         )
         // Name what the request waits for in the row itself, not only in its tooltip.
-        if taskActivityPresentation.kind == .waitingForResource, let blocker = dockRequest?.blockerSummary, blocker != title {
+        if taskActivityPresentation.kind == .waitingForResource, dockRequest?.blockerSummary != title,
+           let blocker = taskActivityPresentation.blockerDetail {
             presentation.compactMeta = blocker
         }
         return presentation

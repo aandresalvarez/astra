@@ -105,12 +105,20 @@ struct TaskActivityPresentation: Equatable, Sendable {
         }
     }
 
+    /// What the waiting request waits for, without the words the dock title
+    /// already says when the wait is for the person.
+    var blockerDetail: String? {
+        guard let blocker = request?.blockerSummary, !blocker.isEmpty else { return nil }
+        let prefix = RuntimeWorkspaceReviewWording.decisionPrefix
+        return blocker.hasPrefix(prefix) ? String(blocker.dropFirst(prefix.count)) : blocker
+    }
+
     var dockSummary: String? {
         switch kind {
         case .waitingForWorker:
             return "Your message is saved and will run when a worker is available."
         case .waitingForResource:
-            if let blocker = request?.blockerSummary, !blocker.isEmpty {
+            if let blocker = blockerDetail {
                 return "Your message is saved. \(blocker)"
             }
             return "Your message is saved and will run when this workspace is available."

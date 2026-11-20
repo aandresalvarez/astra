@@ -65,7 +65,7 @@ struct RuntimeCancellationResourceTests {
         let contender = TaskResourceLockClaim(taskID: UUID(), resourceKey: h.workspaceURL.path, accessMode: .write, runMode: "next")
         #expect(!queue.canAcquireResourceLocks([contender]))
         let working = queue.resourceBlockerSummary([contender], modelContext: h.context)
-        #expect(working.hasPrefix("Waiting for “\(task.title)” to finish in `") && !working.contains("confirm"))
+        #expect(working.hasPrefix("Waiting for “\(task.title)” to finish in ") && !working.contains("confirm"))
         // A cancelled task that has not let go yet is still at work.
         owner.requestCancellation()
         queue.refreshResourceOwnership(in: h.context)
@@ -75,7 +75,7 @@ struct RuntimeCancellationResourceTests {
         queue.localResourceLocks = [.init(taskID: UUID(), resourceKey: h.workspaceURL.path,
             accessMode: .readOnly, runMode: "live")]
         let local = queue.resourceBlockerSummary([contender], modelContext: h.context)
-        #expect(local.hasPrefix("Waiting for another task to finish in `") && !local.contains("confirm"))
+        #expect(local.hasPrefix("Waiting for another task to finish in ") && !local.contains("confirm"))
     }
 
     @Test("An explicit follow-up cannot erase cancelled tools or move their resource fence")

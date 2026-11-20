@@ -74,7 +74,7 @@ struct RuntimeWorkspaceReviewTests {
         return (next, try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: h.context)))
     }
 
-    /// `now` is what the process table shows when it is asked; nil is a table that cannot be read.
+    /// now is what the process table shows when it is asked; nil is a table that cannot be read.
     private func preview(_ h: HeadlessChatHarness, _ task: AgentTask, _ request: TaskTurnRequest,
                          now: [Survivor]? = []) throws -> RuntimeWorkspaceReview.Review? {
         try RuntimeWorkspaceReview.preview(task: task, request: request, context: h.context, bootedAt: boot) { launch in
@@ -201,7 +201,7 @@ struct RuntimeWorkspaceReviewTests {
             : fault == "settling" ? .settling : .taskWorking
         #expect(!review.canStart && review.holders.first?.blockers.contains(expected) == true)
         let dialog = RuntimeWorkspaceReviewWording.dialog(review)
-        #expect(!dialog.canStart && dialog.title.hasPrefix("Something is still running in `"))
+        #expect(!dialog.canStart && dialog.title.hasPrefix("Something is still running in "))
         #expect(dialog.message.contains("“Export report”") && !dialog.message.contains("Starting now"))
         #expect(throws: (any Error).self) { try start(h, review, b, request) }
         live = nil
@@ -245,7 +245,7 @@ struct RuntimeWorkspaceReviewTests {
         let review = try #require(try preview(h, b, request, now: now))
         #expect(review.holders.first?.blockers == expected && review.canStart)
         let dialog = RuntimeWorkspaceReviewWording.dialog(review)
-        #expect(dialog.canStart && dialog.title.hasPrefix("Start in `") && dialog.title.hasSuffix("` now?"))
+        #expect(dialog.canStart && dialog.title.hasPrefix("Start in ") && dialog.title.hasSuffix(" now?"))
         try start(h, review, b, request, now: now)
         let released = try #require(try RuntimeExecutionOwner.existing(task: a, context: h.context))
         #expect(released.resourcesReleased == true && released.stopProof == original.stopProof && !released.canReplace)
@@ -263,7 +263,7 @@ struct RuntimeWorkspaceReviewTests {
         let review = try #require(try preview(h, b, request))
         #expect(review.canStart && review.holders.first?.blockers == [.survivors([mine])])
         let dialog = RuntimeWorkspaceReviewWording.dialog(review)
-        #expect(dialog.canStart && dialog.message.contains("“Export report” has ended, but `python3` (process \(mine.process.pid)), which it started, is still running."))
+        #expect(dialog.canStart && dialog.message.contains("“Export report” has ended, but python3 (process \(mine.process.pid)), which it started, is still running."))
         #expect(dialog.message.contains("Starting now does not stop it, and it can still change files there."))
         try start(h, review, b, request)
         let released = try #require(try RuntimeExecutionOwner.existing(task: a, context: h.context))
@@ -332,7 +332,7 @@ struct RuntimeWorkspaceReviewTests {
         let names = RuntimeWorkspaceRemoteJobs.names(task: a, owner: original, context: h.context)
         #expect(names[job.jobID]?.host == "build-host" && names[job.jobID]?.label == job.label)
         let dialog = RuntimeWorkspaceReviewWording.dialog(review, jobs: names.mapValues { .init(label: $0.label, host: $0.host) })
-        let named = labelled ? "“Nightly export” on `build-host`" : "\(job.jobID.prefix(8)) on `build-host`"
+        let named = labelled ? "“Nightly export” on build-host" : "\(job.jobID.prefix(8)) on build-host"
         #expect(dialog.message.contains("“Export report” has an SSH job that has not ended: \(named). Starting now does not stop it."))
         try start(h, review, b, request)
         let released = try #require(try RuntimeExecutionOwner.existing(task: a, context: h.context))
@@ -453,7 +453,7 @@ struct RuntimeWorkspaceReviewTests {
         let holder = try #require(review.holders.first)
         #expect(holder.otherClaims.contains { $0.resourceKey == worktree.path } && !holder.claims.contains { $0.resourceKey == worktree.path })
         let dialog = RuntimeWorkspaceReviewWording.dialog(review)
-        #expect(dialog.message.contains("Starting now also frees `earlier`, which “Export report” was using."))
+        #expect(dialog.message.contains("Starting now also frees earlier, which “Export report” was using."))
         try start(h, review, b, request)
         let store = RuntimeExecutionOwner.store(in: h.context)
         #expect(try !RuntimeResourceOwnership.claims(in: store, context: h.context).contains { $0.taskID == a.id })
@@ -500,17 +500,17 @@ struct RuntimeWorkspaceReviewTests {
                 jobs: jobs, decidable: decidable, overlap: overlap)
         }
         let cases: [([RuntimeReservationRelease.Blocker], String)] = [
-            ([.taskWorking, .lostRun], "Waiting for “Export report” to finish in `reports`."),
-            ([], "Waiting for “Export report” to finish in `reports`."),
-            ([.providerAlive(pid: 42)], "Waiting for “Export report” to finish in `reports`: the provider it started (process 42) is still running."),
-            ([.settling], "Waiting for ASTRA to finish closing the last run of “Export report” in `reports`."),
-            ([.survivors([me])], "“Export report” ended but left `python3` (process \(me.process.pid)) running in `reports`. This starts when that stops, or you can start it now."),
-            ([.survivors([me]), .survivors(more)], "“Export report” ended but left `python3` (process \(me.process.pid)), `helper0` (process 200), `helper1` (process 201) and 2 more running in `reports`. This starts when those stop, or you can start it now."),
-            ([.sshJobs(["11111111-aaaa"])], "Waiting for you: “Export report” has an SSH job that has not ended: “Nightly export” on `build-host`."),
-            ([.sshJobs(["11111111-aaaa", "22222222-bbbb", "33333333-cccc"])], "Waiting for you: “Export report” has 3 SSH jobs that have not ended: “Nightly export” on `build-host`, 22222222 and 1 more."),
+            ([.taskWorking, .lostRun], "Waiting for “Export report” to finish in reports."),
+            ([], "Waiting for “Export report” to finish in reports."),
+            ([.providerAlive(pid: 42)], "Waiting for “Export report” to finish in reports: the provider it started (process 42) is still running."),
+            ([.settling], "Waiting for ASTRA to finish closing the last run of “Export report” in reports."),
+            ([.survivors([me])], "“Export report” ended but left python3 (process \(me.process.pid)) running in reports. This starts when that stops, or you can start it now."),
+            ([.survivors([me]), .survivors(more)], "“Export report” ended but left python3 (process \(me.process.pid)), helper0 (process 200), helper1 (process 201) and 2 more running in reports. This starts when those stop, or you can start it now."),
+            ([.sshJobs(["11111111-aaaa"])], "Waiting for you: “Export report” has an SSH job that has not ended: “Nightly export” on build-host."),
+            ([.sshJobs(["11111111-aaaa", "22222222-bbbb", "33333333-cccc"])], "Waiting for you: “Export report” has 3 SSH jobs that have not ended: “Nightly export” on build-host, 22222222 and 1 more."),
             ([.container, .lostRun], "Waiting for you: “Export report” ran in a container that ASTRA cannot look inside."),
             ([.settlementUnconfirmed, .lostRun], "Waiting for you: ASTRA lost track of a run of “Export report” and cannot confirm its commands ended."),
-            ([.processTableUnreadable], "Waiting for you: ASTRA cannot confirm that “Export report” has stopped using `reports`.")
+            ([.processTableUnreadable], "Waiting for you: ASTRA cannot confirm that “Export report” has stopped using reports.")
         ]
         for (blockers, expected) in cases {
             #expect(banner(blockers) == expected)
@@ -521,8 +521,8 @@ struct RuntimeWorkspaceReviewTests {
         // A request nobody can decide for is told the same fact, not told to act.
         #expect(banner([.lostRun], decidable: false) == "ASTRA lost track of a run of “Export report” and cannot confirm its commands ended.")
         #expect(banner([.survivors([me])], decidable: false).hasSuffix("This starts when that stops."))
-        #expect(banner([.taskWorking], overlap: "it holds /a, which contains /a/reports") == "Waiting for “Export report” to finish in `reports`. (it holds /a, which contains /a/reports)")
-        #expect(RuntimeWorkspaceReviewWording.unreadableBanner(folders: ["reports"]) == "ASTRA cannot read its record of who is using `reports`. Nothing was started.")
+        #expect(banner([.taskWorking], overlap: "it holds /a, which contains /a/reports") == "Waiting for “Export report” to finish in reports. (it holds /a, which contains /a/reports)")
+        #expect(RuntimeWorkspaceReviewWording.unreadableBanner(folders: ["reports"]) == "ASTRA cannot read its record of who is using reports. Nothing was started.")
     }
 
     @Test("The waiting banner is the rule's answer for the holder, asked again only on the pass that asks the rule")
@@ -534,7 +534,7 @@ struct RuntimeWorkspaceReviewTests {
         queue.refreshResourceOwnership(in: h.context)
         let claims = queue.resourceLockClaims(for: request, task: b, runMode: "request", sandboxEnforcement: .off)
         let wanted = try #require(TaskExecutionResourceBroker.firstConflict(requested: claims, active: queue.activeResourceLocks)).requested
-        let place = "`\(try #require(RuntimeWorkspaceReviewWording.folders([wanted]).first))`"
+        let place = "\(try #require(RuntimeWorkspaceReviewWording.folders([wanted]).first))"
         func banner() -> String { queue.resourceBlockerSummary(claims, modelContext: h.context, request: request, task: b) }
         // The test workspace sits inside the folder the request names, and the banner says so.
         let held = try #require(TaskExecutionResourceBroker.firstConflict(requested: claims, active: queue.activeResourceLocks)).holder
@@ -590,25 +590,25 @@ struct RuntimeWorkspaceReviewTests {
             let dialog = RuntimeWorkspaceReviewWording.dialog(.init(requestID: UUID(), holders: [holder]),
                 jobs: ["11111111-aaaa": .init(label: "Nightly export", host: "build-host")])
             #expect(dialog.canStart == !blocker.holderIsActive)
-            #expect(dialog.title == (blocker.holderIsActive ? "Something is still running in `reports`" : "Start in `reports` now?"))
+            #expect(dialog.title == (blocker.holderIsActive ? "Something is still running in reports" : "Start in reports now?"))
             #expect(dialog.message.contains("“Export report”") && sentences.insert(dialog.message).inserted)
             let text = (dialog.title + " " + dialog.message).lowercased()
             for word in ["cleanup", "receipt", "reservation", "reserved", "verified", "lease", "journal", "claim"] {
                 #expect(!text.contains(word), "\(blocker) says \(word)")
             }
             if !blocker.holderIsActive {
-                #expect(dialog.message.contains("Starting now also frees `side`") && dialog.message.contains("Retry is not available in “Export report” for that run. A new message there still works."))
+                #expect(dialog.message.contains("Starting now also frees side") && dialog.message.contains("Retry is not available in “Export report” for that run. A new message there still works."))
             }
         }
         let several = RuntimeWorkspaceReviewWording.dialog(.init(requestID: UUID(), holders: [
             .init(taskID: record.taskID, title: "Export report", receipt: record, blockers: [.survivors([me, other])], claims: [claim("/tmp/work/reports")], otherClaims: [])]))
-        #expect(several.message.contains("`python3` (process \(me.process.pid)) and `node` (process 7), which it started, are still running. Starting now does not stop them, and they can still change files there."))
+        #expect(several.message.contains("python3 (process \(me.process.pid)) and node (process 7), which it started, are still running. Starting now does not stop them, and they can still change files there."))
         // Processes left by different runs of one holder read as one sentence, and a long list is cut short.
         let many = (0..<9).map { Survivor(process: .init(pid: Int32(100 + $0), startedSeconds: 1, startedMicroseconds: 1), name: "helper\($0)") }
         let merged = RuntimeWorkspaceReviewWording.dialog(.init(requestID: UUID(), holders: [
             .init(taskID: record.taskID, title: "Export report", receipt: record, blockers: [.survivors([me]), .survivors(many)], claims: [claim("/tmp/work/reports")], otherClaims: [])]))
         #expect(merged.message.components(separatedBy: "has ended, but").count == 2)
-        #expect(merged.message.contains("`python3` (process \(me.process.pid)), `helper0` (process 100)") && merged.message.contains("`helper4` (process 104) and 4 more, which it started, are still running."))
+        #expect(merged.message.contains("python3 (process \(me.process.pid)), helper0 (process 100)") && merged.message.contains("helper4 (process 104) and 4 more, which it started, are still running."))
         #expect(RuntimeWorkspaceReviewWording.folders([claim("/tmp/work/reports/.git", .gitCommonDirectory), claim("/tmp/work/reports"), claim("/tmp/other/.git", .gitCommonDirectory)]) == ["reports", "other"])
         let note = RuntimeWorkspaceReviewWording.holderNote(folders: ["reports"], on: Date(timeIntervalSince1970: 1_795_000_000))
         #expect(note.hasPrefix("You let other tasks use `reports` on ") && note.hasSuffix("Retry is not available for that run. Send a new message here to continue."))

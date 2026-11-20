@@ -29,13 +29,15 @@ struct TaskActivityPresentationTests {
     func decisionReasonInDock() {
         let task = makeTask(status: .queued)
         let summary = RuntimeWorkspaceReviewWording.decisionPrefix
-            + "“Export report” has an SSH job that has not ended: “Nightly export” on `build-host`."
+            + "“Export report” has an SSH job that has not ended: “Nightly export” on build-host."
         let waiting = request(for: task, sequence: 1, state: .waitingForResource, blockerSummary: summary)
         let activity = TaskActivityPresentation.resolve(taskID: task.id, taskStatus: task.status, requests: [waiting])
         #expect(activity.dockTitle == "Waiting for you")
-        #expect(activity.dockSummary == "Your message is saved. " + summary)
+        // The title already says who it waits for; the line under it does not repeat that.
+        #expect(activity.dockSummary == "Your message is saved. “Export report” has an SSH job that has not ended: “Nightly export” on build-host.")
+        #expect(activity.blockerDetail?.hasPrefix("Waiting for you") == false)
         let behind = request(for: task, sequence: 1, state: .waitingForResource,
-            blockerSummary: "Waiting for “Export report” to finish in `reports`.")
+            blockerSummary: "Waiting for “Export report” to finish in reports.")
         #expect(TaskActivityPresentation.resolve(taskID: task.id, taskStatus: task.status, requests: [behind]).dockTitle == "Waiting for resource")
     }
 
@@ -300,7 +302,7 @@ struct TaskActivityPresentationTests {
             searchText: "",
             taskActivities: activities
         )
-        // Submission never clears `isDone`, so a done-filter here would hide
+        // Submission never clears isDone, so a done-filter here would hide
         // the saved follow-up whenever the workspace drawer is collapsed.
         #expect(index.waitingTaskCount(in: workspace) == 1)
         #expect(SidebarTaskIndex.isSidebarReviewTask(doneTask, activity: activities[doneTask.id]))
@@ -385,7 +387,7 @@ struct TaskActivityPresentationTests {
         #expect(activities[taskA.id]?.request?.id == waitingA.id)
         #expect(activities[taskB.id]?.kind == .running)
         #expect(activities[taskB.id]?.request?.id == runningB.id)
-        // Idle is the absent entry; see `resolveByTaskIDIsSparse`.
+        // Idle is the absent entry; see resolveByTaskIDIsSparse.
         #expect(activities[taskC.id] == nil)
     }
 

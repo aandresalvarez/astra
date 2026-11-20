@@ -8,7 +8,7 @@ import ASTRAPersistence
 
 /// A provider process whose run never returns, even after cancel — the shape
 /// of the 0.1.30 hang, where an escaped descendant held stdout open and the
-/// worker's `continueSession` waited for an EOF that never came.
+/// worker's continueSession waited for an EOF that never came.
 private final class WedgedProcessRunner: AgentRuntimeProcessRunning {
     private(set) var launchedTaskIDs: [UUID] = []
     private var pending: [UUID: CheckedContinuation<AgentProcessResult, Never>] = [:]
@@ -185,7 +185,7 @@ struct TaskQueueWedgedWorkerReleaseTests {
     }
 
     /// Drives the 0.1.30 shape: the first task's worker hangs in
-    /// `continueSession`, a second task on the same workspace waits for it,
+    /// continueSession, a second task on the same workspace waits for it,
     /// and the user cancels the first.
     private func wedgeThenCancel(_ fixture: Fixture) async throws -> (
         wedged: Task<Bool, Never>, next: Task<Bool, Never>, nextRequest: TaskTurnRequest
@@ -200,7 +200,7 @@ struct TaskQueueWedgedWorkerReleaseTests {
         #expect(second.request.blockingTaskID == fixture.wedged.id)
         let summary = second.request.blockerSummary ?? ""
         // The holder is at work: the banner names it and the folder, and asks for no decision.
-        #expect(summary.hasPrefix("Waiting for \u{201C}Wedged run\u{201D} to finish in `"), "\(summary)")
+        #expect(summary.hasPrefix("Waiting for \u{201C}Wedged run\u{201D} to finish in "), "\(summary)")
 
         fixture.queue.cancel(task: fixture.wedged, modelContext: fixture.context)
         return (first.admission, second.admission, second.request)

@@ -42,7 +42,12 @@ enum RuntimeWorkspaceReviewWording {
         return items.dropLast().joined(separator: ", ") + " and " + items[items.count - 1]
     }
 
+    /// For a history line, which renders code spans.
     nonisolated private static func code(_ names: [String]) -> String { list(names.map { "`\($0)`" }) }
+
+    /// For the banner and the dialog, which are plain text: a backtick there
+    /// is shown as a backtick.
+    nonisolated private static func plain(_ names: [String]) -> String { list(names) }
 
     /// Docker Desktop alone leaves nine. The record keeps every one of them.
     nonisolated static let namedProcessLimit = 6
@@ -69,13 +74,13 @@ enum RuntimeWorkspaceReviewWording {
     nonisolated private static func named(_ ids: [String], _ jobs: [String: SSHJob]) -> [String] {
         ids.map { id in
             guard let job = jobs[id] else { return "\(id.prefix(8))" }
-            return (job.label.map { "“\($0)”" } ?? "\(id.prefix(8))") + " on `\(job.host)`"
+            return (job.label.map { "“\($0)”" } ?? "\(id.prefix(8))") + " on \(job.host)"
         }
     }
 
     /// When ASTRA cannot read who holds what, nothing is admitted.
     nonisolated static func unreadableBanner(folders: [String]) -> String {
-        "ASTRA cannot read its record of who is using \(folders.isEmpty ? "this workspace" : code(folders)). Nothing was started."
+        "ASTRA cannot read its record of who is using \(folders.isEmpty ? "this workspace" : plain(folders)). Nothing was started."
     }
 
     /// The line on a waiting task: the holder, the folder and the one thing
@@ -85,7 +90,7 @@ enum RuntimeWorkspaceReviewWording {
     static func banner(holder title: String?, folders: [String], blockers: [RuntimeReservationRelease.Blocker],
                        jobs: [String: SSHJob] = [:], decidable: Bool = true, overlap: String? = nil) -> String {
         let name = title.map { "“\($0)”" } ?? "another task"
-        let place = folders.isEmpty ? "this workspace" : code(folders)
+        let place = folders.isEmpty ? "this workspace" : plain(folders)
         let tail = overlap.map { " (\($0))" } ?? ""
         let you = decidable ? decisionPrefix : ""
         // At work, or about to be released by the rule: nothing to decide.
@@ -102,7 +107,7 @@ enum RuntimeWorkspaceReviewWording {
             if case .survivors(let found) = blocker { found } else { [] }
         }
         if !left.isEmpty {
-            var processes = left.prefix(3).map { "`\($0.name)` (process \($0.process.pid))" }
+            var processes = left.prefix(3).map { "\($0.name) (process \($0.process.pid))" }
             if left.count > 3 { processes.append("\(left.count - 3) more") }
             return "\(name) ended but left \(list(processes)) running in \(place). "
                 + "This starts when \(left.count == 1 ? "that stops" : "those stop")\(decidable ? ", or you can start it now" : "").\(tail)"
@@ -126,7 +131,7 @@ enum RuntimeWorkspaceReviewWording {
 
     static func dialog(_ review: RuntimeWorkspaceReview.Review, jobs: [String: SSHJob] = [:]) -> Dialog {
         let wanted = folders(review.holders.flatMap(\.claims))
-        let place = wanted.isEmpty ? "this workspace" : code(wanted)
+        let place = wanted.isEmpty ? "this workspace" : plain(wanted)
         let active = review.holders.filter(\.isActive)
         guard active.isEmpty else {
             let lines = active.map { holder -> String in
@@ -151,7 +156,7 @@ enum RuntimeWorkspaceReviewWording {
                 if case .survivors(let found) = blocker { found } else { [] }
             }
             if !left.isEmpty {
-                var named = left.prefix(namedProcessLimit).map { "`\($0.name)` (process \($0.process.pid))" }
+                var named = left.prefix(namedProcessLimit).map { "\($0.name) (process \($0.process.pid))" }
                 if left.count > namedProcessLimit { named.append("\(left.count - namedProcessLimit) more") }
                 let one = left.count == 1
                 sentences.append("\(name) has ended, but \(list(named)), which it started, \(one ? "is" : "are") still running. "
@@ -186,7 +191,7 @@ enum RuntimeWorkspaceReviewWording {
                 }
             }
             let others = folders(holder.otherClaims).filter { !wanted.contains($0) }
-            if !others.isEmpty { sentences.append("Starting now also frees \(code(others)), which \(name) was using.") }
+            if !others.isEmpty { sentences.append("Starting now also frees \(plain(others)), which \(name) was using.") }
             paragraphs.append(sentences.joined(separator: " "))
         }
         let holders = list(review.holders.map { "“\($0.title)”" })
