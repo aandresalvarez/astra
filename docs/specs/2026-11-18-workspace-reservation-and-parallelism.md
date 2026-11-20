@@ -422,16 +422,28 @@ and so still excludes them, and a fork that shares its parent's folder conflicts
 Staged as decision 8 says:
 
 - **2a. Test setup, no behavior change.** The runtime tests that rely on two tasks in one plain
-  workspace folder conflicting say so in their setup (a repository, or a shared extra folder), so
-  the rule change that follows does not rewrite their meaning. Its own PR.
+  workspace folder conflicting say so in their setup, so the rule change that follows does not
+  rewrite their meaning. A prototype showed what that is: 42 test call sites in six files acquire
+  an execution owner for a request without the claims that request was admitted with, which
+  production never does, and one queue fixture (`TaskQueueWedgedWorkerReleaseTests`) needs a
+  shared extra folder. Its own PR.
 - **2b. The rule, with enforcement Off.** Only what is claimed changes, and only when nothing
   enforces the policy, which is how production runs. The workspace folder stays the launch
   directory and stays writable; a change there that is not in the task's folder is reported on
   the task, not blocked (decision 7). A fork starts from copies in its own folder. Its own PR.
+  The rule applies only where a request froze its own claims. Where there is no request, admission
+  falls back to one claim on the whole workspace folder with no extra folders; that fallback fails
+  closed and stays whole.
 - **2c. The enforced case.** With a sandbox on, taking the workspace folder out of the policy
   makes the provider's launch directory read-only, and providers write there themselves (Claude
   Code keeps `.claude/settings.local.json` in it). This waits for a run with real providers in the
   development app.
+
+**2a and 2b come after 1b.** A remembered workspace answer applies to a later request with the
+same claims. Task-folder claims differ for every task, so under 2b a remembered answer stops
+matching any other task in a plain workspace. 1b removes remembering (decision 2); doing 2b first
+would mean a special case inside code that 1b deletes. The prototype (three files and a note of
+what each variant broke) is kept outside the repository with the session notes.
 
 Tests for 2b: two tasks in a non-code workspace hold no conflicting claim and run together; a task
 with a non-git additional folder still excludes another with the same folder; a task that claims
