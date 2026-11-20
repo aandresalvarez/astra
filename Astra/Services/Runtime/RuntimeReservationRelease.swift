@@ -6,6 +6,12 @@ import ASTRAPersistence
 
 /// Why a reservation ended, saved with the release. It is evidence for a
 /// person reading the journal; nothing reads the basis back to decide anything.
+///
+/// Nothing here writes `decision` yet: the override that lets a person start
+/// past a holder does (design, B). It is declared with the record so that a
+/// build with this rule can still read a journal that a later build wrote.
+/// An unknown basis would fail to decode, and one unreadable receipt stops
+/// every admission.
 struct RuntimeReservationReleaseRecord: Codable, Equatable, Sendable {
     enum Basis: String, Codable, Sendable {
         /// The exit record already showed nothing was left.
@@ -14,9 +20,16 @@ struct RuntimeReservationReleaseRecord: Codable, Equatable, Sendable {
         case processTable = "process_table"
         /// Every execution of the owner ended before this Mac's current boot.
         case hostRestart = "host_restart"
+        /// A person let another request start past what the rule could not answer.
+        case decision
     }
     let basis: Basis
     var bootedAt: Date? = nil
+    /// With `decision`: the request the person let start, and what the
+    /// dialog named when they did. No time is kept here, so that saving the
+    /// same decision again after an interruption writes the same record.
+    var requestID: UUID? = nil
+    var named: [String]? = nil
 }
 
 /// A reservation keeps two live writers out of one folder. It ends when

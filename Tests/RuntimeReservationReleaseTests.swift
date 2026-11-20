@@ -454,4 +454,33 @@ struct RuntimeReservationReleaseTests {
         #expect(!String(decoding: data, as: UTF8.self).contains("reservationRelease"))
         #expect(try JSONDecoder().decode(RuntimeExecutionOwnerRecord.self, from: data) == saved)
     }
+
+    @Test("A release that a person decided, as a later build writes it, is read and kept whole")
+    func decidedRelease() throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (task, run) = try holder(h)
+        var saved = record(task, run: run)
+        saved.resourcesReleased = true
+        try save(saved, h)
+        // The bytes the later build leaves in the journal.
+        let store = RuntimeExecutionOwner.store(in: h.context)
+        let url = try store.acquire(taskID: task.id, taskOwnerID: task.persistentModelID).recordURL
+        var json = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        let request = UUID()
+        json["reservationRelease"] = ["basis": "decision", "requestID": request.uuidString, "named": ["process:keyboxd:4821", "ssh_job:abc"]]
+        try JSONSerialization.data(withJSONObject: json).write(to: url)
+        // Every admission lists every receipt, so one that cannot be read stops them all.
+        let read = try #require(try store.records().first { $0.taskID == task.id })
+        #expect(read.reservationRelease == .init(basis: .decision, requestID: request, named: ["process:keyboxd:4821", "ssh_job:abc"]))
+        #expect(try JSONDecoder().decode(RuntimeExecutionOwnerRecord.self, from: JSONEncoder().encode(read)) == read)
+        #expect(RuntimeCompletedUserTurnContinuation.hasEndedReservation(read, task: task, context: h.context))
+        // The rule leaves it alone: it holds nothing to release.
+        #expect(try RuntimeReservationRelease.reconcile(in: store, context: h.context) == 0)
+        #expect(try store.records().first { $0.taskID == task.id } == read)
+        // A basis this build does not know cannot be read at all, which is
+        // why that one is declared here ahead of the build that writes it.
+        json["reservationRelease"] = ["basis": "not_known_here"]
+        try JSONSerialization.data(withJSONObject: json).write(to: url)
+        #expect(throws: (any Error).self) { try store.records() }
+    }
 }
