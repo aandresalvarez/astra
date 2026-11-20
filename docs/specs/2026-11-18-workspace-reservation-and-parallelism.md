@@ -1,8 +1,8 @@
 # Workspace reservations and parallel tasks
 
-Status: the owner decided the eight open questions on 2026-11-19 and one more on 2026-11-20 (see
-"Decisions"). Increments 1a, 3a and 5 are open as draft PRs; the rest is not built. Each increment
-is its own draft PR.
+Status: the owner decided the eight open questions on 2026-11-19 and two more on 2026-11-20 (see
+"Decisions"). No question is open. Increments 1a, 3a and 5 are open as draft PRs; the rest is not
+built. Each increment is its own draft PR.
 
 Production evidence here is given by short task ID. Task titles, folder names, workspace names and
 host names are left out because this repository is public.
@@ -110,7 +110,9 @@ would send the earlier one back to "unknown" and the task would hold its folder 
 Each fact that fails is one of two kinds, and the rule returns which:
 
 - **Running on this Mac**: the provider process is present, a survivor is alive, a live ASTRA
-  process is settling, or the task is working now.
+  process is settling, or the task is working now. A survivor is a process the holder's tools
+  started that is alive after the holder ended. The rule holds for all four alike; the override
+  in B treats a survivor of an ended holder differently from the other three (decision 9).
 - **Unknown**: ASTRA cannot observe the answer. An SSH job that has not ended, a container, an
   unreadable process table or journal, or a run it lost track of in this boot with no scope value
   to ask about.
@@ -147,14 +149,21 @@ or a decision grants leaves the stop proof as written at exit.
 shows what it found. It no longer asks whether the holder's turn completed.
 
 - If every holder now passes the rule, they are released and the request starts. No decision.
-- If any holder has something **running on this Mac**, the dialog names it (task, process name and
-  PID) and offers to open that task or to keep waiting. It does not offer to start, and it has no
-  stop button (decision 4): none of the held production receipts has anything running, and
-  signalling a process matched after the fact carries the risk of a reused PID.
-- Otherwise every remaining blocker is an **unknown**. The dialog names each one and offers "Start
-  now" and "Keep waiting". Starting records the person's decision on each reviewed holder and
-  releases it, exactly as rule A's release does, with basis "decision", the request that asked and
-  the unknowns named. Retry inside that holder stays blocked by its unchanged stop proof.
+- If any holder is **itself still running on this Mac** (its provider process is present, a live
+  ASTRA process is settling it, or the task is working now), the dialog names it and offers to
+  open that task or to keep waiting. It does not offer to start.
+- Otherwise every remaining blocker is a **leftover process** (a survivor of a holder that has
+  ended) or an **unknown**. The dialog names each one, a leftover process by task, process name
+  and PID, and offers "Start now" and "Keep waiting". A person may start past a leftover process
+  once it is named (decision 9). There is still no stop button (decision 4), because signalling a
+  process matched after the fact carries the risk of a reused PID: starting now leaves the process
+  running, and the dialog says so. Starting records the person's decision on each reviewed holder
+  and releases it, exactly as rule A's release does, with basis "decision", the request that
+  asked, and the leftover processes and unknowns named. Retry inside that holder stays blocked by
+  its unchanged stop proof.
+
+Only a person's decision goes past a leftover process. Rule A keeps holding for it by itself until
+the process exits or the Mac restarts, and an unattended launch never resolves a holder (D6).
 
 A reviewed holder is resolved, so the next task is not asked about it again and the new task
 inherits nothing: `inheritedToolUncertainty` is no longer set, and the admission-time exclusion of
@@ -249,7 +258,7 @@ first run of this validation and is not in an SSH workspace.
 - **Something is running, for the first time in this data.** A signed commit starts `keyboxd`, and
   a `docker` command can start Docker Desktop; both outlive the task for hours or days with their
   working directory in the repository. The rule calls that running, which is what it was asked to
-  do. See the open question at the end.
+  do. A person can start past it once it is named (decision 9).
 - **Under the first version of the rule**, which held an SSH route for a decision, the same data
   gave 1 release and 14 holds on 2026-11-18.
 - **A limit of the rehearsal.** An SSH registration stores the absolute production path of its job
@@ -374,7 +383,7 @@ anything a person reads.
 | Case | Banner on the waiting task | "Review workspace" dialog |
 | --- | --- | --- |
 | Holder is working | Waiting for "Export report" to finish in `reports`. | No dialog. The action is "Open task". |
-| Holder ended, a process it started is alive | "Export report" ended but left `python3` (process 4821) running in `reports`. This starts when that stops. | **Something is still running in `reports`.** `python3` (process 4821), started by "Export report". Buttons: Open task, Keep waiting. No button stops the process (decision 4). |
+| Holder ended, a process it started is alive | "Export report" ended but left `python3` (process 4821) running in `reports`. This starts when that stops, or you can start it now. | **Start in `reports` now?** "Export report" has ended, but `python3` (process 4821), which it started, is still running in `reports`. Starting now does not stop it, and it can still change files there. Buttons: Start now, Open task, Keep waiting. No button stops the process (decision 4). |
 | Holder ended, an SSH job has not ended | Waiting for you: "Export report" has an SSH job on `build-host` that has not ended: "Nightly export". | **Start in `reports` now?** Nothing from "Export report" is running on this Mac. Its SSH job "Nightly export" on `build-host` is still running (or: could not be confirmed stopped). Starting now does not stop it. Buttons: Start now, Open task, Keep waiting. Nothing is remembered. |
 | Holder ran in a container | Waiting for you: "…" ran in a container ASTRA cannot inspect. | Same shape; names the container. |
 | ASTRA lost track of the run (quit or crash, same boot) | Waiting for you: ASTRA lost track of "…" when it quit and cannot confirm its commands ended. | **Start in `reports` now?** ASTRA sees no process from "…", but it lost its record of that run. Buttons: Start now, Keep waiting. When the run did leave an exit record, the dialog adds: Restarting the Mac settles this without a decision. |
@@ -410,16 +419,22 @@ released. Rehearsal on a production copy: see "Validation on production data".
 
 **1b. The override (B).** `preview` returns the review (holders, kind, named facts) instead of
 throwing `.busy`; confirming releases the reviewed holders with basis "decision". Nothing is
-remembered and there is no stop button (decisions 2 and 4). Banner and dialog wording as above.
+remembered and there is no stop button (decisions 2 and 4). A holder that ended and left a process
+alive is offered with that process named, not refused (decision 9); 1a already returns survivors
+as their own named fact, so this needs nothing from 1a. Banner and dialog wording as above.
 It starts after #600 and #601 are merged, because it rewrites the code both change.
-Tests: preview never refuses a holder whose processes are gone; a running holder refuses and
-carries what runs; confirming releases every reviewed holder, records the event on each holder and
-on the waiter, and the waiter is admitted by ordinary admission with no inherited uncertainty; a
-second waiter is not asked; a remembered answer saved before the change resolves nothing; a
-per-request decision saved before the change is still honored; a holder changing while the dialog
-is open invalidates the confirmation; Retry in a resolved holder stays blocked. Development app:
-hold a synthetic workspace with an open SSH job, review it from a second task, and repeat with a
-live `sleep` survivor to see the refusal.
+Tests: preview never refuses a holder whose processes are gone; a holder that is working, whose
+provider process is alive or that is being settled refuses and carries what runs; a holder that
+ended with a live survivor is offered with the process name and PID, and confirming releases it
+with the survivor named in the record; confirming releases every reviewed holder, records the
+event on each holder and on the waiter, and the waiter is admitted by ordinary admission with no
+inherited uncertainty; a second waiter is not asked; a remembered answer saved before the change
+resolves nothing; a per-request decision saved before the change is still honored; a holder
+changing while the dialog is open invalidates the confirmation, including a survivor that exits
+or a new one that appears; Retry in a resolved holder stays blocked. Development app: hold a
+synthetic workspace with an open SSH job and review it from a second task; repeat with a live
+`sleep` survivor to see it named and start past it; repeat with the holder still working to see
+the refusal.
 
 **2. Task folders (D1) and fork folders.** In a workspace whose folder is not a repository, the
 claim that replaces the workspace folder is the task folder itself, held exclusively: two tasks
@@ -500,8 +515,12 @@ survives a relaunch.
   this Mac's folder, and ASTRA never reserved the remote directory; a person who needs the remote
   work to finish first has to wait for it themselves.
 - **A decision frees the folder for everyone, not for one request.** That is the point of
-  resolving the holder, and it makes a wrong click wider. The dialog refuses while something runs
-  and names what is unknown.
+  resolving the holder, and it makes a wrong click wider. The dialog refuses while the holder
+  itself runs, and names every leftover process and every unknown.
+- **A leftover process can be doing real work.** `keyboxd` and Docker Desktop are helpers that
+  write nothing in the folder, but ASTRA cannot tell them from a script the task left running
+  that still writes there. After "Start now" the new task and that process share the folder. The
+  dialog names the process so the person can judge, and nothing stops it (decisions 4 and 9).
 - **The admission loop does more work while something waits.** The re-ask reads the held
   receipts' journals, their job records and, for a holder with recorded survivors, the process
   table. It runs on a counted pass; one pass costs 23 ms on the production store with one receipt
@@ -527,7 +546,7 @@ survives a relaunch.
 
 The owner answered the eight questions this document left open on 2026-11-19, accepting the
 recommendations relayed to them as a set. Decisions 2, 4, 5 and 6 differ from what this document
-first proposed. One question came up afterwards and is at the end.
+first proposed. Two more decisions followed on 2026-11-20 and are at the end of the list.
 
 1. **An SSH workspace with nothing open releases from local facts.** The decision is kept only for
    a tracked SSH job that has not ended. The reservation protects a folder on this Mac, a job on
@@ -539,8 +558,10 @@ first proposed. One question came up afterwards and is at the end.
 3. **Retry stays refused after a release.** A new message in the same task is admitted, so the
    person is not stuck.
 4. **No stop button in 1b.** The dialog names what is running (process, PID, task) and offers to
-   open that task or keep waiting. None of the held receipts has anything running, and signalling
-   processes matched after the fact carries PID-reuse risk. Revisit only if logs show the case.
+   open that task or keep waiting. None of the held receipts had anything running when this was
+   decided, and signalling processes matched after the fact carries PID-reuse risk. Revisit only
+   if logs show the case. Decision 9 later added "Start now" for a process a finished task left
+   behind; the button that stops a process is still not built.
 5. **No global worktree default.** A setting per workspace, off by default, pre-checks the
    existing "Start in a new worktree" choice in the new-task composer.
 6. **Cloud-synced folders follow the permission level** when enforcement is Off: Ask asks once per
@@ -551,9 +572,18 @@ first proposed. One question came up afterwards and is at the end.
 8. **Increment 2 is staged**: enforcement Off first, the enforced case after a real-provider
    check, and the test-setup change in its own PR with no behavior change before the rule.
 
-One more decision followed on 2026-11-20. It is numbered 10 so that the open question below keeps
-the number it has been discussed under.
+Two more decisions followed on 2026-11-20.
 
+9. **A person may start past a leftover process once it is named.** The validation found the case
+   decision 4 had not seen: a finished production task (C2CF2F7A) left `keyboxd` and Docker
+   Desktop alive with their working directory in its repositories. Rule A holds those
+   repositories as running until the processes exit or the Mac restarts, and B as first written
+   would have refused to start with no button to stop them, so the person would have had to quit
+   Docker or run `gpgconf --kill keyboxd` first. Instead the dialog names each leftover process
+   (task, process name, PID), says that starting does not stop it, and offers "Start now". This
+   applies only to a holder that has ended. A holder that is working, whose provider process is
+   alive or that ASTRA is settling is still refused. The other two ways out, a stop button or
+   leaving the person to stop the process, were not chosen.
 10. **No read-only mode for a repository; one worktree per task is enough.** The owner first asked
     for a read-only task on a repository to run alongside others with enforcement Off, as E then
     proposed, and decided against it after the measurement. In the production copy of
@@ -571,17 +601,3 @@ the number it has been discussed under.
     folder, whether it reads or writes.
 
 Merge order: #600 first, then #601 rebased on it. Merging is the owner's action.
-
-## Open after the decisions
-
-One question, raised by the validation above and not by the eight decisions.
-
-9. **A helper process that outlives the task.** A finished production task left `keyboxd` and
-   Docker Desktop alive with their working directory in its repositories. Rule A holds those
-   repositories as "running" until the processes exit or the Mac restarts. Until 1b a person can
-   still continue past it with "Review workspace", as today. Under B as written, 1b would refuse
-   to start while they run, and decision 4 gives no button to stop them, so the person would have
-   to quit Docker or run `gpgconf --kill keyboxd` first. Three ways out: let a person start past a
-   survivor after it is named, as for an unknown (proposed); keep the refusal and add the stop
-   button after all; or keep the refusal and leave stopping to the person. This is needed before
-   1b, not before 1a.
