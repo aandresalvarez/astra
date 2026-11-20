@@ -58,7 +58,9 @@ struct RuntimeExecutionStopProof: Codable, Equatable, Sendable {
     /// A later local observation for a new human turn. Replacement still requires the original proof.
     var groupObservedEmptyAt: Date? = nil
     /// Present when the transcript could not show that no tool ran and the
-    /// process table was asked instead. `toolsStopped` then records its answer.
+    /// process table was asked instead. `toolsStopped` then records its
+    /// answer, unless the launch had an SSH route: there the observation is
+    /// kept for the reservation and `toolsStopped` stays false.
     var localSurvivors: RuntimeLocalSurvivorObservation? = nil
     /// Present when this Mac restarted after every execution of the owner
     /// ended. `toolsStopped` then records that nothing local outlived it.
@@ -66,11 +68,13 @@ struct RuntimeExecutionStopProof: Codable, Equatable, Sendable {
     var permitsReplacement: Bool { reaped && processGroupEmpty && toolsStopped && remoteWorkExcluded }
 
     /// Tools that ran are stopped when nothing they started is alive. Only a
-    /// reaped provider with an empty group can be answered this way.
+    /// reaped provider with an empty group can be answered this way. Where a
+    /// tool could also reach another machine, the process table answers for
+    /// this Mac only: the observation is recorded and the tools stay unproven.
     func observing(_ observation: RuntimeLocalSurvivorObservation) -> Self {
         guard !toolsStopped, reaped, processGroupEmpty else { return self }
         var result = Self(executionID: executionID, process: process, reaped: reaped, processGroupEmpty: processGroupEmpty,
-            toolsStopped: observation.clean, remoteWorkExcluded: remoteWorkExcluded, capturedAt: capturedAt,
+            toolsStopped: remoteWorkExcluded && observation.clean, remoteWorkExcluded: remoteWorkExcluded, capturedAt: capturedAt,
             managedSSHOnly: managedSSHOnly, groupObservedEmptyAt: groupObservedEmptyAt)
         result.localSurvivors = observation
         result.hostRestart = hostRestart

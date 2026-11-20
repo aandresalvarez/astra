@@ -141,7 +141,8 @@ struct RuntimeRecoveryHostRestartTests {
         #expect(current.canReplace == (shape == "unspent" || shape == "spentAndCancelled"))
     }
 
-    @Test("Every earlier execution of the owner is asked too; only one a restart cannot answer holds", arguments: ["clean", "remote", "cancelled"])
+    @Test("Every earlier execution of the owner is asked too; only one a restart cannot answer holds",
+          arguments: ["clean", "remote", "cancelled", "container"])
     func history(fault: String) throws {
         let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
         let task = h.makeTask(runtime: .claudeCode, goal: "Earlier work", model: "test")
@@ -154,6 +155,11 @@ struct RuntimeRecoveryHostRestartTests {
                 toolsStopped: false, remoteWorkExcluded: false, capturedAt: proof.capturedAt)
         }
         if fault == "cancelled" { first.cancellationRequested = true }
+        if fault == "container" {
+            var environment = WorkspaceExecutionEnvironment.host; environment.kind = .dockerImage
+            firstRun.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(environment)
+            try h.context.save()
+        }
         var last = record(task, run: lastRun, owner: first.ownerID)
         last.retainedExecutionHead = first.executionID
         let store = RuntimeExecutionOwner.store(in: h.context)
@@ -162,18 +168,20 @@ struct RuntimeRecoveryHostRestartTests {
         try save(last, h)
         try RuntimeReservationRelease.reconcile(in: store, context: h.context, bootedAt: afterEverything)
         let current = try #require(try RuntimeExecutionOwner.existing(task: task, context: h.context))
-        // A cancelled earlier execution is as gone as any other after a restart.
-        // The reservation ends; the stop proof is upgraded only for the clean one.
-        #expect((current.resourcesReleased == true) == (fault != "remote"))
+        // A cancelled earlier execution, and one whose tools ran with an SSH
+        // route open, are as gone as any other after a restart. The reservation
+        // ends; the stop proof is upgraded only for the clean one. A container
+        // keeps its own processes across the host's exit record.
+        #expect((current.resourcesReleased == true) == (fault != "container"))
         #expect(current.canReplace == (fault == "clean"))
-        if fault == "remote" { #expect(current == last) }
+        if fault == "container" { #expect(current == last) }
     }
 
     /// What a restart does answer (a failed or cancelled turn, an open
-    /// settlement barrier, an unrecorded exit, a registration with no job) is
-    /// in `RuntimeReservationReleaseTests`.
+    /// settlement barrier, an unrecorded exit, a registration with no job, a
+    /// tool run with an SSH route open) is in `RuntimeReservationReleaseTests`.
     @Test("Anything a restart cannot answer keeps the reservation", arguments: [
-        "noBootTime", "bootBeforeEnd", "journalAfterBoot", "remote", "managedSSH",
+        "noBootTime", "bootBeforeEnd", "journalAfterBoot",
         "running", "noHostSnapshot", "sessionPending", "sshPending", "appAlive", "otherRuntime"])
     func gates(fault: String) throws {
         let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
@@ -181,17 +189,10 @@ struct RuntimeRecoveryHostRestartTests {
         var saved = record(task, run: run)
         let store = RuntimeExecutionOwner.store(in: h.context)
         var boot: Date? = afterEverything
-        func proof(reaped: Bool = true, groupEmpty: Bool = true, remoteExcluded: Bool = true, managed: Bool? = nil) {
-            let old = saved.stopProof!
-            saved.stopProof = .init(executionID: old.executionID, process: old.process, reaped: reaped, processGroupEmpty: groupEmpty,
-                toolsStopped: false, remoteWorkExcluded: remoteExcluded, capturedAt: old.capturedAt, managedSSHOnly: managed)
-        }
         switch fault {
         case "noBootTime": boot = nil
         case "bootBeforeEnd": boot = Date().addingTimeInterval(-600)
         case "journalAfterBoot": boot = Date().addingTimeInterval(-10)   // after the run and the proof, before the journal was written
-        case "remote": proof(remoteExcluded: false)
-        case "managedSSH": proof(managed: true)
         case "running": let other = TaskRun(task: task); other.startedAt = Date().addingTimeInterval(-100); other.status = .running; h.context.insert(other)
         case "noHostSnapshot": run.executionEnvironmentSnapshotJSON = nil
         case "sessionPending": saved.sessionVerificationPending = true

@@ -25,6 +25,12 @@ struct RuntimeReservationReleaseRecord: Codable, Equatable, Sendable {
 /// the work is not part of the answer, because a process that failed is as
 /// gone as one that succeeded.
 ///
+/// A workspace that offers an SSH route does not keep a reservation by
+/// itself. The reservation protects a folder on this Mac, which only a
+/// process on this Mac can change, and the local facts cover that: a local
+/// `ssh` still running is a survivor like any other. What stays held is an
+/// SSH job ASTRA tracks that has not ended.
+///
 /// This is the one place that decides a saved reservation has ended
 /// (`RuntimeExecutionOwner.finish()` asks the same question at exit through
 /// `canReplace`). Retry and recovery do not read it: they keep `canReplace`,
@@ -40,10 +46,10 @@ enum RuntimeReservationRelease {
         case providerAlive(pid: Int32)
         case survivors([RuntimeLocalSurvivorObservation.Survivor])
         case settling
-        /// A tool ran while the launch could reach another machine over SSH.
-        case sshRoute
         /// SSH jobs of the owner that have not ended, by job ID.
         case sshJobs([String])
+        /// The owner's job records cannot be read, or they are not the jobs
+        /// its receipt recorded at exit.
         case sshJobsUnreadable
         case container
         case placementUnrecorded
@@ -88,9 +94,16 @@ enum RuntimeReservationRelease {
     nonisolated static func heldByReceiptAlone(_ saved: RuntimeExecutionOwnerRecord) -> Bool {
         if saved.sessionVerificationPending == true { return true }
         if let process = saved.providerProcess, process.presence == .present { return true }
-        guard let proof = proof(of: saved) else { return false }
-        // A run whose only tool was ASTRA's SSH helper is answered by its job inventory instead.
-        return !proof.remoteWorkExcluded && !proof.toolsStopped && proof.managedSSHOnly != true
+        return false
+    }
+
+    /// The exact jobs a receipt recorded at exit were withdrawn before any
+    /// of them started. Retry's stop-proof upgrade needs this; the
+    /// reservation only needs them ended.
+    private static func sshJobsWithdrawn(_ saved: RuntimeExecutionOwnerRecord, task: AgentTask, context: ModelContext) -> Bool {
+        guard let expected = saved.pendingSSHJobSetDigest,
+              let evidence = try? RuntimeWorkspaceRemoteJobs.releaseEvidence(task: task, owner: saved, context: context) else { return false }
+        return evidence.safe && evidence.identity == expected
     }
 
     /// The whole rule, for the receipt and every execution retained in its
@@ -110,21 +123,8 @@ enum RuntimeReservationRelease {
         var answeredByRestart = false
         var asked: Set<String> = []
 
-        // The SSH job inventory is read once, and only when a fact needs it.
-        // A saved inventory is settled only by the exact withdrawn jobs it lists.
-        var inventory: (open: [ReviewedWorkspaceSSHJob], withdrawn: Bool)??
-        func sshJobs() -> (open: [ReviewedWorkspaceSSHJob], withdrawn: Bool)? {
-            if let inventory { return inventory }
-            let value: (open: [ReviewedWorkspaceSSHJob], withdrawn: Bool)?
-            do {
-                let open = try RuntimeWorkspaceRemoteJobs.inventory(task: task, owner: saved, context: context)
-                    .filter { !$0.status.isTerminal }
-                let evidence = try RuntimeWorkspaceRemoteJobs.releaseEvidence(task: task, owner: saved, context: context)
-                value = (open, evidence.safe && evidence.identity != nil && evidence.identity == saved.pendingSSHJobSetDigest)
-            } catch { value = nil }
-            inventory = .some(value)
-            return value
-        }
+        // Set when an execution's receipt recorded SSH jobs at its exit.
+        var recordedSSHJobs = false
 
         func ask(_ execution: RuntimeExecutionOwnerRecord) {
             asked.insert(execution.executionID.uuidString)
@@ -140,19 +140,14 @@ enum RuntimeReservationRelease {
                 if beforeBoot { answeredByRestart = true }
                 else { hold(execution.settlementInProgress == true && !supervisorGone ? .settling : .settlementUnconfirmed) }
             }
-            if execution.pendingSSHJobSetDigest != nil, sshJobs()?.withdrawn != true { hold(.sshRoute) }
+            if execution.pendingSSHJobSetDigest != nil { recordedSSHJobs = true }
             guard !neverLaunched(execution) else { return }
 
-            // Where it ran and whether its tools could reach beyond this Mac.
+            // Where it ran. A container keeps its own process table.
             if let id = execution.runID, let matches = runs[id], matches.count == 1, let run = matches.first,
                run.runtimeID == execution.runtime, let json = run.executionEnvironmentSnapshotJSON,
                let environment = try? JSONDecoder().decode(WorkspaceExecutionEnvironment.self, from: Data(json.utf8)) {
                 if !environment.isHost { hold(.container) }
-                // `remoteWorkExcluded` is false whenever the workspace offered an
-                // SSH route. A transcript that shows no tool ran used none, and a
-                // run whose only tool was ASTRA's SSH helper is answered by its jobs.
-                else if let proof, proof.managedSSHOnly == true || !proof.remoteWorkExcluded, !proof.toolsStopped,
-                        !(proof.managedSSHOnly == true && sshJobs()?.withdrawn == true) { hold(.sshRoute) }
             } else { hold(.placementUnrecorded) }
 
             if let process = execution.providerProcess {
@@ -163,22 +158,19 @@ enum RuntimeReservationRelease {
                 }
             }
             guard let proof else {
-                // An attempt labelled not started can follow a provider that did
-                // launch and whose evidence a fallback cleared. Whatever it
-                // started ran before the boot, and the task never registered
-                // remote work. Any other launch without an exit record has
-                // nothing that says it had no SSH route.
-                if execution.state == .notStarted, execution.providerProcess == nil, beforeBoot,
-                   ProviderSharedStateReadObservation.noRemoteRegistrations(for: saved.taskID, store: store) {
-                    answeredByRestart = true
-                } else { hold(.lostRun) }
+                // No exit record: the attempt was labelled not started after a
+                // provider did launch, or ASTRA lost the run. Whatever it started
+                // on this Mac ran before the boot, or there is nothing to ask the
+                // process table about.
+                if beforeBoot { answeredByRestart = true } else { hold(.lostRun) }
                 return
             }
             if beforeBoot { answeredByRestart = true; return }
             guard proof.reaped, proof.processGroupEmpty else { hold(.lostRun); return }
             // The transcript shows no tool ran, or the only tool was ASTRA's SSH
-            // helper and its exact jobs were withdrawn before anything started.
-            if proof.toolsStopped || (proof.managedSSHOnly == true && sshJobs()?.withdrawn == true) { return }
+            // helper, which starts nothing here that outlives the launch; its
+            // jobs are asked about below.
+            if proof.toolsStopped || proof.managedSSHOnly == true { return }
             guard let earlier = proof.localSurvivors else { hold(.lostRun); return }
             // A recorded survivor that is still there answers without a scan.
             let alive = earlier.survivors.filter { $0.process.presence != .absent }
@@ -195,9 +187,18 @@ enum RuntimeReservationRelease {
         guard let retained = try? store.retainedExecutions(of: saved) else { return .held([.lineageUnreadable]) }
         // A release is final: an execution whose reservation already ended is not asked again.
         for execution in retained where execution.resourcesReleased != true { ask(execution) }
-        if !ProviderSharedStateReadObservation.noRemoteRegistrations(for: saved.taskID, store: store) {
-            if let jobs = sshJobs() {
-                let open = jobs.open.filter { asked.contains($0.executionID) }.map(\.jobID)
+        // A tracked SSH job that has not ended keeps the reservation. So does a
+        // job record that cannot be read. Where a receipt recorded its jobs at
+        // exit, the set found now must be that set: a missing or replaced
+        // record is not an ended job.
+        if recordedSSHJobs || !ProviderSharedStateReadObservation.noRemoteRegistrations(for: saved.taskID, store: store) {
+            let jobs = try? RuntimeWorkspaceRemoteJobs.inventory(task: task, owner: saved, context: context)
+            let found: Bool
+            if let expected = saved.pendingSSHJobSetDigest {
+                found = (try? RuntimeWorkspaceRemoteJobs.releaseEvidence(task: task, owner: saved, context: context))?.identity == expected
+            } else { found = !recordedSSHJobs || jobs?.isEmpty == false }
+            if let jobs, found {
+                let open = jobs.filter { !$0.status.isTerminal && asked.contains($0.executionID) }.map(\.jobID)
                 if !open.isEmpty { hold(.sshJobs(open.sorted())) }
             } else { hold(.sshJobsUnreadable) }
         }
@@ -245,9 +246,11 @@ enum RuntimeReservationRelease {
             guard case .release(let basis) = verdict(saved, task: task, journal: lease.recordURL, store: store,
                 context: context, bootedAt: bootedAt, observe: observeOnce) else { continue }
             var released = saved
-            // The verdict matched this saved inventory against the exact withdrawn jobs.
-            let settledSSHInventory = saved.pendingSSHJobSetDigest != nil
-            released.pendingSSHJobSetDigest = nil
+            // Jobs that ended end the reservation. Only the exact recorded jobs,
+            // withdrawn before any started, also settle the saved inventory,
+            // which is what Retry's stop-proof upgrade below asks for.
+            let settledSSHInventory = sshJobsWithdrawn(saved, task: task, context: context)
+            if settledSSHInventory { released.pendingSSHJobSetDigest = nil }
             // Where today's rules also upgrade the stop proof they still do,
             // under their own unchanged conditions: Retry reads that upgrade.
             var operation = settledSSHInventory ? "release_after_ssh_cancellation" : "release_reservation"

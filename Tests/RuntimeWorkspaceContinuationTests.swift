@@ -336,7 +336,7 @@ struct RuntimeWorkspaceContinuationTests {
         #expect(!queue.canAcquireResourceLocks(otherClaims, task: c, context: h.context))
     }
 
-    @Test("An SSH observation cannot release missing, executed or unconfirmed jobs",
+    @Test("An SSH observation cannot settle missing, executed or unconfirmed jobs; a job that ended frees only the folder",
           arguments: ["missing", "newIdentity", "unreachable", "executed", "v3", "missingPermit", "issuedPermit"])
     func incompleteSSHRelease(condition: String) throws {
         let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
@@ -362,7 +362,14 @@ struct RuntimeWorkspaceContinuationTests {
         }
         if condition == "missing" { try FileManager.default.removeItem(at: jobs.recordURL(jobID: job.jobID)) }
         try RuntimeReservationRelease.reconcile(in: RuntimeExecutionOwner.store(in: h.context), context: h.context)
-        #expect(try RuntimeExecutionOwner.existing(task: a, context: h.context) == owner)
+        let after = try #require(try RuntimeExecutionOwner.existing(task: a, context: h.context))
+        if ["unreachable", "executed"].contains(condition) {
+            // The recorded job ended, so nothing of this task can still act and
+            // its folder is free. It was not withdrawn before it started, so the
+            // saved set stays unsettled and the execution is not replaceable.
+            #expect(after.resourcesReleased == true && after.pendingSSHJobSetDigest == owner.pendingSSHJobSetDigest)
+            #expect(after.stopProof == owner.stopProof && !after.canReplace)
+        } else { #expect(after == owner) }
     }
 
     @Test("An SSH confirmation wakes and runs the queued instruction once with no manual start",
@@ -952,7 +959,11 @@ struct RuntimeWorkspaceContinuationTests {
         #expect(event.payload == before)
     }
 
-    @Test("One queue runs and revisits four tool-using tasks with SSH and one workspace approval")
+    /// A tool ran in each task while its workspace offered an SSH route.
+    /// Nothing of a finished task is left on this Mac, so its folder is free
+    /// for the next one with no workspace decision. Retry is a separate
+    /// question and stays refused.
+    @Test("One queue runs and revisits four tool-using tasks with an SSH route and no workspace decision")
     func successiveWorkerTasks() async throws {
         let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
         SSHConnectionManager.save([SSHConnection(name: "configured-unused", host: "unused.example.test",
@@ -977,11 +988,7 @@ struct RuntimeWorkspaceContinuationTests {
             if let previous { task.workspace = previous.workspace }
             let submission = try ExecutionRequestSubmissionService.submitInitial(for: task, into: h.context).get()
             let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: h.context))
-            if index == 2 {
-                let proposal = try RuntimeWorkspaceContinuation.preview(task: task, request: request, context: h.context)
-                try RuntimeWorkspaceContinuation.authorize(proposal, task: task, request: request, context: h.context, rememberWorkspace: true)
-            }
-            if index > 2 {
+            if index > 1 {
                 queue.refreshResourceOwnership(in: h.context)
                 let claims = queue.resourceLockClaims(for: request, task: task, runMode: "initial", sandboxEnforcement: .off)
                 #expect(queue.canAcquireResourceLocks(claims, task: task, context: h.context))
@@ -999,12 +1006,15 @@ struct RuntimeWorkspaceContinuationTests {
             try h.context.save()
             queue.releaseResourceLocks(lease, task: task, modelContext: h.context)
             #expect(queue.localResourceLocks.isEmpty)
-            #expect(!queue.persistedResourceLocks.isEmpty)
+            #expect(queue.persistedResourceLocks.isEmpty)
             #expect(task.status == .completed)
             #expect(task.runs.count == 1)
             #expect(task.events.contains { $0.type == "tool.use" })
             let receipt = try #require(try RuntimeExecutionOwner.existing(task: task, context: h.context))
-            #expect(receipt.stopProof?.toolsStopped == false && receipt.resourcesReleased == false)
+            // The exit recorded what the process table showed without calling the tools stopped.
+            #expect(receipt.stopProof?.toolsStopped == false && receipt.stopProof?.remoteWorkExcluded == false)
+            #expect(receipt.stopProof?.localSurvivors?.clean == true)
+            #expect(receipt.resourcesReleased == true && receipt.reservationRelease?.basis == .processTable && !receipt.canReplace)
             previous = task
             sequence.append(task)
         }
@@ -1029,7 +1039,7 @@ struct RuntimeWorkspaceContinuationTests {
             try h.context.save()
             queue.releaseResourceLocks(lease, task: task, modelContext: h.context)
             #expect(queue.localResourceLocks.isEmpty)
-            #expect(!queue.persistedResourceLocks.isEmpty)
+            #expect(queue.persistedResourceLocks.isEmpty)
             #expect(task.status == .completed)
             #expect(task.runs.count == before + 1)
             #expect(task.sessionId == originalSession)

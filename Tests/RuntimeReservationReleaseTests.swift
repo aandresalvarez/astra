@@ -4,6 +4,7 @@ import SwiftData
 import Testing
 import ASTRACore
 import ASTRAModels
+import WorkspaceToolSupport
 @testable import ASTRAPersistence
 @testable import ASTRA
 
@@ -107,8 +108,8 @@ struct RuntimeReservationReleaseTests {
     }
 
     @Test("Each fact holds the reservation alone and is named", arguments: [
-        "running", "sessionPending", "providerAlive", "sshRoute", "container", "noPlacement", "otherRuntime",
-        "settling", "settlementTools", "unreaped", "groupNotEmpty", "pendingSSH", "survivorAlive", "newSurvivor",
+        "running", "sessionPending", "providerAlive", "container", "noPlacement", "otherRuntime",
+        "settling", "settlementTools", "unreaped", "groupNotEmpty", "survivorAlive", "newSurvivor",
         "tableUnreadable", "noBootTime", "journalAfterBoot", "supervisorAlive"])
     func eachFactHolds(fault: String) throws {
         let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
@@ -129,7 +130,6 @@ struct RuntimeReservationReleaseTests {
             saved.stopProof = .init(executionID: saved.executionID, process: try Self.alive, reaped: true, processGroupEmpty: true,
                 toolsStopped: false, remoteWorkExcluded: true, capturedAt: Date().addingTimeInterval(-20))
             expected = [.providerAlive(pid: try Self.alive.pid)]
-        case "sshRoute": proof(&saved, remoteExcluded: false); expected = [.sshRoute]
         case "container":
             var environment = WorkspaceExecutionEnvironment.host; environment.kind = .dockerImage
             run.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(environment)
@@ -141,7 +141,6 @@ struct RuntimeReservationReleaseTests {
         case "settlementTools": saved.settlementToolsStopped = false; boot = Date().addingTimeInterval(-600); proof(&saved, toolsStopped: true); expected = [.settlementUnconfirmed]
         case "unreaped": proof(&saved, reaped: false, toolsStopped: true); boot = Date().addingTimeInterval(-600); expected = [.lostRun]
         case "groupNotEmpty": proof(&saved, groupEmpty: false, toolsStopped: true); boot = Date().addingTimeInterval(-600); expected = [.lostRun]
-        case "pendingSSH": saved.pendingSSHJobSetDigest = "digest"; expected = [.sshRoute]
         case "survivorAlive": proof(&saved, survivors: observation(saved, survivors: [mine])); boot = nil; expected = [.survivors([mine])]
         case "newSurvivor": proof(&saved, survivors: observation(saved, survivors: [gone])); boot = nil; now = [mine]; expected = [.survivors([mine])]
         case "tableUnreadable": proof(&saved, survivors: observation(saved, survivors: [gone])); boot = nil; now = nil; expected = [.processTableUnreadable]
@@ -167,8 +166,120 @@ struct RuntimeReservationReleaseTests {
         #expect(try !RuntimeResourceOwnership.claims(in: store, context: h.context).isEmpty)
     }
 
+    /// A registration for the execution, as a launch with an SSH route leaves it.
+    private func sshJobs(_ h: HeadlessChatHarness, task: AgentTask, owner: RuntimeExecutionOwnerRecord) throws -> RemoteWorkspaceJobStore {
+        let root = RemoteWorkspaceJobRegistration.directory(taskID: task.id, executionID: owner.executionID, context: h.context)
+        let receipt = try RuntimeExecutionOwner.store(in: h.context).acquire(taskID: task.id, taskOwnerID: owner.taskOwnerID).recordURL
+        var config = RemoteWorkspaceJobConfiguration(recordRootPath: root.appendingPathComponent("jobs").path,
+            sshExecutable: "/usr/bin/ssh", connections: [], taskID: task.id.uuidString, runID: owner.runID?.uuidString,
+            ownerBinding: .init(receiptPath: receipt.path, taskID: task.id.uuidString, runID: try #require(owner.runID).uuidString,
+                ownerID: owner.ownerID.uuidString, executionID: owner.executionID.uuidString))
+        config.observationSSHOptions = RemoteWorkspaceJobRegistration.observationOptions(task: task)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try RemoteWorkspaceJobProtectedFile.write(JSONEncoder().encode(config), to: root.appendingPathComponent("configuration.json"))
+        return RemoteWorkspaceJobStore(rootPath: config.recordRootPath)
+    }
+
+    private func sshJob(_ task: AgentTask, _ owner: RuntimeExecutionOwnerRecord, status: RemoteWorkspaceJobStatus) -> RemoteWorkspaceJobRecord {
+        var job = RemoteWorkspaceJobRecord(jobID: UUID().uuidString.lowercased(), taskID: task.id.uuidString,
+            runID: owner.runID?.uuidString, connection: .init(id: "fixture", name: "Fixture", target: "fixture", arguments: ["fixture"]),
+            command: "true", createdAt: Date())
+        job.ownerID = owner.ownerID.uuidString; job.executionID = owner.executionID.uuidString; job.status = status
+        return job
+    }
+
+    @Test("A tool run where an SSH route was open is judged by this Mac alone",
+          arguments: ["beforeBoot", "cleanTable", "survivor", "helperOnly", "noObservation"])
+    func sshRouteAloneDoesNotHold(shape: String) throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (task, run) = try holder(h)
+        var saved = record(task, run: run)
+        let mine = RuntimeLocalSurvivorObservation.Survivor(process: try Self.alive, name: "ssh")
+        var boot: Date? = Date().addingTimeInterval(-600)
+        let expected: RuntimeReservationRelease.Verdict
+        switch shape {
+        case "beforeBoot": proof(&saved, remoteExcluded: false); boot = afterEverything; expected = .release(.hostRestart)
+        // The exit recorded what the process table showed, and it is asked again now.
+        case "cleanTable": proof(&saved, remoteExcluded: false, survivors: observation(saved, survivors: [])); expected = .release(.processTable)
+        // A local `ssh` that is still running is a survivor like any other.
+        case "survivor": proof(&saved, remoteExcluded: false, survivors: observation(saved, survivors: [mine])); expected = .held([.survivors([mine])])
+        // The only tool was ASTRA's SSH helper, which starts nothing here that outlives the launch.
+        case "helperOnly": proof(&saved, remoteExcluded: false, managed: true); expected = .release(.exitProof)
+        // A receipt from before the exit recorded this has nothing to ask the table about.
+        default: proof(&saved, remoteExcluded: false); expected = .held([.lostRun])
+        }
+        try save(saved, h); try h.context.save()
+        #expect(try verdict(saved, task, h, boot: boot) == expected)
+        let store = RuntimeExecutionOwner.store(in: h.context)
+        try RuntimeReservationRelease.reconcile(in: store, context: h.context, bootedAt: boot) { launch in
+            .init(launch: launch, observedAt: Date(), complete: true, survivors: [])
+        }
+        let after = try #require(try RuntimeExecutionOwner.existing(task: task, context: h.context))
+        guard case .release = expected else { #expect(after == saved); return }
+        // The folder is free. Retry is not: the stop proof still says a tool
+        // ran where another machine was reachable, and nothing upgraded it.
+        #expect(after.resourcesReleased == true && after.stopProof == saved.stopProof && !after.canReplace)
+        #expect(try RuntimeResourceOwnership.claims(in: store, context: h.context).isEmpty)
+    }
+
+    @Test("An SSH job ASTRA tracks holds the reservation until it ends, and is named",
+          arguments: [RemoteWorkspaceJobStatus.starting, .running, .lost, .unverified, .succeeded, .failed, .timedOut, .cancelled])
+    func trackedSSHJob(status: RemoteWorkspaceJobStatus) throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (task, run) = try holder(h)
+        var saved = record(task, run: run)
+        proof(&saved, remoteExcluded: false)
+        try save(saved, h); try h.context.save()
+        let jobs = try sshJobs(h, task: task, owner: saved)
+        // The registration alone, with no job in it, holds nothing.
+        #expect(try verdict(saved, task, h, boot: afterEverything) == .release(.hostRestart))
+        let job = sshJob(task, saved, status: status)
+        try jobs.create(job)
+        #expect(try verdict(saved, task, h, boot: afterEverything)
+            == (status.isTerminal ? .release(.hostRestart) : .held([.sshJobs([job.jobID])])))
+        #expect(!RuntimeReservationRelease.Blocker.sshJobs([job.jobID]).isRunning)
+    }
+
+    @Test("A receipt that recorded SSH jobs holds until they can be found and have ended; the saved set stays unsettled for Retry")
+    func recordedSSHJobs() throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (task, run) = try holder(h)
+        var saved = record(task, run: run)
+        proof(&saved, remoteExcluded: false, managed: true)
+        try save(saved, h); try h.context.save()
+        let jobs = try sshJobs(h, task: task, owner: saved)
+        let job = sshJob(task, saved, status: .running)
+        try jobs.create(job)
+        saved.pendingSSHJobSetDigest = try RuntimeWorkspaceRemoteJobs.releaseEvidence(task: task, owner: saved, context: h.context).identity
+        try save(saved, h)
+        let recorded = try #require(saved.pendingSSHJobSetDigest)
+        #expect(try verdict(saved, task, h, boot: afterEverything) == .held([.sshJobs([job.jobID])]))
+        // A record that is missing is not an ended job, and neither is a set
+        // that is not the one recorded.
+        let file = try jobs.recordURL(jobID: job.jobID), kept = try Data(contentsOf: file)
+        try FileManager.default.removeItem(at: file)
+        #expect(try verdict(saved, task, h, boot: afterEverything) == .held([.sshJobsUnreadable]))
+        try kept.write(to: file)
+        let extra = sshJob(task, saved, status: .succeeded)
+        try jobs.create(extra)
+        #expect(try verdict(saved, task, h, boot: afterEverything) == .held([.sshJobsUnreadable]))
+        try FileManager.default.removeItem(at: try jobs.recordURL(jobID: extra.jobID))
+        #expect(try verdict(saved, task, h, boot: afterEverything) == .held([.sshJobs([job.jobID])]))
+        try jobs.update(jobID: job.jobID) { $0.status = .succeeded }
+        #expect(try verdict(saved, task, h, boot: afterEverything) == .release(.hostRestart))
+
+        let store = RuntimeExecutionOwner.store(in: h.context)
+        try RuntimeReservationRelease.reconcile(in: store, context: h.context, bootedAt: afterEverything)
+        let after = try #require(try RuntimeExecutionOwner.existing(task: task, context: h.context))
+        // The jobs ended, which ends the reservation. They were not withdrawn
+        // before they started, so the saved set is not settled and Retry stays refused.
+        #expect(after.resourcesReleased == true && after.pendingSSHJobSetDigest == recorded)
+        #expect(after.stopProof == saved.stopProof && !after.canReplace)
+    }
+
     @Test("What a restart answers: a stale settlement barrier, an unrecorded exit, a registration with no job",
-          arguments: ["settling", "settlementTools", "unreaped", "groupNotEmpty", "registrationOnly", "runEndedLater", "noExitRecord"])
+          arguments: ["settling", "settlementTools", "unreaped", "groupNotEmpty", "registrationOnly", "runEndedLater",
+                      "noExitRecord", "noExitRecordWithRegistration"])
     func restartAnswers(shape: String) throws {
         let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
         let (task, run) = try holder(h, status: .failed, reason: .providerRunWallClockExceeded)
@@ -183,7 +294,13 @@ struct RuntimeReservationReleaseTests {
             try FileManager.default.createDirectory(at: store.root.deletingLastPathComponent()
                 .appendingPathComponent("remote-jobs/\(task.id.uuidString)"), withIntermediateDirectories: true)
         case "runEndedLater": run.completedAt = Date().addingTimeInterval(60)
-        default: break
+        // ASTRA lost the run. A launch with an SSH route leaves a registration
+        // folder behind, and that is not remote work either.
+        case "noExitRecord": saved.stopProof = nil
+        default:
+            saved.stopProof = nil
+            try FileManager.default.createDirectory(at: store.root.deletingLastPathComponent()
+                .appendingPathComponent("remote-jobs/\(task.id.uuidString)"), withIntermediateDirectories: true)
         }
         try save(saved, h); try h.context.save()
         try RuntimeReservationRelease.reconcile(in: store, context: h.context, bootedAt: afterEverything)
@@ -236,24 +353,30 @@ struct RuntimeReservationReleaseTests {
         #expect(TaskHistoryRead.events(for: task, ofTypes: [TaskEventTypes.System.runtimeExecutionOwnership.rawValue]).count == 1)
     }
 
-    @Test("Every earlier execution of the owner is asked the same question", arguments: ["clean", "sshRoute", "settlementOpen"])
+    @Test("Every earlier execution of the owner is asked the same question", arguments: ["clean", "sshRoute", "settlementOpen", "container"])
     func lineage(fault: String) throws {
         let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
         let (task, lastRun) = try holder(h, status: .failed, reason: .providerRunWallClockExceeded)
         let firstRun = run(task, h); firstRun.startedAt = Date().addingTimeInterval(-60); firstRun.completedAt = Date().addingTimeInterval(-50)
         try h.context.save()
         var first = record(task, run: firstRun)
-        // A barrier an earlier execution left open is answered by the restart; an SSH route is not.
+        // A barrier an earlier execution left open, and a tool it ran with an SSH
+        // route open, are answered by the restart; its container is not.
         if fault == "sshRoute" { proof(&first, remoteExcluded: false) }
         if fault == "settlementOpen" { first.settlementToolsStopped = false }
+        if fault == "container" {
+            var environment = WorkspaceExecutionEnvironment.host; environment.kind = .dockerImage
+            firstRun.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(environment)
+            try h.context.save()
+        }
         var last = record(task, run: lastRun, owner: first.ownerID, state: .unverified)
         last.retainedExecutionHead = first.executionID
         let store = RuntimeExecutionOwner.store(in: h.context)
         try save(first, h); try store.retain(first); try save(last, h)
         try RuntimeReservationRelease.reconcile(in: store, context: h.context, bootedAt: afterEverything)
         let current = try #require(try RuntimeExecutionOwner.existing(task: task, context: h.context))
-        #expect((current.resourcesReleased == true) == (fault != "sshRoute"))
-        if fault == "sshRoute" { #expect(current == last) }
+        #expect((current.resourcesReleased == true) == (fault != "container"))
+        if fault == "container" { #expect(current == last) }
     }
 
     @Test("A live worker's lease is never taken, and a holder that changed is asked again later")
