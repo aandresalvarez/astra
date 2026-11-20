@@ -143,13 +143,40 @@ broad source folder puts the owner back in front of every agent PR.
 ## Merging Agent PRs
 
 A PR that does not touch a CODEOWNERS path merges itself once it is ready.
-When the work is done, local checks pass, and every review comment is fixed or
-answered and resolved:
+Copilot reviews every ready PR automatically, and again on each push (repository
+ruleset "Copilot review"; drafts are skipped). Its review must land before
+auto-merge is armed, because a draft's checks may already be green and GitHub
+would merge the moment the PR is marked ready.
 
-```bash
-gh pr ready <number>
-gh pr merge <number> --auto --squash
-```
+1. When the work is done and local checks pass, mark the PR ready. This is what
+   requests Copilot's review:
+
+   ```bash
+   gh pr ready <number>
+   ```
+
+2. Wait until Copilot has reviewed the head commit. It usually takes a few
+   minutes; these two values match when it has:
+
+   ```bash
+   gh pr view <number> --json headRefOid --jq .headRefOid
+   gh api repos/aandresalvarez/astra/pulls/<number>/reviews \
+     --jq '[.[] | select(.user.login == "copilot-pull-request-reviewer[bot]") | .commit_id] | last'
+   ```
+
+   If no Copilot review arrives within 15 minutes, say so in a PR comment and
+   continue; do not wait indefinitely.
+
+3. Fix every valid comment with a new commit. Reply on the thread with the
+   reason for any comment you decline. Resolve every thread; unresolved threads
+   block the merge. A fix push triggers a new Copilot review, so repeat step 2
+   until its latest review on the head commit has nothing left to address.
+
+4. Arm auto-merge:
+
+   ```bash
+   gh pr merge <number> --auto --squash
+   ```
 
 GitHub then merges when all required checks are green and the branch is up to
 date. If another merge leaves the branch behind `main`, update it and let CI
@@ -158,6 +185,9 @@ re-run; auto-merge stays armed:
 ```bash
 gh pr update-branch <number>
 ```
+
+The merge commit that `update-branch` creates only brings in `main`; it does not
+need step 2 again, even though Copilot may review it.
 
 Leave the PR as a draft, and do not arm auto-merge, when the user asked to
 review it first, when it is a schema or data migration, or when its own checks
