@@ -22,7 +22,6 @@ struct ReviewedWorkspaceSSHJob: Codable, Equatable {
 
 enum WorkspaceSSHWait: LocalizedError {
     case pending([String])
-    static let summaryPrefix = "Waiting for confirmation of "
 
     var errorDescription: String? {
         switch self {
@@ -33,7 +32,7 @@ enum WorkspaceSSHWait: LocalizedError {
     static func summary(_ ids: [String]) -> String {
         let list = ids.sorted().prefix(4).map { String($0.prefix(8)) }.joined(separator: ", ")
         let noun = ids.count == 1 ? "job" : "jobs"
-        return "\(summaryPrefix)\(ids.count) SSH \(noun) (\(list)\(ids.count > 4 ? ", …" : ""))."
+        return "Waiting for confirmation of \(ids.count) SSH \(noun) (\(list)\(ids.count > 4 ? ", …" : ""))."
     }
 }
 

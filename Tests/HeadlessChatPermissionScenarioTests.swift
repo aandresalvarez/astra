@@ -1300,7 +1300,9 @@ extension HeadlessChatScenarioTests {
         let request = try #require(try TaskTurnRequestRepository.requests(for: task, in: harness.context)
             .first { $0.kind == .followUp })
         #expect(request.runID == nil)
-        #expect(request.blockerSummary?.contains("cleanup") == true)
+        // It waits for its own earlier run, which "Review workspace" does not decide about.
+        #expect(request.blockerSummary?.contains("cannot confirm") == true, "\(request.blockerSummary ?? "-")")
+        #expect(request.blockerSummary?.hasPrefix(RuntimeWorkspaceReviewWording.decisionPrefix) == false)
         #expect(task.runs.map(\.id) == runIDs)
         #expect(try String(contentsOf: argsURL, encoding: .utf8) == argsBefore)
         let after = try #require(try RuntimeExecutionOwner.existing(task: task, context: harness.context))

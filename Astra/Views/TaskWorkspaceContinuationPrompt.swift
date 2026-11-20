@@ -19,8 +19,18 @@ enum TaskWorkspaceContinuationPrompt {
                 return
             }
             guard let review = try RuntimeWorkspaceReview.preview(task: task, request: request, context: context) else {
-                // Nothing saved holds it any more: it starts without a decision.
+                // No other task holds it any more: it starts without a decision,
+                // unless what it waits for is an earlier run of this same task.
                 queue.refreshResourceOwnership(in: context)
+                let claims = queue.resourceLockClaims(for: request, task: task, runMode: "request")
+                if !queue.canAcquireResourceLocks(claims, task: task, context: context) {
+                    let alert = NSAlert()
+                    alert.messageText = RuntimeWorkspaceReviewWording.ownRunTitle
+                    alert.informativeText = RuntimeWorkspaceReviewWording.ownRunMessage
+                    alert.addButton(withTitle: "OK")
+                    alert.runModal()
+                    return
+                }
                 _ = queue.signalExecutionRequest(id: requestID, task: task, modelContext: context)
                 return
             }

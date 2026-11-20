@@ -202,7 +202,7 @@ struct RuntimeWorkspaceReviewTests {
         #expect(!review.canStart && review.holders.first?.blockers.contains(expected) == true)
         let dialog = RuntimeWorkspaceReviewWording.dialog(review)
         #expect(!dialog.canStart && dialog.title.hasPrefix("Something is still running in `"))
-        #expect(dialog.message.contains("\"Export report\"") && !dialog.message.contains("Starting now"))
+        #expect(dialog.message.contains("“Export report”") && !dialog.message.contains("Starting now"))
         #expect(throws: (any Error).self) { try start(h, review, b, request) }
         live = nil
         #expect(try store.read(taskID: a.id, taskOwnerID: a.persistentModelID) == saved && reconciliations(h).isEmpty)
@@ -263,7 +263,7 @@ struct RuntimeWorkspaceReviewTests {
         let review = try #require(try preview(h, b, request))
         #expect(review.canStart && review.holders.first?.blockers == [.survivors([mine])])
         let dialog = RuntimeWorkspaceReviewWording.dialog(review)
-        #expect(dialog.canStart && dialog.message.contains("\"Export report\" has ended, but `python3` (process \(mine.process.pid)), which it started, is still running."))
+        #expect(dialog.canStart && dialog.message.contains("“Export report” has ended, but `python3` (process \(mine.process.pid)), which it started, is still running."))
         #expect(dialog.message.contains("Starting now does not stop it, and it can still change files there."))
         try start(h, review, b, request)
         let released = try #require(try RuntimeExecutionOwner.existing(task: a, context: h.context))
@@ -332,8 +332,8 @@ struct RuntimeWorkspaceReviewTests {
         let names = RuntimeWorkspaceRemoteJobs.names(task: a, owner: original, context: h.context)
         #expect(names[job.jobID]?.host == "build-host" && names[job.jobID]?.label == job.label)
         let dialog = RuntimeWorkspaceReviewWording.dialog(review, jobs: names.mapValues { .init(label: $0.label, host: $0.host) })
-        let named = labelled ? "\"Nightly export\" on `build-host`" : "\(job.jobID.prefix(8)) on `build-host`"
-        #expect(dialog.message.contains("\"Export report\" has an SSH job that has not ended: \(named). Starting now does not stop it."))
+        let named = labelled ? "“Nightly export” on `build-host`" : "\(job.jobID.prefix(8)) on `build-host`"
+        #expect(dialog.message.contains("“Export report” has an SSH job that has not ended: \(named). Starting now does not stop it."))
         try start(h, review, b, request)
         let released = try #require(try RuntimeExecutionOwner.existing(task: a, context: h.context))
         #expect(released.resourcesReleased == true && released.reservationRelease?.named == ["ssh_job:\(job.jobID)"] && !released.canReplace)
@@ -453,7 +453,7 @@ struct RuntimeWorkspaceReviewTests {
         let holder = try #require(review.holders.first)
         #expect(holder.otherClaims.contains { $0.resourceKey == worktree.path } && !holder.claims.contains { $0.resourceKey == worktree.path })
         let dialog = RuntimeWorkspaceReviewWording.dialog(review)
-        #expect(dialog.message.contains("Starting now also frees `earlier`, which \"Export report\" was using."))
+        #expect(dialog.message.contains("Starting now also frees `earlier`, which “Export report” was using."))
         try start(h, review, b, request)
         let store = RuntimeExecutionOwner.store(in: h.context)
         #expect(try !RuntimeResourceOwnership.claims(in: store, context: h.context).contains { $0.taskID == a.id })
@@ -490,6 +490,85 @@ struct RuntimeWorkspaceReviewTests {
         #expect(!b.events.contains { $0.type == TaskEventTypes.System.runtimeWorkspaceContinuationAuthorized.rawValue })
     }
 
+    @Test("The banner on a waiting task names the holder, the folder and the one thing in the way")
+    func bannerWording() throws {
+        let me = Survivor(process: try Self.alive, name: "python3")
+        let more = (0..<4).map { Survivor(process: .init(pid: Int32(200 + $0), startedSeconds: 1, startedMicroseconds: 1), name: "helper\($0)") }
+        let jobs = ["11111111-aaaa": RuntimeWorkspaceReviewWording.SSHJob(label: "Nightly export", host: "build-host")]
+        func banner(_ blockers: [RuntimeReservationRelease.Blocker], decidable: Bool = true, overlap: String? = nil) -> String {
+            RuntimeWorkspaceReviewWording.banner(holder: "Export report", folders: ["reports"], blockers: blockers,
+                jobs: jobs, decidable: decidable, overlap: overlap)
+        }
+        let cases: [([RuntimeReservationRelease.Blocker], String)] = [
+            ([.taskWorking, .lostRun], "Waiting for “Export report” to finish in `reports`."),
+            ([], "Waiting for “Export report” to finish in `reports`."),
+            ([.providerAlive(pid: 42)], "Waiting for “Export report” to finish in `reports`: the provider it started (process 42) is still running."),
+            ([.settling], "Waiting for ASTRA to finish closing the last run of “Export report” in `reports`."),
+            ([.survivors([me])], "“Export report” ended but left `python3` (process \(me.process.pid)) running in `reports`. This starts when that stops, or you can start it now."),
+            ([.survivors([me]), .survivors(more)], "“Export report” ended but left `python3` (process \(me.process.pid)), `helper0` (process 200), `helper1` (process 201) and 2 more running in `reports`. This starts when those stop, or you can start it now."),
+            ([.sshJobs(["11111111-aaaa"])], "Waiting for you: “Export report” has an SSH job that has not ended: “Nightly export” on `build-host`."),
+            ([.sshJobs(["11111111-aaaa", "22222222-bbbb", "33333333-cccc"])], "Waiting for you: “Export report” has 3 SSH jobs that have not ended: “Nightly export” on `build-host`, 22222222 and 1 more."),
+            ([.container, .lostRun], "Waiting for you: “Export report” ran in a container that ASTRA cannot look inside."),
+            ([.settlementUnconfirmed, .lostRun], "Waiting for you: ASTRA lost track of a run of “Export report” and cannot confirm its commands ended."),
+            ([.processTableUnreadable], "Waiting for you: ASTRA cannot confirm that “Export report” has stopped using `reports`.")
+        ]
+        for (blockers, expected) in cases {
+            #expect(banner(blockers) == expected)
+            for word in ["cleanup", "receipt", "reservation", "reserved", "verified", "lease", "journal", "claim", "resource"] {
+                #expect(!expected.lowercased().contains(word), "\(blockers) says \(word)")
+            }
+        }
+        // A request nobody can decide for is told the same fact, not told to act.
+        #expect(banner([.lostRun], decidable: false) == "ASTRA lost track of a run of “Export report” and cannot confirm its commands ended.")
+        #expect(banner([.survivors([me])], decidable: false).hasSuffix("This starts when that stops."))
+        #expect(banner([.taskWorking], overlap: "it holds /a, which contains /a/reports") == "Waiting for “Export report” to finish in `reports`. (it holds /a, which contains /a/reports)")
+        #expect(RuntimeWorkspaceReviewWording.unreadableBanner(folders: ["reports"]) == "ASTRA cannot read its record of who is using `reports`. Nothing was started.")
+    }
+
+    @Test("The waiting banner is the rule's answer for the holder, asked again only on the pass that asks the rule")
+    func bannerOnTheQueue() throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (a, _) = try holder(h)
+        let (b, request) = try next(h, after: a)
+        let queue = TaskQueue(poolSize: 0)
+        queue.refreshResourceOwnership(in: h.context)
+        let claims = queue.resourceLockClaims(for: request, task: b, runMode: "request", sandboxEnforcement: .off)
+        let wanted = try #require(TaskExecutionResourceBroker.firstConflict(requested: claims, active: queue.activeResourceLocks)).requested
+        let place = "`\(try #require(RuntimeWorkspaceReviewWording.folders([wanted]).first))`"
+        func banner() -> String { queue.resourceBlockerSummary(claims, modelContext: h.context, request: request, task: b) }
+        // The test workspace sits inside the folder the request names, and the banner says so.
+        let held = try #require(TaskExecutionResourceBroker.firstConflict(requested: claims, active: queue.activeResourceLocks)).holder
+        let tail = TaskExecutionResourceBroker.containment(holder: held, requested: wanted).map { " (\($0))" } ?? ""
+        let lost = "Waiting for you: ASTRA lost track of a run of “Export report” and cannot confirm its commands ended." + tail
+        #expect(banner() == lost)
+        // Something the saved record does not show changes: the holder is at work again.
+        a.runs.first?.status = .running; try h.context.save()
+        // The loop asks twice a second. The answer is kept until the pass that asks the rule.
+        for _ in 1..<TaskQueue.waitingOwnershipRefreshInterval {
+            queue.refreshOwnershipWhileWaiting(blocked: true, in: h.context)
+            #expect(banner() == lost)
+        }
+        queue.refreshOwnershipWhileWaiting(blocked: true, in: h.context)
+        #expect(banner() == "Waiting for “Export report” to finish in \(place)." + tail)
+        // A full ownership refresh asks again too.
+        a.runs.first?.status = .completed; try h.context.save()
+        #expect(banner() == "Waiting for “Export report” to finish in \(place)." + tail)
+        queue.refreshResourceOwnership(in: h.context)
+        #expect(banner() == lost)
+        // A request nobody can decide for is not told that it waits for the person.
+        request.kind = .scheduled; try h.context.save()
+        #expect(banner() == "ASTRA lost track of a run of “Export report” and cannot confirm its commands ended." + tail)
+        // A task that waits for its own earlier run is told the fact, not told to act.
+        let follow = try ExecutionRequestSubmissionService.submitFollowUp(message: "Carry on", for: a, into: h.context).get()
+        let own = try #require(try TaskTurnRequestRepository.request(id: follow.requestID, in: h.context))
+        let ownClaims = queue.resourceLockClaims(for: own, task: a, runMode: "request", sandboxEnforcement: .off)
+        let ownBanner = queue.resourceBlockerSummary(ownClaims, modelContext: h.context, request: own, task: a)
+        #expect(ownBanner.hasPrefix("ASTRA lost track of a run of “Export report” and cannot confirm its commands ended."))
+        // When ASTRA cannot read who holds what, it says that and nothing else.
+        queue.resourceOwnershipReadFailed = true
+        #expect(banner() == "ASTRA cannot read its record of who is using \(place). Nothing was started.")
+    }
+
     @Test("Nothing a person reads uses ASTRA's bookkeeping words, and every answer has a sentence")
     func wording() throws {
         let me = Survivor(process: try Self.alive, name: "python3")
@@ -512,13 +591,13 @@ struct RuntimeWorkspaceReviewTests {
                 jobs: ["11111111-aaaa": .init(label: "Nightly export", host: "build-host")])
             #expect(dialog.canStart == !blocker.holderIsActive)
             #expect(dialog.title == (blocker.holderIsActive ? "Something is still running in `reports`" : "Start in `reports` now?"))
-            #expect(dialog.message.contains("\"Export report\"") && sentences.insert(dialog.message).inserted)
+            #expect(dialog.message.contains("“Export report”") && sentences.insert(dialog.message).inserted)
             let text = (dialog.title + " " + dialog.message).lowercased()
             for word in ["cleanup", "receipt", "reservation", "reserved", "verified", "lease", "journal", "claim"] {
                 #expect(!text.contains(word), "\(blocker) says \(word)")
             }
             if !blocker.holderIsActive {
-                #expect(dialog.message.contains("Starting now also frees `side`") && dialog.message.contains("Retry is not available in \"Export report\" for that run. A new message there still works."))
+                #expect(dialog.message.contains("Starting now also frees `side`") && dialog.message.contains("Retry is not available in “Export report” for that run. A new message there still works."))
             }
         }
         let several = RuntimeWorkspaceReviewWording.dialog(.init(requestID: UUID(), holders: [

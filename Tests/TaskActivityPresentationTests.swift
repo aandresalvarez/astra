@@ -25,13 +25,18 @@ struct TaskActivityPresentationTests {
         return request.snapshot
     }
 
-    @Test("A workspace waiting on SSH shows the job identity in the dock")
-    func remoteJobReasonInDock() {
+    @Test("A request that waits for the person's decision says so in the dock; one that waits for a task does not")
+    func decisionReasonInDock() {
         let task = makeTask(status: .queued)
-        let summary = WorkspaceSSHWait.summary(["12345678-0000-0000-0000-000000000000"])
+        let summary = RuntimeWorkspaceReviewWording.decisionPrefix
+            + "“Export report” has an SSH job that has not ended: “Nightly export” on `build-host`."
         let waiting = request(for: task, sequence: 1, state: .waitingForResource, blockerSummary: summary)
         let activity = TaskActivityPresentation.resolve(taskID: task.id, taskStatus: task.status, requests: [waiting])
-        #expect(activity.dockTitle == "Waiting for confirmation of 1 SSH job (12345678).")
+        #expect(activity.dockTitle == "Waiting for you")
+        #expect(activity.dockSummary == "Your message is saved. " + summary)
+        let behind = request(for: task, sequence: 1, state: .waitingForResource,
+            blockerSummary: "Waiting for “Export report” to finish in `reports`.")
+        #expect(TaskActivityPresentation.resolve(taskID: task.id, taskStatus: task.status, requests: [behind]).dockTitle == "Waiting for resource")
     }
 
     @Test("Running wins task-level presentation while queued turns retain their own state")

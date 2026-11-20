@@ -97,7 +97,7 @@ struct TaskActivityPresentation: Equatable, Sendable {
         switch kind {
         case .waitingForWorker: return "Waiting for a worker"
         case .waitingForResource:
-            if let summary = request?.blockerSummary, summary.hasPrefix(WorkspaceSSHWait.summaryPrefix) { return summary }
+            if request?.blockerSummary?.hasPrefix(RuntimeWorkspaceReviewWording.decisionPrefix) == true { return "Waiting for you" }
             return "Waiting for resource"
         case .starting: return "Starting task"
         case .running: return waitingRequest == nil ? nil : "Message queued"

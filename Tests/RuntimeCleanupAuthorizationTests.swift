@@ -45,7 +45,7 @@ struct RuntimeCleanupAuthorizationTests {
         let claims = queue.resourceLockClaims(for: nil, task: task, runMode: "continue")
         #expect(!queue.canAcquireResourceLocks(claims))
         let blocker = queue.resourceBlockerSummary(claims, modelContext: h.context)
-        #expect(blocker.contains("cleanup is not yet confirmed"))
+        #expect(blocker.hasPrefix(RuntimeWorkspaceReviewWording.decisionPrefix) && blocker.contains("cannot confirm"))
         let submission = try ExecutionRequestSubmissionService.submitFollowUp(message: "Continue", for: task, into: h.context).get()
         let request = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: h.context))
         TaskTurnRequestStateMachine.transition(request, to: .waitingForResource,

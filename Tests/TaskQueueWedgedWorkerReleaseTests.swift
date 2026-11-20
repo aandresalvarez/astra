@@ -199,8 +199,8 @@ struct TaskQueueWedgedWorkerReleaseTests {
         #expect(await eventually { second.request.state == .waitingForResource })
         #expect(second.request.blockingTaskID == fixture.wedged.id)
         let summary = second.request.blockerSummary ?? ""
-        #expect(summary.contains("\u{201C}Wedged run\u{201D}"), "\(summary)")
-        #expect(summary.contains(String(fixture.wedged.id.uuidString.prefix(8))), "\(summary)")
+        // The holder is at work: the banner names it and the folder, and asks for no decision.
+        #expect(summary.hasPrefix("Waiting for \u{201C}Wedged run\u{201D} to finish in `"), "\(summary)")
 
         fixture.queue.cancel(task: fixture.wedged, modelContext: fixture.context)
         return (first.admission, second.admission, second.request)

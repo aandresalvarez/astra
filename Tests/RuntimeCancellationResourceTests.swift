@@ -47,10 +47,12 @@ struct RuntimeCancellationResourceTests {
         #expect(queue.activeResourceLocks == record.resourceClaims)
         let contender = TaskResourceLockClaim(taskID: UUID(), resourceKey: h.workspaceURL.path, accessMode: .write, runMode: "next")
         #expect(!queue.canAcquireResourceLocks([contender]))
-        #expect(queue.resourceBlockerSummary([contender], modelContext: reopened.mainContext).contains("cleanup is not yet confirmed"))
+        // Nothing of it is running and nothing shows its commands ended: that waits for a person.
+        let banner = queue.resourceBlockerSummary([contender], modelContext: reopened.mainContext)
+        #expect(banner.hasPrefix(RuntimeWorkspaceReviewWording.decisionPrefix) && banner.contains("cannot confirm its commands ended"))
     }
 
-    @Test("A live resource owner is not described as unconfirmed cancellation cleanup")
+    @Test("A live resource owner reads as at work, cancelled or not, and never as something to decide")
     func liveOwnerStatusIsClear() throws {
         let h = try HeadlessChatHarness(persistentStore: true)
         defer { h.cleanup() }
@@ -62,15 +64,18 @@ struct RuntimeCancellationResourceTests {
         queue.refreshResourceOwnership(in: h.context)
         let contender = TaskResourceLockClaim(taskID: UUID(), resourceKey: h.workspaceURL.path, accessMode: .write, runMode: "next")
         #expect(!queue.canAcquireResourceLocks([contender]))
-        #expect(!queue.resourceBlockerSummary([contender], modelContext: h.context).contains("cleanup"))
+        let working = queue.resourceBlockerSummary([contender], modelContext: h.context)
+        #expect(working.hasPrefix("Waiting for “\(task.title)” to finish in `") && !working.contains("confirm"))
+        // A cancelled task that has not let go yet is still at work.
         owner.requestCancellation()
         queue.refreshResourceOwnership(in: h.context)
-        #expect(queue.resourceBlockerSummary([contender], modelContext: h.context).contains("cleanup is not yet confirmed"))
+        #expect(queue.resourceBlockerSummary([contender], modelContext: h.context) == working)
         // The first displayed holder is local; another persisted holder's
-        // cancellation must not be attributed to that live owner.
+        // state must not be attributed to that live owner.
         queue.localResourceLocks = [.init(taskID: UUID(), resourceKey: h.workspaceURL.path,
             accessMode: .readOnly, runMode: "live")]
-        #expect(!queue.resourceBlockerSummary([contender], modelContext: h.context).contains("cleanup"))
+        let local = queue.resourceBlockerSummary([contender], modelContext: h.context)
+        #expect(local.hasPrefix("Waiting for another task to finish in `") && !local.contains("confirm"))
     }
 
     @Test("An explicit follow-up cannot erase cancelled tools or move their resource fence")

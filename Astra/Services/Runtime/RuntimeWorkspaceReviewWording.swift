@@ -57,13 +57,80 @@ enum RuntimeWorkspaceReviewWording {
             + "Retry is not available for that run. Send a new message here to continue."
     }
 
+    /// "Review workspace" on a task that waits only for its own earlier run.
+    /// The review decides about other tasks, so there is nothing to offer.
+    nonisolated static let ownRunTitle = "This task is waiting for its own earlier run"
+    nonisolated static let ownRunMessage = "No other task is using this folder. ASTRA cannot confirm that an earlier run of this task has ended, "
+        + "so it will not start another run on top of it. Your request stays saved and starts when that is settled."
+
+    /// A banner that begins with this waits for the person, not for a task.
+    nonisolated static let decisionPrefix = "Waiting for you: "
+
+    nonisolated private static func named(_ ids: [String], _ jobs: [String: SSHJob]) -> [String] {
+        ids.map { id in
+            guard let job = jobs[id] else { return "\(id.prefix(8))" }
+            return (job.label.map { "“\($0)”" } ?? "\(id.prefix(8))") + " on `\(job.host)`"
+        }
+    }
+
+    /// When ASTRA cannot read who holds what, nothing is admitted.
+    nonisolated static func unreadableBanner(folders: [String]) -> String {
+        "ASTRA cannot read its record of who is using \(folders.isEmpty ? "this workspace" : code(folders)). Nothing was started."
+    }
+
+    /// The line on a waiting task: the holder, the folder and the one thing
+    /// in the way. A request nobody can decide for, such as a schedule, is
+    /// not `decidable`: it is told the same fact without being told to act.
+    /// `overlap` explains two different folders, one inside the other.
+    static func banner(holder title: String?, folders: [String], blockers: [RuntimeReservationRelease.Blocker],
+                       jobs: [String: SSHJob] = [:], decidable: Bool = true, overlap: String? = nil) -> String {
+        let name = title.map { "“\($0)”" } ?? "another task"
+        let place = folders.isEmpty ? "this workspace" : code(folders)
+        let tail = overlap.map { " (\($0))" } ?? ""
+        let you = decidable ? decisionPrefix : ""
+        // At work, or about to be released by the rule: nothing to decide.
+        guard !blockers.isEmpty, !blockers.contains(where: \.holderIsActive) else {
+            if !blockers.contains(.taskWorking), case .providerAlive(let pid)? = blockers.first(where: { if case .providerAlive = $0 { true } else { false } }) {
+                return "Waiting for \(name) to finish in \(place): the provider it started (process \(pid)) is still running.\(tail)"
+            }
+            if blockers.contains(.settling), !blockers.contains(.taskWorking) {
+                return "Waiting for ASTRA to finish closing the last run of \(name) in \(place).\(tail)"
+            }
+            return "Waiting for \(name) to finish in \(place).\(tail)"
+        }
+        let left = blockers.flatMap { blocker -> [RuntimeLocalSurvivorObservation.Survivor] in
+            if case .survivors(let found) = blocker { found } else { [] }
+        }
+        if !left.isEmpty {
+            var processes = left.prefix(3).map { "`\($0.name)` (process \($0.process.pid))" }
+            if left.count > 3 { processes.append("\(left.count - 3) more") }
+            return "\(name) ended but left \(list(processes)) running in \(place). "
+                + "This starts when \(left.count == 1 ? "that stops" : "those stop")\(decidable ? ", or you can start it now" : "").\(tail)"
+        }
+        for blocker in blockers {
+            switch blocker {
+            case .sshJobs(let ids):
+                var names = Array(named(ids, jobs).prefix(2))
+                if ids.count > 2 { names.append("\(ids.count - 2) more") }
+                return "\(you)\(name) has \(ids.count == 1 ? "an SSH job that has" : "\(ids.count) SSH jobs that have") not ended: \(list(names)).\(tail)"
+            case .container:
+                return "\(you)\(name) ran in a container that ASTRA cannot look inside.\(tail)"
+            case .lostRun:
+                return "\(you)ASTRA lost track of a run of \(name) and cannot confirm its commands ended.\(tail)"
+            default:
+                continue
+            }
+        }
+        return "\(you)ASTRA cannot confirm that \(name) has stopped using \(place).\(tail)"
+    }
+
     static func dialog(_ review: RuntimeWorkspaceReview.Review, jobs: [String: SSHJob] = [:]) -> Dialog {
         let wanted = folders(review.holders.flatMap(\.claims))
         let place = wanted.isEmpty ? "this workspace" : code(wanted)
         let active = review.holders.filter(\.isActive)
         guard active.isEmpty else {
             let lines = active.map { holder -> String in
-                let name = "\"\(holder.title)\""
+                let name = "“\(holder.title)”"
                 if holder.blockers.contains(.taskWorking) { return "\(name) is still working." }
                 if case .providerAlive(let pid)? = holder.blockers.first(where: { if case .providerAlive = $0 { true } else { false } }) {
                     return "The provider that \(name) started (process \(pid)) is still running."
@@ -76,7 +143,7 @@ enum RuntimeWorkspaceReviewWording {
         }
         var paragraphs: [String] = []
         for holder in review.holders {
-            let name = "\"\(holder.title)\""
+            let name = "“\(holder.title)”"
             var sentences: [String] = []
             // Every process the holder left behind, in one sentence, whichever
             // of its runs started it. A long list names the first few.
@@ -95,12 +162,8 @@ enum RuntimeWorkspaceReviewWording {
                 case .survivors:
                     break
                 case .sshJobs(let ids):
-                    let named = ids.map { id -> String in
-                        guard let job = jobs[id] else { return "\(id.prefix(8))" }
-                        return (job.label.map { "\"\($0)\"" } ?? "\(id.prefix(8))") + " on `\(job.host)`"
-                    }
                     let one = ids.count == 1
-                    sentences.append("\(name) has \(one ? "an SSH job that has" : "SSH jobs that have") not ended: \(list(named)). "
+                    sentences.append("\(name) has \(one ? "an SSH job that has" : "SSH jobs that have") not ended: \(list(named(ids, jobs))). "
                         + "Starting now does not stop \(one ? "it" : "them").")
                 case .sshJobsUnreadable:
                     sentences.append("ASTRA cannot read the SSH job records of \(name), so it cannot tell whether one is still running.")
@@ -126,7 +189,7 @@ enum RuntimeWorkspaceReviewWording {
             if !others.isEmpty { sentences.append("Starting now also frees \(code(others)), which \(name) was using.") }
             paragraphs.append(sentences.joined(separator: " "))
         }
-        let holders = list(review.holders.map { "\"\($0.title)\"" })
+        let holders = list(review.holders.map { "“\($0.title)”" })
         paragraphs.append("Starting now lets this request, and any later one, use \(place). "
             + "After that, Retry is not available in \(holders) for that run. A new message there still works.")
         return Dialog(title: "Start in \(place) now?", message: paragraphs.joined(separator: "\n\n"), canStart: true)
