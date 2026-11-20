@@ -1,8 +1,9 @@
 # Workspace reservations and parallel tasks
 
 Status: the owner decided the eight open questions on 2026-11-19 and two more on 2026-11-20 (see
-"Decisions"). No question is open. Increments 1a, 3a and 5 are open as draft PRs; the rest is not
-built. Each increment is its own draft PR.
+"Decisions"). No question is open. Increments 1a, 3a and 5 are open as draft PRs. The override
+(1b) is built on top of #600 and 1a and becomes a draft PR once those two are merged. The rest is
+not built. Each increment is its own draft PR.
 
 Production evidence here is given by short task ID. Task titles, folder names, workspace names and
 host names are left out because this repository is public.
@@ -179,6 +180,22 @@ carried over; their saved entries are left in place and no longer read.
 The decision is still made only for a request a person wrote (`isManualSource`). Per-request
 decisions already saved stay readable and valid until their holders release.
 
+Three things the build made explicit:
+
+- **The review does not judge the task that waits.** Today's gate also asked whether the waiting
+  task's own earlier runs were settled, and each of its conditions was a dead end found in
+  production (a retry after an attempt that never launched, a task from before receipts existed).
+  The decision is about the holders. Once they are released the request goes through ordinary
+  admission, which judges the waiting task's own runs as it does for any request.
+- **A decision ends the holder's whole reservation**, as a release by the rule does: every folder
+  it reserved, not only the one the request waits for, and its provider session. The dialog names
+  the other folders.
+- **Retry does not come back for a run that was started past.** A released holder is not asked
+  again, so nothing later upgrades its stop proof, even after a restart. Asking it again would
+  write a second reconciliation entry for one execution, and where an earlier build archived the
+  holder's receipt at decision time the lineage read would then fail closed for every task. The
+  task continues with a new message (decision 3), and its history says so.
+
 ## C. What does not change
 
 - Two live writers never share a folder. A task that is working holds its claims through the
@@ -245,6 +262,15 @@ Result: 14 released, 2 held. Of the 14 receipts in a workspace with an SSH conne
 and one holds for its two jobs, which is what decision 1 expected. C2CF2F7A is new since the
 first run of this validation and is not in an SSH workspace.
 
+- **The override on a copy, 2026-11-20.** The review of 1b ran against a fresh copy for a new task
+  next to each of the two receipts the rule keeps. Opening it released the other 14 first. Next to
+  C2CF2F7A it showed one holder, not at work, with nine leftover processes (`keyboxd` and eight
+  Docker Desktop processes). "Start now" released it with basis `decision`, all nine recorded, the
+  stop proof unchanged and the execution not replaceable; its folders were then free, nothing was
+  saved for the request, a second task was not asked, and a later pass of the rule changed
+  nothing. Next to E027F715 it showed one holder with two open SSH jobs, named by label and host,
+  with the same results. On the main thread the first review took 2.3 s (it includes releasing 14
+  receipts), the second 0.5 s, and "Start now" 0.6 to 0.7 s.
 - **The driver on a copy.** A copy's journal files are new, so the driver was given the present as
   the boot time. It released 15 receipts, each with basis `host_restart`, the stop proof unchanged
   and the execution not replaceable; a second pass changed nothing; Retry on a released SSH holder
@@ -393,7 +419,11 @@ A holder that could reach another machine over SSH and has no tracked job open h
 not wait for anyone (decision 1).
 
 After "Start now" the holder's task shows one line in its history: "You let other tasks use
-`reports` on Nov 18. Retry here stays unavailable until ASTRA can confirm this run's work ended."
+`reports` on Nov 18, before ASTRA could confirm that this run's work had ended. Retry is not
+available for that run. Send a new message here to continue." The dialog says the same before
+the click. As built, the dialog puts every process a holder left behind in one sentence, names the
+first six and counts the rest (Docker Desktop alone leaves nine); the saved record keeps all of
+them.
 
 ## Increments
 
@@ -422,7 +452,13 @@ throwing `.busy`; confirming releases the reviewed holders with basis "decision"
 remembered and there is no stop button (decisions 2 and 4). A holder that ended and left a process
 alive is offered with that process named, not refused (decision 9); 1a already returns survivors
 as their own named fact, so this needs nothing from 1a. Banner and dialog wording as above.
-It starts after #600 and #601 are merged, because it rewrites the code both change.
+It starts after #600 and #601 are merged, because it rewrites the code both change. It is
+built on a local combination of the two and opens as a draft PR when they are merged. Two parts
+moved out of it. The release basis `decision` is declared in 1a (#601), one build before anything
+writes it: a build that cannot decode a basis cannot read that receipt, and one unreadable receipt
+stops every admission, so a rollback from 1b to 1a would have admitted nothing. The banner on the
+waiting task is its own PR after this one: it needs the rule's answer for the holder on the
+waiting loop, with a cache so that it is not computed twice a second.
 Tests: preview never refuses a holder whose processes are gone; a holder that is working, whose
 provider process is alive or that is being settled refuses and carries what runs; a holder that
 ended with a live survivor is offered with the process name and PID, and confirming releases it
@@ -517,6 +553,11 @@ survives a relaunch.
 - **A decision frees the folder for everyone, not for one request.** That is the point of
   resolving the holder, and it makes a wrong click wider. The dialog refuses while the holder
   itself runs, and names every leftover process and every unknown.
+- **Docker Desktop holds a folder until it is quit from outside.** It keeps the scope value in its
+  environment across its own restarts: the processes found on 2026-11-20 had new PIDs and were
+  still matched to a launch from the day before. Until the Mac restarts or Docker is quit and
+  opened again outside ASTRA, every task that started it holds its folder as running, and
+  decision 9 is the way past it.
 - **A leftover process can be doing real work.** `keyboxd` and Docker Desktop are helpers that
   write nothing in the folder, but ASTRA cannot tell them from a script the task left running
   that still writes there. After "Start now" the new task and that process share the folder. The
