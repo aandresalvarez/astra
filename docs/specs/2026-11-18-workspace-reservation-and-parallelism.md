@@ -357,7 +357,7 @@ and when a launch is planned; it is not stored.
    enforcement is Off; there is no read-only mode for that case (decision 10).
    There is no global default that puts every task in a worktree (decision 5). A workspace has a
    setting, off by default, that pre-checks the existing "Start in a new worktree" choice in the
-   new-task composer. That choice is per task and not persisted today
+   new-task composer. Its switch is beside that choice ("Always in this workspace"). That choice is per task and not persisted today
    (`NewTaskWorktreeIntentStore`); the setting only changes its starting value, and the person can
    still clear it for one task.
 3. **Plain local folder given as an extra path: one writer at a time.** Unchanged. There is no
@@ -566,9 +566,14 @@ fits the architecture rules.
 Tests: a new draft in a workspace with the setting on starts with the choice checked, one in a
 workspace without it does not; clearing it for one task does not change the setting; the setting
 survives a relaunch.
-Found in the development app: the switch for the setting was put in the Workspace Settings sheet,
-and nothing has opened that sheet since #524 took its last entry point away. The stored setting
-and the composer work; the switch needs a place a person can reach before #604 leaves draft.
+Found in the development app: the switch for the setting was first put in the Workspace Settings
+sheet, and nothing has opened that sheet since #524 took its last entry point away. The owner
+chose where it goes instead: beside the checkbox it sets. It is now "Always in this workspace",
+to the left of "Start in a new worktree" in the composer's worktree row. It is offered once a
+worktree is picked for the task and stays in view while it is on, so that it can be turned off;
+the task's own checkbox stays rightmost and does not move. Checked on screen: turning it on
+pre-checks the next new task, clearing one task leaves it on, and turning it off puts the next
+new task back to unchecked.
 
 ## Risks
 
