@@ -1692,6 +1692,14 @@ struct ArchitectureFitnessTests {
             "Whitespace"
         ])
         #expect(branchProtection["allow_fork_syncing"] as? Bool == false)
+        let requiredReviews = try #require(
+            branchProtection["required_pull_request_reviews"] as? [String: Any]
+        )
+        // Agent PRs merge on green checks; only CODEOWNERS paths need the owner.
+        #expect(requiredReviews["required_approving_review_count"] as? Int == 0)
+        #expect(requiredReviews["require_code_owner_reviews"] as? Bool == true)
+        #expect(requiredReviews["dismiss_stale_reviews"] as? Bool == true)
+        #expect(branchProtection["required_conversation_resolution"] as? Bool == true)
         #expect(focusedTargetScript.contains("Tools/MCPGatewaySupport"))
         #expect(focusedTargetScript.contains("MCPGatewaySupportTests"))
         #expect(focusedTargetScript.contains("Tools/MailToolSupport"))
@@ -1741,8 +1749,11 @@ struct ArchitectureFitnessTests {
         #expect(memoryTraceScript.contains(#"*"/ASTRA Dev.app/Contents/MacOS/ASTRA Dev"*"#))
         #expect(!memoryTraceScript.contains("/ASTRA Dev.app/Contents/MacOS/ASTRA$"))
         #expect(!codeowners.contains("* @aandresalvarez"))
-        #expect(codeowners.contains("Astra/Services/Runtime/"))
+        #expect(codeowners.contains("Astra/Models/"))
         #expect(codeowners.contains("Astra/Services/Persistence/"))
+        #expect(codeowners.contains(".github/"))
+        #expect(codeowners.contains(".githooks/"))
+        #expect(codeowners.contains("script/configure_branch_protection.sh"))
         #expect(codeowners.contains("Tests/ArchitectureFitnessTests/"))
         #expect(codeowners.contains("Tests/AppSemanticFitnessTests.swift"))
     }

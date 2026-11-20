@@ -109,8 +109,9 @@ enum RuntimeWorkspaceContinuation {
             let id = record.taskID
             let candidates = try context.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == id }))
             let owners = try candidates.filter { try RuntimeTaskOwnerJournal.read(task: $0, context: context) == record }
+            // The holder's turn must be over; it need not have succeeded.
             guard owners.count == 1, let owner = owners.first,
-                  RuntimeCompletedUserTurnContinuation.hasCompletedTurn(record, task: owner, context: context) else { throw RuntimeExecutionOwnerStore.Failure.busy }
+                  RuntimeCompletedUserTurnContinuation.hasEndedTurn(record, task: owner, context: context) else { throw RuntimeExecutionOwnerStore.Failure.busy }
             let jobs = try RuntimeWorkspaceRemoteJobs.inventory(task: owner, owner: record, context: context).filter { !$0.status.isTerminal }
             if !reviewSSHJobs { try RuntimeWorkspaceRemoteJobs.check(jobs, reviewed: [], savingDecision: false) }
             sources.append(.init(taskOwnerID: owner.persistentModelID, receipt: record, reviewedSSHJobs: jobs.isEmpty ? nil : jobs,
@@ -346,7 +347,7 @@ enum RuntimeWorkspaceContinuation {
             guard let owner = candidates.first(where: { $0.persistentModelID == source.taskOwnerID }),
                   let current = try RuntimeTaskOwnerJournal.read(task: owner, context: context),
                   current.ownerID == saved.ownerID, current.executionID == saved.executionID, current.runID == saved.runID,
-                  RuntimeCompletedUserTurnContinuation.hasCompletedTurn(current, task: owner, context: context) else { throw RuntimeExecutionOwnerStore.Failure.busy }
+                  RuntimeCompletedUserTurnContinuation.hasEndedTurn(current, task: owner, context: context) else { throw RuntimeExecutionOwnerStore.Failure.busy }
             if !savingDecision, source.reviewedSSHJobs != nil, current.resourcesReleased == true, current.canReplace { continue }
             guard current == saved else { throw RuntimeExecutionOwnerStore.Failure.busy }
             let jobs = try RuntimeWorkspaceRemoteJobs.inventory(task: owner, owner: saved, context: context)

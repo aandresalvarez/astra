@@ -1,12 +1,28 @@
-# Keep the high-risk ASTRA surfaces under explicit review.
-Astra/Services/Runtime/ @aandresalvarez
-Astra/Services/Persistence/ @aandresalvarez
+# Paths here need an explicit owner approval before merge; everything else
+# merges on green required checks and resolved conversations (see
+# script/configure_branch_protection.sh and AGENTS.md "Repository Protections").
+# Keep this list to surfaces where a wrong change loses user data, weakens a
+# guardrail, or ships a release: adding broad source folders here puts the
+# owner back in front of every agent PR.
+
+# Durable data: SwiftData schemas, migrations, store identity, Keychain.
 Astra/Models/ @aandresalvarez
-ASTRACore/ @aandresalvarez
-ASTRAGitContracts/ @aandresalvarez
+Astra/Services/Persistence/ @aandresalvarez
+
+# Build, signing, CI, and the hooks and scripts that enforce the guardrails.
 Package.swift @aandresalvarez
-script/ @aandresalvarez
+script/ASTRA.entitlements @aandresalvarez
 .github/ @aandresalvarez
 .githooks/ @aandresalvarez
+script/configure_branch_protection.sh @aandresalvarez
+script/precommit.sh @aandresalvarez
+script/prepush.sh @aandresalvarez
+script/swift_test.sh @aandresalvarez
+script/test_architecture.sh @aandresalvarez
+script/test_git_contracts.sh @aandresalvarez
+script/focused_*.sh @aandresalvarez
+script/release_update.sh @aandresalvarez
+
+# The fitness tests that pin those guardrails.
 Tests/ArchitectureFitnessTests/ @aandresalvarez
 Tests/AppSemanticFitnessTests.swift @aandresalvarez
