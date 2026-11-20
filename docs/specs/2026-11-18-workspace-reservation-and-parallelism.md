@@ -1,7 +1,8 @@
 # Workspace reservations and parallel tasks
 
-Status: the owner decided the eight open questions on 2026-11-19 (see "Decisions"). Increments 1a
-and 3a are open as draft PRs; the rest is not built. Each increment is its own draft PR.
+Status: the owner decided the eight open questions on 2026-11-19 and one more on 2026-11-20 (see
+"Decisions"). Increments 1a, 3a and 5 are open as draft PRs; the rest is not built. Each increment
+is its own draft PR.
 
 Production evidence here is given by short task ID. Task titles, folder names, workspace names and
 host names are left out because this repository is public.
@@ -305,7 +306,8 @@ and when a launch is planned; it is not stored.
    worktree exclusively and the repository's Git directory shared, as it does today with
    enforcement on. A task that writes the checkout itself still excludes every other writer of
    that checkout and its Git directory. Sibling worktrees no longer serialize when enforcement is
-   Off (E).
+   Off (E). A task that works in the checkout itself and only reads it also holds it alone when
+   enforcement is Off; there is no read-only mode for that case (decision 10).
    There is no global default that puts every task in a worktree (decision 5). A workspace has a
    setting, off by default, that pre-checks the existing "Start in a new worktree" choice in the
    new-task composer. That choice is per task and not persisted today
@@ -351,7 +353,11 @@ Under this spec, with enforcement Off:
   (`git status --porcelain` and `HEAD`, the snapshot `AgentFileChangeDetector` already takes for
   the task's own path). A difference is recorded on the task as an event naming the files, shown
   on the task, and shown to the next task that needs that checkout. Nothing is reverted; Git is
-  the undo. A read-only turn on a checkout stays shared for the same reason.
+  the undo.
+- **A read-only turn in the checkout itself still waits.** This document first proposed keeping
+  its shared claim and watching the checkout the same way. The owner decided against it
+  (decision 10): outside a worktree a shared claim on a checkout still becomes exclusive when
+  nothing enforces it, and Consult still refuses to start there.
 - **Folders without an undo keep the prevention they have.** For a plain or cloud-synced folder a
   shared claim still becomes exclusive when nothing enforces it, and a cloud-synced folder is
   also guarded by permission level as in D4.
@@ -456,9 +462,11 @@ analysis tasks in one synthetic workspace overlap; a fork writes only its own fo
 3a, draft PR #603: with enforcement Off, a worktree task holds its source checkout and the
 repository's Git directory as a reader instead of a writer, so sibling worktrees run together and
 a task that writes the checkout itself still excludes them; the source checkout is compared before
-and after the turn and a change is recorded on the task. 3b, lowest priority: a cloud-synced or
-non-local folder is classified and stays one writer at a time, guarded by permission level
-(decision 6).
+and after the turn and a change is recorded on the task. A read-only turn in the checkout itself
+is not part of 3a and is not built (decision 10); the two tests that pin it stay as they are
+(`WorkspaceConsultationTests` and the Off case in `TaskExecutionResourceAdmissionQueueTests`).
+3b, lowest priority: a cloud-synced or non-local folder is classified and stays one writer at a
+time, guarded by permission level (decision 6).
 Tests: two worktree tasks of one repository run together with enforcement Off; a same-directory
 task still excludes them; a planted change in the source checkout is detected and named; a folder
 under `~/Library/CloudStorage` and a ubiquitous folder classify as cloud-synced, a plain folder
@@ -469,8 +477,9 @@ level the task asks once, at the Auto level it does not ask and the change is re
 writable root it is given and never resolves a holder. No code until the owner uses schedules
 (production has none).
 
-**5. Worktree setting per workspace (decision 5).** A workspace setting, off by default, that
-pre-checks "Start in a new worktree" in the new-task composer. Small, independent of the others.
+**5. Worktree setting per workspace (decision 5).** Draft PR #604. A workspace setting, off by
+default, that pre-checks "Start in a new worktree" in the new-task composer. Small, independent of
+the others.
 Where the setting is stored is part of that PR: a new field on the `Workspace` model needs a new
 schema version and never an edit to a shipped one, so a lighter durable owner is preferred if one
 fits the architecture rules.
@@ -541,6 +550,25 @@ first proposed. One question came up afterwards and is at the end.
    there is reported, not blocked.
 8. **Increment 2 is staged**: enforcement Off first, the enforced case after a real-provider
    check, and the test-setup change in its own PR with no behavior change before the rule.
+
+One more decision followed on 2026-11-20. It is numbered 10 so that the open question below keeps
+the number it has been discussed under.
+
+10. **No read-only mode for a repository; one worktree per task is enough.** The owner first asked
+    for a read-only task on a repository to run alongside others with enforcement Off, as E then
+    proposed, and decided against it after the measurement. In the production copy of
+    2026-11-19, 815 turn requests were made in workspaces whose code folder is a repository: 756
+    held the checkout as a writer, 39 held nothing and 20 held it as a reader. All 20 are from two
+    days in July 2026, when access was still inferred from a request's wording. None since, none
+    used Consult, and none of 2,208 tasks carries a read-only declaration. The only control that
+    makes a task a reader is Consult ("Workspace access" in the composer). With enforcement Off it
+    does not start, and it is question-and-answer only: it may not change files, run a query or
+    start a job. So the rule would have served no request made since July. Tasks in one repository
+    run side by side through worktrees (3a, and the setting in 5 that starts them there). A task
+    that reads the code and writes only its task folder would be a new access level; it is not
+    planned, and is worth revisiting only if a workspace turns up where worktrees do not fit.
+    Workspaces without a repository do not need it: under increment 2 no task claims the workspace
+    folder, whether it reads or writes.
 
 Merge order: #600 first, then #601 rebased on it. Merging is the owner's action.
 
