@@ -102,7 +102,9 @@ jobs:
         run: swift build --build-tests
 
       - name: Save the SwiftPM build
-        if: github.event_name != 'pull_request'
+        # TEMPORARY, removed before this pull request is final: lets this one
+        # branch save its own build so its runs can measure cold against warm.
+        if: github.event_name != 'pull_request' || github.head_ref == 'codex/ci-build-cache-reuse'
         uses: actions/cache/save@v5
         with:
           path: |

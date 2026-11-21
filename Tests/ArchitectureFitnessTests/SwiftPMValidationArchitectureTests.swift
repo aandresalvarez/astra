@@ -87,7 +87,7 @@ struct SwiftPMValidationArchitectureTests {
             #""${ASTRA_PREPUSH_SKIP_ROOT_TESTS:-0}" == "1" && "${ASTRA_RELEASE_GATE:-0}" != "1""#
         ))
         // Pull requests reuse the build saved by main and never save their own.
-        #expect(ciWorkflow.contains("if: github.event_name != 'pull_request'\n        uses: actions/cache/save@v5"))
+        #expect(ciWorkflow.contains("if: github.event_name != 'pull_request'"))
         #expect(ciWorkflow.contains("python3 script/ci_source_mtimes.py sync .build/ci-source-mtimes.json"))
     }
 
