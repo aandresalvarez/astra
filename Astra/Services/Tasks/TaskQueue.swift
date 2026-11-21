@@ -34,7 +34,7 @@ final class TaskQueue {
     var resourceOwnershipReadFailed = false
     var waitingOwnershipPasses = 0
     var ownershipJournalStamp: Date? // The journal folder's change time at the last full ownership read.
-    var waitingBanners: [WaitingBannerKey: (text: String, active: Bool)] = [:] // Kept between passes; see `resourceBlockerSummary`.
+    var waitingBanners: [WaitingBannerKey: (text: String, active: Bool, holders: Set<UUID>, unreadable: Bool)] = [:] // Kept between passes; see `resourceBlockerSummary`.
     var activeResourceLocks: [TaskResourceLockClaim] {
         var seen: Set<TaskResourceLockClaim> = []
         return (localResourceLocks + persistedResourceLocks).filter { seen.insert($0).inserted }
