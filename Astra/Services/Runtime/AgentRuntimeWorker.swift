@@ -1022,6 +1022,7 @@ final class AgentRuntimeWorker {
         }
         let taskFolderBeforeRun = await TaskFolderRunSnapshot.capture(for: task)
         await TaskFolderRunSnapshot.persistBaseline(taskFolderBeforeRun, task: task, run: run)
+        let sourceCheckoutsBeforeRun = await TaskWorktreeSourceCheckoutWatch.capture(for: launchTask, sandboxEnforcement: executionPolicy.sandboxEnforcementSnapshot)
         // Preparation now suspends for Git and filesystem work. Cancellation
         // during that work must win before any provider process is launched.
         guard !cancellationRequested, !Task.isCancelled, task.status != .cancelled else {
@@ -1217,6 +1218,7 @@ final class AgentRuntimeWorker {
             await launchProcess(prompt, nativeContinuationSessionID, emptyTurnGate, launchMaxRunSeconds, 0, 0)
         }
         if wait.retired {
+            await TaskWorktreeSourceCheckoutWatch.record(since: sourceCheckoutsBeforeRun, task: task, run: run, modelContext: modelContext)
             let cancellation = TaskRunLifecycleService.cancelTask(task, modelContext: modelContext, source: .userAction)
             TaskRunLifecycleService.persist(summary: cancellation, modelContext: modelContext)
             return
@@ -1256,6 +1258,7 @@ final class AgentRuntimeWorker {
                     // The run ends here, but the discarded attempt still spent what it spent.
                     for event in discardedUsage.unappliedEvents() { persistRecordedEvent(event) }
                     await pendingEvents.drainAll()
+                    await TaskWorktreeSourceCheckoutWatch.record(since: sourceCheckoutsBeforeRun, task: task, run: run, modelContext: modelContext)
                     RuntimeSupervisionUsageRecorder.record(supervisionReservations,
                         task: task, run: run, modelContext: modelContext)
                     WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
@@ -1272,6 +1275,7 @@ final class AgentRuntimeWorker {
                 } else {
                     result = await wait.run { await launchProcess(prompt, nil, nil, remainingRunSeconds, 1, discardedUsage.totalTokens) }
                     if wait.retired {
+                        await TaskWorktreeSourceCheckoutWatch.record(since: sourceCheckoutsBeforeRun, task: task, run: run, modelContext: modelContext)
                         let cancellation = TaskRunLifecycleService.cancelTask(task, modelContext: modelContext, source: .userAction)
                         TaskRunLifecycleService.persist(summary: cancellation, modelContext: modelContext)
                         return
@@ -1353,6 +1357,7 @@ final class AgentRuntimeWorker {
             runStartedAt: startTime,
             executionPath: executionPath
         )
+        await TaskWorktreeSourceCheckoutWatch.record(since: sourceCheckoutsBeforeRun, task: task, run: run, modelContext: modelContext)
         run.completedAt = Date()
         run.exitCode = result.exitCode
         run.providerVersion = result.providerVersion
