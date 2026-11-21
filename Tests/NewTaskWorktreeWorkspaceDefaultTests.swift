@@ -114,6 +114,68 @@ struct NewTaskWorktreeWorkspaceDefaultTests {
         #expect(!restored.isEnabled)
     }
 
+    @Test("With the setting on, a fresh composer waits for the repository lookup before anything is sent or saved")
+    func waitsForTheLookup() throws {
+        let store = InMemoryDefaults()
+        let workspace = Workspace(name: "Repo", primaryPath: "/repos/app")
+        NewTaskWorktreeDefaultStore.setStartsEnabled(true, workspaceID: workspace.id, in: store)
+        func waits(_ selection: NewTaskWorktreeSelection, draft: AgentTask? = nil, in place: Workspace? = nil) -> Bool {
+            NewTaskWorktreeComposerFlow.awaitsWorkspaceDefault(selection, draft: draft, workspace: place ?? workspace, defaults: store)
+        }
+        // The lookup is running and the checkbox is still at its unchecked start:
+        // sending now would run the task in the checkout itself.
+        var looking = NewTaskWorktreeSelection()
+        looking.isLoading = true
+        #expect(looking.canSubmit && waits(looking))
+        // It found a repository: the starting value is applied and the wait is over.
+        looking.isLoading = false
+        looking.updateRepositories([app], selectedPath: nil)
+        NewTaskWorktreeComposerFlow.applyWorkspaceDefault(to: &looking, draft: nil, workspace: workspace, defaults: store)
+        #expect(looking.isEnabled && !waits(looking))
+        // It found none: the task starts as it always has.
+        var none = NewTaskWorktreeSelection()
+        none.isLoading = true
+        #expect(waits(none))
+        none.isLoading = false
+        #expect(!waits(none) && none.canSubmit)
+        // A saved draft, a choice already made, and a workspace without the setting never wait.
+        var busy = NewTaskWorktreeSelection()
+        busy.isLoading = true
+        #expect(!waits(busy, draft: AgentTask(title: "Draft", goal: "Draft", workspace: workspace)))
+        #expect(!waits(busy, in: Workspace(name: "Other", primaryPath: "/repos/other")))
+        busy.awaitsWorkspaceDefault = false
+        #expect(!waits(busy))
+    }
+
+    @Test("A draft saved while the lookup runs keeps what it saved: the late result does not check its box")
+    func draftSavedDuringTheLookup() throws {
+        let store = InMemoryDefaults()
+        let container = try Fixture.container()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Repo", primaryPath: "/repos/app")
+        context.insert(workspace)
+        NewTaskWorktreeDefaultStore.setStartsEnabled(true, workspaceID: workspace.id, in: store)
+        let draft = AgentTask(title: "Draft", goal: "Draft", workspace: workspace)
+        draft.status = .draft
+        context.insert(draft)
+        // The composer is still looking when the draft is saved, unchecked.
+        var selection = NewTaskWorktreeSelection()
+        selection.isLoading = true
+        NewTaskWorktreeComposerFlow.saveChoice(&selection, on: draft, modelContext: context)
+        // The lookup that started for a fresh composer finishes and offers the workspace's value.
+        selection.isLoading = false
+        selection.updateRepositories([app], selectedPath: nil)
+        NewTaskWorktreeComposerFlow.applyWorkspaceDefault(to: &selection, draft: nil, workspace: workspace, defaults: store)
+        #expect(!selection.isEnabled && !selection.awaitsWorkspaceDefault)
+        // The composer saves through that step, and its submit rule includes the wait.
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let composer = try String(contentsOf: root.appendingPathComponent("Astra/Views/ChatPanelView.swift"), encoding: .utf8)
+        #expect(composer.components(separatedBy: "NewTaskWorktreeComposerFlow.saveChoice(&worktreeSelection, on: draft, modelContext: modelContext)").count == 3)
+        #expect(!composer.contains("NewTaskWorktreeComposerFlow.recordChoice(worktreeSelection"))
+        let creation = try String(contentsOf: root.appendingPathComponent("Astra/Views/ChatPanelViewWorktreeCreation.swift"), encoding: .utf8)
+        #expect(creation.contains("!allowsWorktreeChoice || (worktreeSelection.canSubmit && !awaitsWorkspaceWorktreeDefault)"))
+    }
+
     @Test("Without the setting nothing changes: a fresh composer starts unchecked")
     func offByDefault() throws {
         let store = InMemoryDefaults()

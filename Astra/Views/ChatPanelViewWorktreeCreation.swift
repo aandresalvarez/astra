@@ -59,8 +59,15 @@ extension ChatPanelView {
         allowsWorktreeChoice ? NewTaskWorktreeComposerFlow.launchRequest(worktreeSelection, recordedOn: composerDraft) : nil
     }
 
+    /// A fresh composer whose workspace starts tasks in a worktree, while the
+    /// repository lookup that decides the checkbox is still running.
+    var awaitsWorkspaceWorktreeDefault: Bool {
+        allowsWorktreeChoice
+            && NewTaskWorktreeComposerFlow.awaitsWorkspaceDefault(worktreeSelection, draft: composerDraft, workspace: workspace)
+    }
+
     var canSubmitWorktreeSelection: Bool {
-        !allowsWorktreeChoice || worktreeSelection.canSubmit
+        !allowsWorktreeChoice || (worktreeSelection.canSubmit && !awaitsWorkspaceWorktreeDefault)
     }
 
     func reportTaskCreationError(_ error: Error) {
@@ -84,6 +91,8 @@ extension ChatPanelView {
         guard !isPreparingWorktree, !isThinking else { return }
         refreshWorktreeBinding()
         guard canSubmitWorktreeSelection else {
+            // Still looking the repository up: nothing is wrong, and it is over in a moment.
+            if awaitsWorkspaceWorktreeDefault { return }
             return taskCreationError = worktreeSelection.submitError.localizedDescription
         }
         taskCreationError = nil
