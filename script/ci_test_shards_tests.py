@@ -198,17 +198,15 @@ class TestShardPlanTests(unittest.TestCase):
         self.assertEqual(listed, [['HeavyTests'], ['MediumTests', 'SmallTests']])
         self.assertEqual(loads, [40.0, 40.0, 75.0])
 
-    def test_proposed_plan_always_passes_the_plan_validator(self):
+    def planner_fixture(self, declared):
+        """A package that declares one suite per letter, and a function that writes a job log."""
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         root = Path(folder.name)
         (root / 'Tests').mkdir()
         (root / 'Package.swift').write_text('let package = Package(targets: [])\n')
-        (root / 'Tests' / 'Suites.swift').write_text(
-            '@Suite("A suite")\nstruct ATests {}\n'
-            '@Suite("B suite")\nstruct BTests {}\n'
-            '@Suite("C suite")\nstruct CTests {}\n'
-        )
+        (root / 'Tests' / 'Suites.swift').write_text(''.join(
+            f'@Suite("{name} suite")\nstruct {name}Tests {{}}\n' for name in declared))
 
         def log_of(seconds):
             log = root / f'job-{len(seconds)}.log'
@@ -217,16 +215,57 @@ class TestShardPlanTests(unittest.TestCase):
                 for name, value in seconds.items()))
             return str(log)
 
+        return str(root), log_of
+
+    def test_a_suite_that_cannot_be_listed_does_not_end_the_proposal(self):
+        root, log_of = self.planner_fixture('ABCDE')
+        # X is declared nowhere. It would pass the listed share, and a smaller suite after it fits.
+        listed, loads = ci_test_shards.propose(
+            [log_of({'A': 60, 'B': 55, 'X': 50, 'C': 20, 'D': 20, 'E': 20})], shards=3, root=root)
+        self.assertEqual(listed, [['ATests'], ['BTests', 'CTests']])
+        self.assertEqual(loads, [60.0, 75.0, 90.0])
+
+    def test_a_suite_a_listed_name_also_selects_counts_for_that_shard(self):
+        root, log_of = self.planner_fixture(['A', 'XA', 'B', 'C', 'D', 'E'])
+        # ATests as a filter also matches XATests, so XATests runs in the first shard
+        # and its time fills the listed share: nothing smaller is added after it.
+        listed, loads = ci_test_shards.propose(
+            [log_of({'A': 60, 'B': 55, 'XA': 50, 'C': 20, 'D': 20, 'E': 20})], shards=3, root=root)
+        self.assertEqual(listed, [['ATests'], ['BTests']])
+        self.assertEqual(loads, [110.0, 55.0, 60.0])
+        counts, shared = ci_test_shards.tests_per_shard(listed, [
+            'M.ATests/a()', 'M.XATests/b()', 'M.BTests/c()', 'M.CTests/d()'])
+        self.assertEqual((counts, shared), ([2, 1, 1], []))
+        # A smaller suite the listed name selects counts as well, wherever it sorts.
+        listed, loads = ci_test_shards.propose(
+            [log_of({'A': 60, 'B': 55, 'C': 50, 'XA': 20, 'D': 20, 'E': 20})], shards=3, root=root)
+        self.assertEqual(listed, [['ATests'], ['BTests']])
+        self.assertEqual(loads, [80.0, 55.0, 90.0])
+        # With room left in the listed share, the selected suite is still not listed itself:
+        # it already runs in the first shard, and listing it would run it in two.
+        listed, loads = ci_test_shards.propose(
+            [log_of({'A': 60, 'B': 50, 'XA': 5, 'Unlisted': 300})], shards=3, root=root)
+        self.assertEqual(listed, [['ATests'], ['BTests']])
+        self.assertEqual(loads, [65.0, 50.0, 300.0])
+        # A light suite whose name selects the heavy ones does not take their place:
+        # the heavy suites are listed by their own names, and the split stays valid.
+        listed, loads = ci_test_shards.propose(
+            [log_of({'A': 1, 'XA': 50, 'YA': 40})], shards=3, root=self.planner_fixture(['A', 'XA', 'YA'])[0])
+        self.assertEqual(listed, [['XATests'], ['YATests']])
+        self.assertEqual(loads, [50.0, 40.0, 1.0])
+
+    def test_proposed_plan_always_passes_the_plan_validator(self):
+        root, log_of = self.planner_fixture('ABC')
         # The second suite alone already passes the listed share, and still fills its shard.
         listed, loads = ci_test_shards.propose(
-            [log_of({'A': 60, 'B': 50, 'C': 40})], shards=3, root=str(root))
+            [log_of({'A': 60, 'B': 50, 'C': 40})], shards=3, root=root)
         self.assertEqual(listed, [['ATests'], ['BTests']])
         self.assertEqual(loads, [60.0, 50.0, 40.0])
         self.assertEqual(
             ci_test_shards.load_plan(self.write_plan({'version': 1, 'shards': listed})), listed)
         # One measured suite cannot fill two listed shards, so nothing is proposed.
         with self.assertRaises(ci_test_shards.PlanError):
-            ci_test_shards.propose([log_of({'A': 60})], shards=3, root=str(root))
+            ci_test_shards.propose([log_of({'A': 60})], shards=3, root=root)
 
     def test_command_line_prints_one_line_of_arguments_and_fails_loudly(self):
         def run(*arguments):
