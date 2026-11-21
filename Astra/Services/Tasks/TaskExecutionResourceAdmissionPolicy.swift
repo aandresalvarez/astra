@@ -29,7 +29,8 @@ enum TaskExecutionResourceAdmissionPolicy {
                 )
             }
         }
-        claims = effectiveClaims(claims, sandboxEnforcement: sandboxEnforcement)
+        claims = effectiveClaims(claims, watched: watchedKeys(for: task, sandboxEnforcement: sandboxEnforcement),
+                                 sandboxEnforcement: sandboxEnforcement)
             + unenforcedReadOnlyClaims(for: task, existing: claims, sandboxEnforcement: sandboxEnforcement)
         claims += unenforcedGitMetadataClaims(existing: claims, sandboxEnforcement: sandboxEnforcement)
         return TaskExecutionResourceBroker.lockClaims(
@@ -124,10 +125,28 @@ enum TaskExecutionResourceAdmissionPolicy {
             : .exclusive
     }
 
+    /// What a worktree task only reads and, with sandboxing Off, ASTRA watches
+    /// instead of locking: the source checkout its worktree replaced, the Git
+    /// directory the two share, and the workspace's own folder. Nothing
+    /// enforces that the run stays out of them, so
+    /// `TaskWorktreeSourceCheckoutWatch` compares the source checkout before
+    /// and after the run. It is a Git working tree; Git is the undo. Every
+    /// other shared claim still becomes exclusive when nothing enforces it.
+    static func watchedKeys(for task: AgentTask, sandboxEnforcement: ExecutionSandboxEnforcement) -> Set<String> {
+        guard sandboxEnforcement == .off else { return [] }
+        let replaced = TaskWorkspaceAccess(task: task).replacedSourceCheckoutPaths
+        guard !replaced.isEmpty else { return [] }
+        let own = task.workspace.map { [$0.primaryPath] } ?? []
+        return Set((replaced + own).map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath).standardizedFileURL.path }
+            + TaskExecutionResourceClaimResolver.worktreeGitMetadataKeys(for: task))
+    }
+
     /// A source checkout replaced by the task's worktree is left out of its
     /// claims because the sandbox keeps it read-only. With sandboxing Off
-    /// nothing does, so it is claimed as a writer again, serializing sibling
-    /// worktrees exactly as before the worktree replaced it.
+    /// nothing does, so it is claimed again, as a reader: sibling worktrees
+    /// run together, a task that writes that checkout still waits for them
+    /// and they for it, and so what `TaskWorktreeSourceCheckoutWatch` finds
+    /// changed there was not another ASTRA task's work.
     private static func unenforcedReadOnlyClaims(
         for task: AgentTask,
         existing: [TaskExecutionResourceClaim],
@@ -138,37 +157,50 @@ enum TaskExecutionResourceAdmissionPolicy {
         return TaskWorkspaceAccess(task: task).replacedSourceCheckoutPaths
             .map { URL(fileURLWithPath: $0).standardizedFileURL.path }
             .filter { !claimed.contains($0) }
-            .map { TaskExecutionResourceClaim(kind: .workspace, key: $0, access: .exclusive) }
+            .map { TaskExecutionResourceClaim(kind: .workspace, key: $0, access: .shared) }
     }
 
     /// With sandboxing Off nothing keeps a writer away from the Git directory
-    /// of the checkout containing its root, whether that root is the main
-    /// checkout, a folder inside it, or a linked worktree that submission
-    /// claimed only on Git intent. Every exclusive workspace root therefore
-    /// claims that directory exclusively, as a writable main checkout does, so
-    /// worktree creation and cleanup and sibling worktree tasks wait for it.
+    /// of the checkout containing its root. A root in the main checkout, or a
+    /// folder inside it, therefore claims that directory exclusively, as a
+    /// writable main checkout does, so worktree creation and cleanup and every
+    /// worktree task wait for it. A root in a linked worktree claims it
+    /// shared, as a prepared worktree does with sandboxing on: Git locks refs,
+    /// the index and config per operation, so sibling worktrees run together
+    /// while a writer of the main checkout still waits for them.
     private static func unenforcedGitMetadataClaims(
         existing: [TaskExecutionResourceClaim],
         sandboxEnforcement: ExecutionSandboxEnforcement
     ) -> [TaskExecutionResourceClaim] {
         guard sandboxEnforcement == .off else { return [] }
-        var seen = Set(existing.filter { $0.kind == .gitCommonDirectory }.map(\.key))
-        return existing.compactMap { claim in
-            guard claim.kind == .workspace, claim.access == .exclusive,
-                  let commonDirectory = GitCheckoutLayout.commonDirectory(for: claim.key) else { return nil }
+        // One task can hold both kinds of root in one repository: a linked
+        // worktree and a folder of the main checkout. The stronger need wins,
+        // whichever root comes first and whatever is claimed already.
+        var needed: [String: TaskExecutionResourceAccess] = [:]
+        for claim in existing where claim.kind == .workspace && claim.access == .exclusive {
+            guard let commonDirectory = GitCheckoutLayout.commonDirectory(for: claim.key) else { continue }
             let key = URL(fileURLWithPath: commonDirectory).standardizedFileURL.path
-            guard seen.insert(key).inserted else { return nil }
-            return TaskExecutionResourceClaim(kind: .gitCommonDirectory, key: key, access: .exclusive)
+            // A checkout that keeps its own Git directory elsewhere (a submodule,
+            // a separate Git directory) is a main checkout, not a linked worktree.
+            let linkedWorktree = GitCheckoutLayout.linkedWorktreeCommonDirectory(containing: claim.key) == commonDirectory
+            if !linkedWorktree { needed[key] = .exclusive } else if needed[key] == nil { needed[key] = .shared }
+        }
+        let held = existing.filter { $0.kind == .gitCommonDirectory }
+        return needed.sorted { $0.key < $1.key }.compactMap { key, access in
+            // The broker merges claims on one directory, and exclusive wins.
+            let covered = held.contains { $0.key == key && ($0.access == .exclusive || access == .shared) }
+            return covered ? nil : TaskExecutionResourceClaim(kind: .gitCommonDirectory, key: key, access: access)
         }
     }
 
     private static func effectiveClaims(
         _ claims: [TaskExecutionResourceClaim],
+        watched: Set<String> = [],
         sandboxEnforcement: ExecutionSandboxEnforcement
     ) -> [TaskExecutionResourceClaim] {
         guard sandboxEnforcement == .off else { return claims }
         return claims.map { claim in
-            guard claim.access == .shared,
+            guard claim.access == .shared, !watched.contains(claim.key),
                   claim.kind == .workspace || claim.kind == .gitCommonDirectory else {
                 return claim
             }

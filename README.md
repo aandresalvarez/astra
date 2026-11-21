@@ -507,8 +507,9 @@ git config core.hooksPath .githooks
 
 The pre-commit hook runs the architecture fitness suite and whitespace check.
 The pre-push hook adds focused runtime, persistence, and adapter regression
-suites. GitHub CI also requires `Focused Swift tests` and `Whitespace` checks on
-protected branches. Repository admins can apply the default `main` branch
+suites. GitHub CI also requires `Focused Swift tests`, `Full Swift test suite`,
+and `Whitespace` checks on protected branches; only PRs touching a
+`.github/CODEOWNERS` path also need an owner approval. Repository admins can apply the default `main` branch
 protection with:
 
 ```bash

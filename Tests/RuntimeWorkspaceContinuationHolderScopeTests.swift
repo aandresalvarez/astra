@@ -8,8 +8,10 @@ import ASTRAModels
 
 /// A finished task can hold more than the next request asks for: a task that
 /// worked in its own worktree holds that worktree and the shared repository.
-/// The decision to continue covers only what the request names.
-@Suite("Workspace continuation covers only what the request names", .serialized)
+/// A decision an earlier build saved for one request covers only what that
+/// request names. A decision made in "Review workspace" today ends the
+/// holder's whole reservation instead (`RuntimeWorkspaceReviewTests`).
+@Suite("A saved workspace decision covers only what the request names", .serialized)
 @MainActor
 struct RuntimeWorkspaceContinuationHolderScopeTests {
     private func claim(_ task: AgentTask, _ url: URL, _ access: TaskResourceAccessMode = .write,
@@ -56,9 +58,8 @@ struct RuntimeWorkspaceContinuationHolderScopeTests {
         let store = RuntimeExecutionOwner.store(in: h.context)
         #expect(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60, userRequest: request, resourceClaims: claims) == nil)
 
-        let proposal = try RuntimeWorkspaceContinuation.preview(task: task, request: request, context: h.context)
+        let proposal = try RuntimeWorkspaceLegacyDecision.save(task: task, request: request, context: h.context)
         #expect(proposal.sources.map(\.receipt) == [original])
-        try RuntimeWorkspaceContinuation.authorize(proposal, task: task, request: request, context: h.context, rememberWorkspace: true)
         do {
             let admission = try #require(try RuntimeWorkspaceContinuation.admission(task: task, request: request, previous: nil, context: h.context))
             #expect(!admission.excludedClaims.isEmpty)
@@ -73,21 +74,20 @@ struct RuntimeWorkspaceContinuationHolderScopeTests {
         #expect(try RuntimeResourceOwnership.claims(in: store, context: h.context).contains { $0.taskID == old.id && $0.resourceKey == worktree.path })
     }
 
-    @Test("A request that names the holder's private worktree is not covered by a decision that did not", arguments: [true, false])
-    func decisionDoesNotReachUnnamedFolder(remembered: Bool) throws {
+    @Test("A request that names the holder's private worktree is not covered by a decision that did not")
+    func decisionDoesNotReachUnnamedFolder() throws {
         let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
         let worktree = privateWorktree()
         let (old, _) = try holder(h) { [self] in [claim($0, worktree)] }
         let (task, request) = try next(h, after: old)
-        let proposal = try RuntimeWorkspaceContinuation.preview(task: task, request: request, context: h.context)
-        try RuntimeWorkspaceContinuation.authorize(proposal, task: task, request: request, context: h.context, rememberWorkspace: remembered)
+        try RuntimeWorkspaceLegacyDecision.save(task: task, request: request, context: h.context)
         let wider = TaskExecutionResourceAdmissionPolicy.lockClaims(for: request, task: task, runMode: "initial", sandboxEnforcement: .off)
             + [claim(task, worktree, request: request.id)]
         #expect(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60, userRequest: request, resourceClaims: wider) == nil)
     }
 
-    @Test("A holder claim inside a requested folder is part of the decision; a broader or differently held one refuses",
-          arguments: ["inside", "broader", "readInside", "otherKind"])
+    @Test("A holder claim inside a requested folder is part of a saved decision; a broader or differently held one is not covered",
+          arguments: ["inside", "broader", "readInside"])
     func overlappingClaims(shape: String) throws {
         let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
         let inner = h.workspaceURL.appendingPathComponent(".git")
@@ -95,18 +95,15 @@ struct RuntimeWorkspaceContinuationHolderScopeTests {
             switch shape {
             case "inside": return [claim(task, inner)]
             case "broader": return [claim(task, h.rootURL.deletingLastPathComponent())]
-            case "readInside": return [claim(task, inner, .readOnly)]
-            default:
-                return [.init(taskID: task.id, resourceKey: "shared-browser", accessMode: .write, runMode: "previous", resourceKind: .browserSession)]
+            default: return [claim(task, inner, .readOnly)]
             }
         }
         let (task, request) = try next(h, after: old)
+        try RuntimeWorkspaceLegacyDecision.save(task: task, request: request, context: h.context)
         guard shape == "inside" else {
-            #expect(throws: (any Error).self) { try RuntimeWorkspaceContinuation.preview(task: task, request: request, context: h.context) }
+            #expect(RuntimeExecutionOwner.acquire(task: task, context: h.context, maxRunSeconds: 60, userRequest: request) == nil)
             return
         }
-        let proposal = try RuntimeWorkspaceContinuation.preview(task: task, request: request, context: h.context)
-        try RuntimeWorkspaceContinuation.authorize(proposal, task: task, request: request, context: h.context, rememberWorkspace: true)
         do {
             let admission = try #require(try RuntimeWorkspaceContinuation.admission(task: task, request: request, previous: nil, context: h.context))
             #expect(admission.excludedClaims.contains { $0.resourceKey == inner.path })

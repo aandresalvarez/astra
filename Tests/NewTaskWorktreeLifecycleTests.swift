@@ -124,7 +124,39 @@ struct NewTaskWorktreeLifecycleTests {
         #expect(!fixture.resourceQueue.canAcquireResourceLocks(mainWriter))
     }
 
-    @Test("With sandboxing off, linked-worktree and repository-subfolder writers claim the Git directory")
+    @Test("A prepared worktree task holds the same claims with sandboxing Off as with it on, and two of them run together")
+    func preparedWorktreeClaimsDoNotChangeWithSandboxOff() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let repository = try fixture.repository("App")
+        let container = try Fixture.container()
+        let context = container.mainContext
+        let first = try await draft(repository: repository, context: context, fixture: fixture)
+        func shape(_ claims: [TaskResourceLockClaim]) -> Set<String> {
+            Set(claims.map { "\($0.resourceKind.rawValue)|\($0.resourceKey)|\($0.accessMode.rawValue)" })
+        }
+        let enforced = TaskExecutionResourceAdmissionPolicy.lockClaims(for: nil, task: first, runMode: "test")
+        let unenforced = TaskExecutionResourceAdmissionPolicy.lockClaims(for: nil, task: first, runMode: "test", sandboxEnforcement: .off)
+        // What the task only reads is watched instead of locked: nothing it holds becomes a writer's claim.
+        #expect(shape(unenforced) == shape(enforced))
+        #expect(enforced.contains { $0.accessMode == .readOnly } && enforced.contains { $0.accessMode == .write })
+        #expect(!TaskExecutionResourceAdmissionPolicy.watchedKeys(for: first, sandboxEnforcement: .off).isEmpty)
+
+        // A second task with the same claims on what it reads, and a worktree of its own.
+        let held = try #require(fixture.resourceQueue.acquireResourceLocksIfAvailable(unenforced, task: nil))
+        defer { fixture.resourceQueue.releaseResourceLocks(held, task: nil) }
+        let sibling = unenforced.filter { $0.accessMode == .readOnly }.map {
+            TaskExecutionResourceClaim(kind: $0.resourceKind, key: $0.resourceKey, access: .shared)
+        }
+        #expect(fixture.resourceQueue.canAcquireResourceLocks(TaskExecutionResourceBroker.lockClaims(
+            for: sibling, taskID: UUID(), requestID: UUID(), runMode: "test")))
+        // A task that writes the source checkout itself still waits.
+        #expect(!fixture.resourceQueue.canAcquireResourceLocks(TaskExecutionResourceBroker.lockClaims(
+            for: [TaskExecutionResourceClaim(kind: .workspace, key: repository.path, access: .exclusive)],
+            taskID: UUID(), requestID: UUID(), runMode: "test")))
+    }
+
+    @Test("With sandboxing off, a writer inside the main checkout holds the Git directory and a linked worktree shares it")
     func sandboxOffWritersClaimGitDirectory() async throws {
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
@@ -150,15 +182,25 @@ struct NewTaskWorktreeLifecycleTests {
             let unenforced = TaskExecutionResourceAdmissionPolicy.lockClaims(
                 for: nil, task: task, runMode: "test", sandboxEnforcement: .off
             )
+            // A writer inside the main checkout holds the directory exclusively.
+            // A linked worktree holds it as a reader, as a prepared one does with
+            // sandboxing on: Git locks per operation, so siblings share it.
+            let linkedWorktree = task === linkedTask
             #expect(unenforced.contains {
-                $0.resourceKind == .gitCommonDirectory && $0.resourceKey == metadata && $0.accessMode == .write
+                $0.resourceKind == .gitCommonDirectory && $0.resourceKey == metadata
+                    && $0.accessMode == (linkedWorktree ? .readOnly : .write)
             })
-            // The lifecycle lease and a prepared sibling's shared claim both wait for it.
             let held = try #require(fixture.resourceQueue.acquireResourceLocksIfAvailable(unenforced, task: nil))
-            #expect(!fixture.resourceQueue.canAcquireResourceLocks(TaskExecutionResourceBroker.lockClaims(
-                for: [TaskExecutionResourceClaim(kind: .gitCommonDirectory, key: metadata, access: .shared)],
-                taskID: UUID(), requestID: UUID(), runMode: "test"
-            )))
+            func canTake(_ access: TaskExecutionResourceAccess) -> Bool {
+                fixture.resourceQueue.canAcquireResourceLocks(TaskExecutionResourceBroker.lockClaims(
+                    for: [TaskExecutionResourceClaim(kind: .gitCommonDirectory, key: metadata, access: access)],
+                    taskID: UUID(), requestID: UUID(), runMode: "test"
+                ))
+            }
+            // A prepared sibling's shared claim waits only for the exclusive holder;
+            // the lifecycle lease, which is exclusive, waits for both.
+            #expect(canTake(.shared) == linkedWorktree)
+            #expect(!canTake(.exclusive))
             fixture.resourceQueue.releaseResourceLocks(held, task: nil)
         }
     }
