@@ -129,7 +129,8 @@ struct RuntimeReservationReleaseTests {
             saved.providerProcess = try Self.alive
             saved.stopProof = .init(executionID: saved.executionID, process: try Self.alive, reaped: true, processGroupEmpty: true,
                 toolsStopped: false, remoteWorkExcluded: true, capturedAt: Date().addingTimeInterval(-20))
-            expected = [.providerAlive(pid: try Self.alive.pid)]
+            // Its exit cannot be asked yet, so the rest is not known.
+            expected = [.providerAlive(pid: try Self.alive.pid), .unasked]
         case "container":
             var environment = WorkspaceExecutionEnvironment.host; environment.kind = .dockerImage
             run.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(environment)
@@ -156,7 +157,7 @@ struct RuntimeReservationReleaseTests {
         }
         try save(saved, h); try h.context.save()
         #expect(try verdict(saved, task, h, boot: boot, now: now) == .held(expected))
-        #expect(expected.allSatisfy { $0.isRunning } == ["running", "providerAlive", "survivorAlive", "newSurvivor"].contains(fault))
+        #expect(expected.filter { $0 != .unasked }.allSatisfy { $0.isRunning } == ["running", "providerAlive", "survivorAlive", "newSurvivor"].contains(fault))
         // The driver changes nothing while a fact holds.
         let store = RuntimeExecutionOwner.store(in: h.context)
         try RuntimeReservationRelease.reconcile(in: store, context: h.context, bootedAt: boot) { launch in

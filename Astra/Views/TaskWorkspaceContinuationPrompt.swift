@@ -64,6 +64,8 @@ enum TaskWorkspaceContinuationPrompt {
                 AstraExternalRouteStore.shared.submit(AstraExternalRoute(destination: .task(holder)))
             }
             guard choice == "Start now" else { return }
+            // The setting can change while the dialog is open, and what it showed was worked out under the old one.
+            guard queue.sandboxEnforcementProvider() == enforcement else { throw RuntimeExecutionOwnerStore.Failure.busy }
             decided = true
             // A release that was written before a later save failed is still a
             // release: ownership is read again and the request woken whether
