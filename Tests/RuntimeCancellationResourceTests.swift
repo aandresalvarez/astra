@@ -47,9 +47,10 @@ struct RuntimeCancellationResourceTests {
         #expect(queue.activeResourceLocks == record.resourceClaims)
         let contender = TaskResourceLockClaim(taskID: UUID(), resourceKey: h.workspaceURL.path, accessMode: .write, runMode: "next")
         #expect(!queue.canAcquireResourceLocks([contender]))
-        // Nothing of it is running and nothing shows its commands ended: that waits for a person.
+        // Nothing of it is running and nothing shows its commands ended, and the line says so.
+        // Asked without the request that waits, it does not say who should act.
         let banner = queue.resourceBlockerSummary([contender], modelContext: reopened.mainContext)
-        #expect(banner.hasPrefix(RuntimeWorkspaceReviewWording.decisionPrefix) && banner.contains("cannot confirm its commands ended"))
+        #expect(!banner.hasPrefix(RuntimeWorkspaceReviewWording.decisionPrefix) && banner.contains("cannot confirm its commands ended"))
     }
 
     @Test("A live resource owner reads as at work, cancelled or not, and never as something to decide")

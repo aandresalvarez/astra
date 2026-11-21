@@ -235,13 +235,13 @@ extension TaskQueue {
         guard !conflicts.isEmpty, !folders.isEmpty else {
             return TaskExecutionResourceBroker.blockerSummary(requested: claims, active: activeResourceLocks, holderTitle: title)
         }
-        // Every task that holds a folder this request names, once each, the
-        // first conflict first. One that is still at work is the one to name:
+        // Every lock on a folder this request names, once each, the first
+        // conflict first. Copies of one task can hold different folders. One that is still at work is the one to name:
         // nothing can be decided, here or in "Review workspace", until it ends.
         var first: String?
-        var asked: Set<UUID> = []
+        var asked: Set<TaskResourceLockClaim> = []
         for conflict in conflicts where !RuntimeWorkspaceReviewWording.folders([conflict.requested]).isEmpty
-            && asked.insert(conflict.holder.taskID).inserted {
+            && asked.insert(conflict.holder).inserted {
             let answer = waitingBanner(for: conflict, modelContext: modelContext, request: request, task: task, title: title)
             if answer.active { return answer.text }
             first = first ?? answer.text
@@ -256,10 +256,11 @@ extension TaskQueue {
                                title: (UUID) -> String?) -> (text: String, active: Bool) {
         let folders = RuntimeWorkspaceReviewWording.folders([conflict.requested])
         let overlap = TaskExecutionResourceBroker.containment(holder: conflict.holder, requested: conflict.requested)
-        // "Review workspace" decides about other tasks. A task that waits for
-        // its own earlier run is told the fact, not told to act.
+        // "Review workspace" decides about other tasks, for a request a person
+        // wrote. A task that waits for its own earlier run, and a caller that
+        // does not say which request waits, are told the fact, not told to act.
         let decidable = conflict.holder.taskID != task?.id
-            && (request.flatMap { waiting in task.map { RuntimeWorkspaceReview.qualifies(waiting, task: $0, context: modelContext) } } ?? true)
+            && (request.flatMap { waiting in task.map { RuntimeWorkspaceReview.qualifies(waiting, task: $0, context: modelContext) } } ?? false)
         // Kept by the lock itself, so a kept answer reads no journal.
         let key = WaitingBannerKey(holder: conflict.holder, folders: folders, decidable: decidable, overlap: overlap)
         if let kept = waitingBanners[key] { return kept }
@@ -268,12 +269,16 @@ extension TaskQueue {
             return (text, active)
         }
         // A lock a working task holds in this process has no saved record to ask.
-        let records = persistedResourceLocks.contains(conflict.holder)
-            ? ((try? resourceOwnershipStore?.records())?.filter { $0.resourceClaims?.contains(conflict.holder) == true } ?? []) : []
-        guard !records.isEmpty, let store = resourceOwnershipStore else {
+        guard persistedResourceLocks.contains(conflict.holder) else {
             return keep(RuntimeWorkspaceReviewWording.banner(holder: title(conflict.holder.taskID), folders: folders,
                 blockers: [.taskWorking], overlap: overlap), active: true)
         }
+        // A saved lock whose record is missing or cannot be read is not a task
+        // at work: nobody can be waited for, and nothing can be decided.
+        guard let store = resourceOwnershipStore, let saved = try? store.records() else {
+            return keep(RuntimeWorkspaceReviewWording.unreadableBanner(folders: folders), active: false)
+        }
+        let records = saved.filter { $0.resourceClaims?.contains(conflict.holder) == true }
         // Copies of one task can hold the same lock. Each is asked: one that is
         // at work is the one to name, and otherwise the first.
         var chosen: (record: RuntimeExecutionOwnerRecord, owner: AgentTask, blockers: [RuntimeReservationRelease.Blocker])?

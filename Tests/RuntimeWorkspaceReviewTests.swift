@@ -820,6 +820,147 @@ struct RuntimeWorkspaceReviewTests {
         #expect(banner() == text)
     }
 
+    @Test("The banner does not promise a start that a leftover process stopping would not bring")
+    func bannerWithMoreThanALeftoverProcess() throws {
+        let me = Survivor(process: try Self.alive, name: "python3")
+        func banner(_ blockers: [RuntimeReservationRelease.Blocker], decidable: Bool = true) -> String {
+            RuntimeWorkspaceReviewWording.banner(holder: "Export report", folders: ["reports"], blockers: blockers, decidable: decidable)
+        }
+        let left = "“Export report” ended but left python3 (process \(me.process.pid)) running in reports"
+        // Alone, the process stopping frees the folder.
+        #expect(banner([.survivors([me])]) == left + ". This starts when that stops, or you can start it now.")
+        // With anything else unanswered it would not, and the person is told that it waits for them.
+        for other in [RuntimeReservationRelease.Blocker.lostRun, .sshJobs(["11111111-aaaa"]), .container, .processTableUnreadable] {
+            #expect(banner([.survivors([me]), other]) == "Waiting for you: " + left + ", and ASTRA cannot confirm the rest of its work ended.")
+            #expect(banner([other, .survivors([me])], decidable: false) == left + ", and ASTRA cannot confirm the rest of its work ended.")
+        }
+    }
+
+    @Test("Copies of one task that hold different folders are each asked: the one at work is named", arguments: [0, 1])
+    func bannerForCopiesHoldingDifferentFolders(working: Int) throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let data = FileManager.default.temporaryDirectory.appendingPathComponent("astra-review-\(UUID().uuidString)/dataset")
+        let (a, first) = try holder(h, title: "Export report")
+        let (copy, held) = try holder(h, title: "Imported copy")
+        let store = RuntimeExecutionOwner.store(in: h.context)
+        do {
+            let lease = try store.acquire(taskID: copy.id, taskOwnerID: copy.persistentModelID)
+            try FileManager.default.removeItem(at: lease.recordURL)
+        }
+        copy.id = a.id; try h.context.save()
+        // The copy holds another folder under the same task ID.
+        let moved = RuntimeExecutionOwnerRecord(taskID: a.id, taskOwnerID: copy.persistentModelID, ownerID: held.ownerID,
+            executionID: held.executionID, runID: held.runID, appProcess: held.appProcess, providerProcess: held.providerProcess,
+            runtime: held.runtime, sessionID: nil, state: .finished, limits: held.limits, stopProof: held.stopProof,
+            settlementInProgress: false, settlementLocalWorkStopped: true, settlementToolsStopped: true,
+            resourceClaims: [.init(taskID: a.id, resourceKey: data.path, accessMode: .write, runMode: "previous")],
+            providerLaunchCount: 1, resourcesReleased: false, updatedAt: held.updatedAt)
+        try save(moved, h)
+        _ = first
+        [a, copy][working].runs.first?.status = .running; try h.context.save()
+        let (b, request) = try next(h, after: a)
+        try claims(request, TaskExecutionResourceClaimResolver.admissionClaims(for: request, task: b)
+            + [TaskExecutionResourceClaim(kind: .workspace, key: data.path, access: .exclusive)], h)
+        let queue = TaskQueue(poolSize: 0)
+        queue.refreshResourceOwnership(in: h.context)
+        let wanted = queue.resourceLockClaims(for: request, task: b, runMode: "request", sandboxEnforcement: .off)
+        let text = queue.resourceBlockerSummary(wanted, modelContext: h.context, request: request, task: b)
+        #expect(text.hasPrefix("Waiting for “\([a, copy][working].title)” to finish in "), "\(text)")
+        #expect(try #require(try preview(h, b, request)).canStart == false)
+    }
+
+    @Test("A saved lock whose record is gone is reported as unreadable, not as a task still at work")
+    func bannerForALockWithNoRecord() throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (a, original) = try holder(h)
+        // Only the task's history still says what it reserved.
+        h.context.insert(TaskEvent(task: a, eventType: TaskEventTypes.System.runtimeExecutionOwnership,
+            payload: TaskEvent.payloadString(original, fallback: "{}"), run: a.runs.first))
+        let store = RuntimeExecutionOwner.store(in: h.context)
+        do {
+            let lease = try store.acquire(taskID: a.id, taskOwnerID: a.persistentModelID)
+            try FileManager.default.removeItem(at: lease.recordURL)
+        }
+        try h.context.save()
+        let (b, request) = try next(h, after: a)
+        let queue = TaskQueue(poolSize: 0)
+        queue.refreshResourceOwnership(in: h.context)
+        let wanted = queue.resourceLockClaims(for: request, task: b, runMode: "request", sandboxEnforcement: .off)
+        try #require(!TaskExecutionResourceBroker.canAcquire(wanted, active: queue.activeResourceLocks))
+        let conflict = try #require(TaskExecutionResourceBroker.firstConflict(requested: wanted, active: queue.activeResourceLocks))
+        let place = RuntimeWorkspaceReviewWording.folders([conflict.requested])
+        let text = queue.resourceBlockerSummary(wanted, modelContext: h.context, request: request, task: b)
+        #expect(text == RuntimeWorkspaceReviewWording.unreadableBanner(folders: place))
+        #expect(!text.contains("to finish"))
+    }
+
+    @Test("The dialog for a holder at work promises a start only when nothing else needs a decision")
+    func dialogWithAHolderAtWorkAndAnotherToDecide() throws {
+        let record = RuntimeExecutionOwnerRecord(taskID: UUID(), ownerID: UUID(), executionID: UUID(), runID: nil,
+            appProcess: Self.dead, providerProcess: Self.dead, runtime: "claude_code", sessionID: nil, state: .finished,
+            limits: .init(tokenCeiling: 1, turnsRemaining: 1, secondsRemaining: 1, tokensSpent: 0, costSpent: 0), updatedAt: Date())
+        let folder = [TaskResourceLockClaim(taskID: record.taskID, resourceKey: "/tmp/work/reports", accessMode: .write, runMode: "previous")]
+        func holder(_ title: String, _ blockers: [RuntimeReservationRelease.Blocker]) -> RuntimeWorkspaceReview.Holder {
+            .init(taskID: UUID(), title: title, receipt: record, blockers: blockers, claims: folder, otherClaims: [])
+        }
+        let alone = RuntimeWorkspaceReviewWording.dialog(.init(requestID: UUID(), holders: [holder("Export report", [.taskWorking])]))
+        #expect(!alone.canStart && alone.message.contains("“Export report” is still working. This request starts when that ends."))
+        // When the working task ends, the other holder still needs the person.
+        let mixed = RuntimeWorkspaceReviewWording.dialog(.init(requestID: UUID(), holders: [
+            holder("Export report", [.taskWorking]), holder("Clean data", [.lostRun])]))
+        #expect(!mixed.canStart && !mixed.message.contains("This request starts when that ends"))
+        #expect(mixed.message.contains("“Export report” is still working. When that ends, choose Review workspace again: something else here still needs your decision."))
+    }
+
+    @Test("A caller that does not say which request waits is told the fact, not that it waits for a person")
+    func bannerWithoutARequest() throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (a, _) = try holder(h)
+        let (b, request) = try next(h, after: a)
+        let queue = TaskQueue(poolSize: 0)
+        queue.refreshResourceOwnership(in: h.context)
+        let wanted = queue.resourceLockClaims(for: request, task: b, runMode: "request", sandboxEnforcement: .off)
+        // The saved waiting event is written without the request, which may be a schedule's.
+        let saved = queue.resourceBlockerSummary(wanted, modelContext: h.context)
+        #expect(saved.hasPrefix("ASTRA lost track of a run of “Export report”") && !saved.contains("Waiting for you"))
+        // The task's own banner knows who waits, and says who can act.
+        #expect(queue.resourceBlockerSummary(wanted, modelContext: h.context, request: request, task: b).hasPrefix("Waiting for you: ASTRA lost track"))
+        // The dialog reads the sandbox setting again at the click: what it showed was worked out under the old one.
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let prompt = try String(contentsOf: root.appendingPathComponent("Astra/Views/TaskWorkspaceContinuationPrompt.swift"), encoding: .utf8)
+        #expect(prompt.contains("guard queue.sandboxEnforcementProvider() == enforcement else { throw RuntimeExecutionOwnerStore.Failure.busy }"))
+    }
+
+    @Test("A receipt from before owners were recorded belongs to the copy whose history recorded it")
+    func oldReceiptAmongCopies() throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (a, original) = try holder(h, title: "Export report")
+        let (copy, _) = try holder(h, title: "Imported copy")
+        let store = RuntimeExecutionOwner.store(in: h.context)
+        // Both scoped records go. The first task's is saved as an old build wrote it, with no owner.
+        for task in [a, copy] {
+            let lease = try store.acquire(taskID: task.id, taskOwnerID: task.persistentModelID)
+            try FileManager.default.removeItem(at: lease.recordURL)
+        }
+        let old = RuntimeExecutionOwnerRecord(taskID: a.id, ownerID: original.ownerID, executionID: original.executionID,
+            runID: original.runID, appProcess: original.appProcess, providerProcess: original.providerProcess, runtime: original.runtime,
+            sessionID: nil, state: .finished, limits: original.limits, stopProof: original.stopProof,
+            settlementInProgress: false, settlementLocalWorkStopped: true, settlementToolsStopped: true,
+            resourceClaims: original.resourceClaims, providerLaunchCount: 1, resourcesReleased: false, updatedAt: original.updatedAt)
+        do { let lease = try store.acquire(taskID: a.id); try lease.save(old) }
+        #expect(old.taskOwnerID == nil)
+        // One row alone is its task.
+        #expect(try RuntimeReservationRelease.owner(of: old, context: h.context)?.persistentModelID == a.persistentModelID)
+        // A copy now shares the ID, and neither history says whose run it was: it cannot be told.
+        copy.id = a.id; try h.context.save()
+        #expect(try RuntimeReservationRelease.owner(of: old, context: h.context) == nil)
+        // Only the first task's history recorded this execution: it is that task's.
+        h.context.insert(TaskEvent(task: a, eventType: TaskEventTypes.System.runtimeExecutionOwnership,
+            payload: TaskEvent.payloadString(old, fallback: "{}"), run: a.runs.first))
+        try h.context.save()
+        #expect(try RuntimeReservationRelease.owner(of: old, context: h.context)?.persistentModelID == a.persistentModelID)
+    }
+
     @Test("The banner on a waiting task names the holder, the folder and the one thing in the way")
     func bannerWording() throws {
         let me = Survivor(process: try Self.alive, name: "python3")

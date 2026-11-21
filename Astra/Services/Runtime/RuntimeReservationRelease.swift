@@ -275,8 +275,12 @@ enum RuntimeReservationRelease {
     static func owner(of record: RuntimeExecutionOwnerRecord, context: ModelContext) throws -> AgentTask? {
         let taskID = record.taskID
         let tasks = try context.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID }))
-        let matching = tasks.filter { record.taskOwnerID == nil || $0.persistentModelID == record.taskOwnerID }
-        return matching.count == 1 ? matching.first : nil
+        if let owner = record.taskOwnerID { return tasks.first { $0.persistentModelID == owner } }
+        // A receipt from before owners were recorded. One row is its task.
+        // Among copies, it is the one whose history recorded this execution.
+        guard tasks.count > 1 else { return tasks.first }
+        guard let owner = try? RuntimeTaskOwnerJournal.legacyOwner(record, context: context) else { return nil }
+        return tasks.first { $0.persistentModelID == owner }
     }
 
     /// Throws `busy` while a worker of that task holds it. Copies of one

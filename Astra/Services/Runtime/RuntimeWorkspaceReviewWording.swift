@@ -138,6 +138,11 @@ enum RuntimeWorkspaceReviewWording {
         if !left.isEmpty {
             var processes = left.prefix(3).map { "\($0.name) (process \($0.process.pid))" }
             if left.count > 3 { processes.append("\(left.count - 3) more") }
+            // That process stopping is enough only when it is all that is left.
+            guard blockers.allSatisfy({ if case .survivors = $0 { true } else { false } }) else {
+                return "\(you)\(name) ended but left \(list(processes)) running in \(place), "
+                    + "and ASTRA cannot confirm the rest of its work ended.\(tail)"
+            }
             return "\(name) ended but left \(list(processes)) running in \(place). "
                 + "This starts when \(left.count == 1 ? "that stops" : "those stop")\(decidable ? ", or you can start it now" : "").\(tail)"
         }
@@ -171,8 +176,11 @@ enum RuntimeWorkspaceReviewWording {
                 }
                 return "ASTRA is still closing the last run of \(name)."
             }
+            // It starts by itself only when nothing else here needs a decision.
+            let after = active.count == review.holders.count ? "This request starts when that ends."
+                : "When that ends, choose Review workspace again: something else here still needs your decision."
             return Dialog(title: "Something is still running in \(place)",
-                message: lines.joined(separator: " ") + " This request starts when that ends. Open the task to see it or stop it.",
+                message: lines.joined(separator: " ") + " \(after) Open the task to see it or stop it.",
                 canStart: false)
         }
         var paragraphs: [String] = []
