@@ -19,6 +19,8 @@ import ASTRAPersistence
 enum TaskWorktreeSourceCheckoutWatch {
     struct Snapshot: Equatable, Sendable {
         let checkout: String
+        /// The root of the checkout that contains it. Git names files from there.
+        let root: String
         /// Empty when Git could not say.
         let head: String
         let status: Set<String>
@@ -51,29 +53,60 @@ enum TaskWorktreeSourceCheckoutWatch {
     static func capture(for task: AgentTask, sandboxEnforcement: ExecutionSandboxEnforcement?) async -> [Snapshot] {
         guard sandboxEnforcement == .off else { return [] }
         var snapshots: [Snapshot] = []
-        for checkout in TaskWorkspaceAccess(task: task).replacedSourceCheckoutPaths {
+        for checkout in outermost(TaskWorkspaceAccess(task: task).replacedSourceCheckoutPaths) {
             if let snapshot = await snapshot(of: checkout) { snapshots.append(snapshot) }
         }
         return snapshots
     }
 
+    /// A folder inside another watched folder is already covered by it, and
+    /// would report the same files a second time.
+    static func outermost(_ folders: [String]) -> [String] {
+        folders.filter { folder in
+            !folders.contains { $0 != folder && folder.hasPrefix($0.hasSuffix("/") ? $0 : $0 + "/") }
+        }
+    }
+
+    /// Nil when the folder is not in a checkout or Git could not answer: a
+    /// failed question is not a clean checkout, and is never compared.
     static func snapshot(of checkout: String) async -> Snapshot? {
-        guard GitCheckoutLayout.worktreeRoot(containing: checkout) != nil else { return nil }
-        let status = await AgentFileChangeDetector.gitStatusSnapshot(workspacePath: checkout)
+        guard let root = GitCheckoutLayout.worktreeRoot(containing: checkout),
+              let status = await status(of: checkout) else { return nil }
         let head = await head(of: checkout)
-        let dirtyContent = await BlockingWork.run { content(of: status, in: checkout) }
-        return Snapshot(checkout: checkout, head: head, status: status, dirtyContent: dirtyContent)
+        let dirtyContent = await BlockingWork.run { content(of: status, under: root) }
+        return Snapshot(checkout: checkout, root: root, head: head, status: status, dirtyContent: dirtyContent)
+    }
+
+    /// `git status` for the watched folder only. `-z` gives each name as it
+    /// is on disk, neither quoted nor escaped, so the lines keep the usual
+    /// two status letters, a space and the name from the checkout's root.
+    private static func status(of checkout: String) async -> Set<String>? {
+        guard let output = await git(["status", "--porcelain", "-z", "--", "."], in: checkout) else { return nil }
+        var lines: Set<String> = []
+        var isOrigin = false
+        for entry in String(decoding: output, as: UTF8.self).split(separator: "\0") {
+            // A rename or a copy is followed by the name it came from.
+            if isOrigin { isOrigin = false; continue }
+            lines.insert(String(entry))
+            isOrigin = entry.prefix(2).contains { $0 == "R" || $0 == "C" }
+        }
+        return lines
+    }
+
+    /// The file a status line names.
+    private static func path(of line: String, under root: String) -> String {
+        (root as NSString).appendingPathComponent(String(line.dropFirst(3)))
     }
 
     /// A deleted file and a folder Git lists as untracked have no entry: they
     /// are compared by their status line alone, so a change inside such a
     /// folder is not seen. A file over the detector's size limit is compared
     /// by size and time.
-    private static func content(of status: Set<String>, in checkout: String) -> [String: AgentFileChangeDetector.FileFingerprint] {
+    private static func content(of status: Set<String>, under root: String) -> [String: AgentFileChangeDetector.FileFingerprint] {
         var content: [String: AgentFileChangeDetector.FileFingerprint] = [:]
         for line in status {
-            guard let path = AgentFileChangeDetector.absolutePaths(fromGitStatus: [line], workspacePath: checkout).first else { continue }
-            content[line] = AgentFileChangeDetector.fileFingerprints(for: [path], workspacePath: checkout)[path]
+            let path = path(of: line, under: root)
+            content[line] = AgentFileChangeDetector.fileFingerprints(for: [path], workspacePath: root)[path]
         }
         return content
     }
@@ -97,10 +130,9 @@ enum TaskWorktreeSourceCheckoutWatch {
                 return differs(was, isNow)
             }.sorted()
             // A path that only changed its status code is already in `appeared`.
-            let stillNamed = AgentFileChangeDetector.absolutePaths(fromGitStatus: now.status, workspacePath: earlier.checkout)
-            let disappeared = earlier.status.subtracting(now.status).filter { line in
-                AgentFileChangeDetector.absolutePaths(fromGitStatus: [line], workspacePath: earlier.checkout).isDisjoint(with: stillNamed)
-            }.sorted()
+            let stillNamed = Set(now.status.map { path(of: $0, under: now.root) })
+            let disappeared = earlier.status.subtracting(now.status)
+                .filter { !stillNamed.contains(path(of: $0, under: earlier.root)) }.sorted()
             let headMoved = !earlier.head.isEmpty && !now.head.isEmpty && earlier.head != now.head
             guard headMoved || !appeared.isEmpty || !rewritten.isEmpty || !disappeared.isEmpty else { continue }
             let limit = Change.reportLimit
@@ -156,23 +188,29 @@ enum TaskWorktreeSourceCheckoutWatch {
             + ". This run was expected to change only its worktree. ASTRA reverted nothing; review \(change.checkout) with Git."
     }
 
-    /// `git rev-parse HEAD`, waited on by a dispatch worker like the status
-    /// snapshot beside it, never by the main actor.
     private static func head(of checkout: String) async -> String {
+        await git(["rev-parse", "HEAD"], in: checkout)
+            .map { String(decoding: $0, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""
+    }
+
+    /// What Git prints for one question, waited on by a dispatch worker,
+    /// never by the main actor. Nil when Git could not run or reported failure.
+    private static func git(_ arguments: [String], in checkout: String) async -> Data? {
         await BlockingWork.run {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = ["git", "-C", checkout, "rev-parse", "HEAD"]
+            process.arguments = ["git", "-C", checkout] + arguments
             let pipe = Pipe()
             process.standardOutput = pipe
             process.standardError = FileHandle.nullDevice
             do {
                 try process.run()
+                // Drain while Git runs. Waiting first deadlocks when the
+                // output fills the pipe on a checkout with many changed files.
                 let output = pipe.fileHandleForReading.readDataToEndOfFile()
                 process.waitUntilExit()
-                guard process.terminationStatus == 0 else { return "" }
-                return String(decoding: output, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            } catch { return "" }
+                return process.terminationStatus == 0 ? output : nil
+            } catch { return nil }
         }
     }
 }

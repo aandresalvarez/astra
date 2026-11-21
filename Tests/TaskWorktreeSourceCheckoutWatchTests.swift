@@ -106,6 +106,62 @@ struct TaskWorktreeSourceCheckoutWatchTests {
         #expect(staged.appeared == ["A  keep.txt"] && staged.disappeared == [" M tracked.txt", "?? notes.txt"])
     }
 
+    @Test("A watched subfolder is read from its checkout's root, and only that folder is watched")
+    func subfolderIsWatchedFromTheRoot() async throws {
+        let repo = try repository(); defer { try? FileManager.default.removeItem(at: repo) }
+        let sources = repo.appendingPathComponent("Sources", isDirectory: true)
+        try FileManager.default.createDirectory(at: sources, withIntermediateDirectories: true)
+        try "one\n".write(to: sources.appendingPathComponent("main.txt"), atomically: true, encoding: .utf8)
+        try commit("sources", in: repo)
+        try "mine\n".write(to: sources.appendingPathComponent("main.txt"), atomically: true, encoding: .utf8)
+        let before = try #require(await TaskWorktreeSourceCheckoutWatch.snapshot(of: sources.path))
+        #expect(before.status == [" M Sources/main.txt"] && before.root.hasSuffix(repo.lastPathComponent))
+        // Git names the file from the root, and that is where it is read.
+        try "theirs\n".write(to: sources.appendingPathComponent("main.txt"), atomically: true, encoding: .utf8)
+        // A file outside the watched folder is somebody else's to watch.
+        try "elsewhere\n".write(to: repo.appendingPathComponent("outside.txt"), atomically: true, encoding: .utf8)
+        let change = try #require(await TaskWorktreeSourceCheckoutWatch.changes(since: [before]).first)
+        #expect(change.rewritten == [" M Sources/main.txt"] && change.appeared.isEmpty && change.disappeared.isEmpty)
+        // A folder inside another watched folder is not asked about twice.
+        #expect(TaskWorktreeSourceCheckoutWatch.outermost([sources.path, repo.path, "/other/repo"]) == [repo.path, "/other/repo"])
+        #expect(TaskWorktreeSourceCheckoutWatch.outermost([repo.path + "-side", repo.path]) == [repo.path + "-side", repo.path])
+    }
+
+    @Test("A question Git cannot answer is not a clean checkout: nothing is reported as restored or new")
+    func failedStatusIsNotCompared() async throws {
+        let repo = try repository(); defer { try? FileManager.default.removeItem(at: repo) }
+        try "mine\n".write(to: repo.appendingPathComponent("tracked.txt"), atomically: true, encoding: .utf8)
+        try "note\n".write(to: repo.appendingPathComponent("notes.txt"), atomically: true, encoding: .utf8)
+        let before = try #require(await TaskWorktreeSourceCheckoutWatch.snapshot(of: repo.path))
+        #expect(before.status == [" M tracked.txt", "?? notes.txt"])
+        // The checkout is still there, and Git can no longer read its index.
+        let index = repo.appendingPathComponent(".git/index")
+        let good = try Data(contentsOf: index)
+        try Data("not an index".utf8).write(to: index)
+        #expect(await TaskWorktreeSourceCheckoutWatch.snapshot(of: repo.path) == nil)
+        #expect(await TaskWorktreeSourceCheckoutWatch.changes(since: [before]).isEmpty)
+        // Once it answers again, what was already there is still not a change.
+        try good.write(to: index)
+        #expect(await TaskWorktreeSourceCheckoutWatch.changes(since: [before]).isEmpty)
+    }
+
+    @Test("A name Git would quote is read as it is on disk, and a rename is one entry")
+    func namesAreReadAsOnDisk() async throws {
+        let repo = try repository(); defer { try? FileManager.default.removeItem(at: repo) }
+        let names = ["café.txt", "we \"quote\".txt", "tab\there.txt", "a -> b.txt"]
+        for name in names { try "mine\n".write(to: repo.appendingPathComponent(name), atomically: true, encoding: .utf8) }
+        let before = try #require(await TaskWorktreeSourceCheckoutWatch.snapshot(of: repo.path))
+        #expect(before.status == Set(names.map { "?? " + $0 }) && before.dirtyContent.count == names.count)
+        for name in names { try "theirs\n".write(to: repo.appendingPathComponent(name), atomically: true, encoding: .utf8) }
+        let change = try #require(await TaskWorktreeSourceCheckoutWatch.changes(since: [before]).first)
+        #expect(change.rewritten == names.map { "?? " + $0 }.sorted() && change.appeared.isEmpty && change.disappeared.isEmpty)
+        #expect(TaskWorktreeSourceCheckoutWatch.message(change).contains("café.txt"))
+        // A rename is listed under its new name; the name it came from is not an entry of its own.
+        try git(["mv", "tracked.txt", "renamed.txt"], in: repo)
+        let renamed = try #require(await TaskWorktreeSourceCheckoutWatch.snapshot(of: repo.path))
+        #expect(renamed.status.contains("R  renamed.txt") && !renamed.status.contains("tracked.txt") && renamed.status.count == names.count + 1)
+    }
+
     @Test("The worker watches the checkout its launch uses, and records on every exit after a provider ran")
     func workerCallSites() throws {
         let worker = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
