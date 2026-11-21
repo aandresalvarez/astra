@@ -20,6 +20,15 @@ final class RuntimeExecutionOwnerStore {
             self.taskID = taskID; self.descriptor = descriptor; self.recordURL = recordURL; self.taskOwnerID = taskOwnerID
         }
         deinit { close(descriptor) }
+        /// Another scoped copy of the same portable task ID, under this same
+        /// lock. Copies share one lock file, so a second `acquire` would be
+        /// refused by this lease. The lock is held until both are gone.
+        func sibling(taskOwnerID owner: PersistentIdentifier?, in store: RuntimeExecutionOwnerStore) throws -> Lease {
+            let url = try store.recordURL(taskID, owner: owner)
+            let copy = fcntl(descriptor, F_DUPFD_CLOEXEC, 0)
+            guard copy >= 0 else { throw Failure.busy }
+            return Lease(descriptor: copy, recordURL: url, taskID: taskID, taskOwnerID: owner)
+        }
         /// Verify the actual held lock when a caller also owns a pinned journal directory.
         func verifiedTaskLock(in directory: Int32) throws -> stat {
             var held = stat(), named = stat()
@@ -374,18 +383,6 @@ final class RuntimeExecutionOwnerStore {
         return .init(taskID: header.taskID, taskOwnerID: header.taskOwnerID, requestID: header.requestID,
             sourceEventID: header.sourceEventID, approvedAt: header.approvedAt, sources: sources,
             beneficiaryReceiptDigest: header.beneficiaryReceiptDigest, workspaceScope: header.workspaceScope, inheritedAuthorizationID: header.inheritedAuthorizationID)
-    }
-
-    func workspaceAuthorizations(workspaceOwnerID: PersistentIdentifier) throws -> [RuntimeWorkspaceContinuationAuthorization] {
-        guard FileManager.default.fileExists(atPath: root.path) else { return [] }
-        return try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
-            .filter { $0.pathExtension == "handoff" }.compactMap { url in
-                guard let header: WorkspaceContinuationHeader = try Self.readValue(url),
-                      header.workspaceScope?.workspaceOwnerID == workspaceOwnerID,
-                      header.inheritedAuthorizationID == nil,
-                      url.lastPathComponent == header.requestID.uuidString + ".handoff" else { return nil }
-                return try workspaceContinuation(requestID: header.requestID)
-            }.sorted { $0.approvedAt > $1.approvedAt }
     }
 
     static func read(_ url: URL) throws -> RuntimeExecutionOwnerRecord? { try readValue(url) }
