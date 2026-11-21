@@ -846,7 +846,7 @@ struct ChatPanelView: View {
                 activeSlashContext = nil
                 isPlanMode = false
                 composerRuntimeExplicitlySelected = false
-                worktreeSelection.resetTaskChoice()
+                resetWorktreeTaskChoice()
                 taskCreationError = nil
             } label: {
                 HStack(spacing: 5) {
@@ -1457,7 +1457,7 @@ struct ChatPanelView: View {
                 pendingPlan = nil
                 isApprovedPlanHistoryExpanded = false
                 isPlanMode = false
-                worktreeSelection.resetTaskChoice()
+                resetWorktreeTaskChoice()
 
                 onQuickRun?(task)
             }
@@ -1696,7 +1696,7 @@ struct ChatPanelView: View {
                 attachedFiles = []
                 chainedGoal = ""
                 isPlanMode = false
-                worktreeSelection.resetTaskChoice()
+                resetWorktreeTaskChoice()
 
                 onTaskCreated?(task)
             }
@@ -2199,7 +2199,7 @@ struct ChatPanelView: View {
             TaskCapabilitySnapshotter.capture(for: draft)
             draft.useAgentTeam = useAgentTeam
             draft.teamSize = teamSize
-            NewTaskWorktreeComposerFlow.recordChoice(worktreeSelection, on: draft, modelContext: modelContext)
+            NewTaskWorktreeComposerFlow.saveChoice(&worktreeSelection, on: draft, modelContext: modelContext)
             if draftToLoad == nil {
                 NewTaskWorktreeComposerFlow.followWorkspaceDefault(draft)
             }
@@ -2251,7 +2251,7 @@ struct ChatPanelView: View {
             modelContext.insert(draft)
             TaskRoleProfileStore.recordSelected(workerSelection, task: draft, modelContext: modelContext)
             recordPolicySelection(on: draft, level: currentAgentPolicyLevel, source: "draft_created")
-            NewTaskWorktreeComposerFlow.recordChoice(worktreeSelection, on: draft, modelContext: modelContext)
+            NewTaskWorktreeComposerFlow.saveChoice(&worktreeSelection, on: draft, modelContext: modelContext)
             NewTaskWorktreeComposerFlow.followWorkspaceDefault(draft)
             draftTask = draft
             try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: draft.workspace, modelContext: modelContext)

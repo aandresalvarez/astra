@@ -63,6 +63,13 @@ enum TaskExecutionResourceBroker {
         return nil
     }
 
+    /// Every conflict, in the order `firstConflict` looks.
+    static func conflicts(requested: [TaskResourceLockClaim], active: [TaskResourceLockClaim]) -> [Conflict] {
+        requested.sorted(by: claimOrder).flatMap { request in
+            active.filter { conflicts($0, request) }.map { Conflict(requested: request, holder: $0) }
+        }
+    }
+
     static func canAcquire(
         _ requested: [TaskResourceLockClaim],
         active: [TaskResourceLockClaim]
@@ -119,11 +126,17 @@ enum TaskExecutionResourceBroker {
         }
         let holder = conflict.holder
         let summary = "Waiting for \(displayName(conflict.requested)) held by \(holderLabel(holder.taskID, title: holderTitle(holder.taskID)))"
+        guard let overlap = containment(holder: holder, requested: conflict.requested) else { return summary + "." }
+        return summary + ": \(overlap)."
+    }
+
+    /// Both paths and which contains which, when two claims overlap only
+    /// because one folder contains the other. Nil when they are the same.
+    static func containment(holder: TaskResourceLockClaim, requested: TaskResourceLockClaim) -> String? {
         let held = canonicalKey(kind: holder.resourceKind, key: holder.resourceKey)
-        let wanted = canonicalKey(kind: conflict.requested.resourceKind, key: conflict.requested.resourceKey)
-        guard isFilesystemKind(holder.resourceKind), held != wanted else { return summary + "." }
-        let relation = isPath(held, ancestorOf: wanted) ? "contains" : "is inside"
-        return summary + ": it holds \(held), which \(relation) \(wanted)."
+        let wanted = canonicalKey(kind: requested.resourceKind, key: requested.resourceKey)
+        guard isFilesystemKind(holder.resourceKind), held != wanted else { return nil }
+        return "it holds \(held), which \(isPath(held, ancestorOf: wanted) ? "contains" : "is inside") \(wanted)"
     }
 
     static func holderLabel(_ taskID: UUID, title: String?) -> String {
