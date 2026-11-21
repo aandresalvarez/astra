@@ -15,33 +15,25 @@ jobs:
   focused-swift-tests:
     name: Focused Swift tests
     runs-on: macos-26
-    # Cold builds plus the expanded protection suites can exceed 30 minutes.
-    # Keep the same bounded 45-minute ceiling as the full-suite job.
-    timeout-minutes: 45
+    # A signal in a few minutes: script self-tests, the small standalone
+    # packages, architecture fitness, and the Git contract lane. This job does
+    # not compile the root package. ASTRA_PREPUSH_SKIP_ROOT_TESTS turns off the
+    # root-package lanes of script/prepush.sh because the full-suite job below
+    # runs every root-package test, so one run compiles the app once, not twice.
+    # The local pre-push hook and the release gate leave the switch unset.
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - name: Cache SwiftPM
-        uses: actions/cache@v5
-        with:
-          path: |
-            .build
-            ~/.swiftpm
-          key: ${{ runner.os }}-swiftpm-${{ hashFiles('Package.swift', 'Package.resolved') }}
-          restore-keys: |
-            ${{ runner.os }}-swiftpm-
-
-      - name: Run focused Swift protection suites
-        run: script/prepush.sh
-
-      - name: Verify process progress with one cooperative worker
-        timeout-minutes: 5
+      - name: Run focused protection checks
         env:
-          LIBDISPATCH_COOPERATIVE_POOL_STRICT: "1"
-        run: script/swift_test.sh --filter 'ProcessWaitExecutorTests|ProcessDescriptorIsolationTests|ProcessBinaryRunnerTests|SpawnedChildSignalStateTests|OpenCodeRunnerCompletionTests|OpenCodeCompletionProofTests|HostControlParentDeathSupervisorTests'
+          ASTRA_PREPUSH_SKIP_ROOT_TESTS: "1"
+        run: |
+          python3 script/ci_source_mtimes_tests.py
+          script/prepush.sh
 
   full-swift-test-suite:
     name: Full Swift test suite
@@ -64,31 +56,101 @@ jobs:
     # developer machine, not a clean runner) were found and fixed in
     # #207 and #208. Gating restored on pull_request after a final green
     # dispatch run (28767049711) on main with both fixes merged.
-    # Cold compilation of the source/lifecycle stack can consume ~23 minutes,
-    # followed by 20+ minutes of serial tests. Keep a bounded 60-minute cap
-    # so a normal cold run can finish without removing regression coverage.
+    # Cold compilation takes ~24 minutes and the serial tests ~33, so the job
+    # only fits its 60-minute cap when the build is reused. The build cache is
+    # saved by runs on main (never by pull requests) under a key that names
+    # the commit, and every run restores the newest one for its toolchain.
+    # script/ci_source_mtimes.py then gives unchanged files the modification
+    # time the cached build saw, because SwiftPM recompiles any file whose
+    # time differs and a fresh checkout stamps every file with "now".
+    # A push to main skips the two test steps only when the pushed tree is
+    # exactly the head of a pull request into main that already contained the
+    # previous main and passed this workflow. A direct push, or a merge made
+    # before the checks finished or while the branch was behind, is tested.
     runs-on: macos-26
     timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     steps:
       - name: Checkout
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - name: Cache SwiftPM
-        uses: actions/cache@v5
+      - name: Identify the Swift toolchain
+        id: toolchain
+        run: |
+          swift --version
+          echo "id=$(swift --version 2>&1 | shasum -a 256 | cut -c 1-16)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the SwiftPM build
+        uses: actions/cache/restore@v5
         with:
           path: |
             .build
             ~/.swiftpm
-          key: ${{ runner.os }}-swiftpm-${{ hashFiles('Package.swift', 'Package.resolved') }}
+          key: ${{ runner.os }}-ci-build-${{ steps.toolchain.outputs.id }}-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-swiftpm-
+            ${{ runner.os }}-ci-build-${{ steps.toolchain.outputs.id }}-
+
+      - name: Reuse source file times from the restored build
+        run: python3 script/ci_source_mtimes.py sync .build/ci-source-mtimes.json
+
+      - name: Build the app and tests
+        run: swift build --build-tests
+
+      - name: Save the SwiftPM build
+        if: github.event_name != 'pull_request'
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            .build
+            ~/.swiftpm
+          key: ${{ runner.os }}-ci-build-${{ steps.toolchain.outputs.id }}-${{ github.sha }}
+
+      - name: Check whether this tree already passed on its pull request
+        id: tested
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -u
+          already=false
+          reason="no pull request into main has this tree, contained the previous main, and passed CI"
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          previous_main="$(git rev-parse --verify --quiet 'HEAD^1' || true)"
+          heads="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" \
+            --jq '.[] | select(.base.ref == "main") | .head.sha' || true)"
+          for head in $heads; do
+            [[ -n "$previous_main" ]] || break
+            git cat-file -e "$head^{commit}" 2>/dev/null || git fetch --quiet origin "$head" || continue
+            [[ "$(git rev-parse "$head^{tree}")" == "$tree" ]] || continue
+            git merge-base --is-ancestor "$previous_main" "$head" || continue
+            passed="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$head&event=pull_request&status=success&per_page=1" \
+              --jq '.total_count' || true)"
+            if [[ "$passed" =~ ^[1-9][0-9]*$ ]]; then
+              already=true
+              reason="pull request head $head has this exact tree, contained the previous main, and passed CI"
+              break
+            fi
+          done
+          echo "already=$already" >> "$GITHUB_OUTPUT"
+          echo "Tests already passed for this tree: $already ($reason)." | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Run full Swift test suite
+        if: steps.tested.outputs.already != 'true'
         run: |
           python3 script/permission_repair_test_harness_tests.py
           script/swift_test.sh --no-parallel
+
+      - name: Verify process progress with one cooperative worker
+        if: steps.tested.outputs.already != 'true'
+        timeout-minutes: 5
+        env:
+          LIBDISPATCH_COOPERATIVE_POOL_STRICT: "1"
+        run: script/swift_test.sh --filter 'ProcessWaitExecutorTests|ProcessDescriptorIsolationTests|ProcessBinaryRunnerTests|SpawnedChildSignalStateTests|OpenCodeRunnerCompletionTests|OpenCodeCompletionProofTests|HostControlParentDeathSupervisorTests'
 
   whitespace:
     name: Whitespace

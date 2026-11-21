@@ -67,6 +67,10 @@ Architecture fitness tests are independently runnable through
 - A release/tag checkout with `ASTRA_RELEASE_GATE=1`: the root focused suites
   regardless of its diff, preserving the unconditional release-number,
   update, and packaging gates before signing.
+- GitHub CI's `Focused Swift tests` job with `ASTRA_PREPUSH_SKIP_ROOT_TESTS=1`:
+  the standalone checks only. The `Full Swift test suite` job of the same run
+  executes every root-package test, so CI compiles the root package once. The
+  release gate ignores the switch.
 
 This boundary gives future typed Git publication domain logic a fast, testable
 home without copying unmerged publication code or creating test-only production

@@ -104,6 +104,17 @@ else
   run_validation_plan "$(script/focused_validation_plan.sh)"
 fi
 
+# CI's full-suite job runs every root-package test, so its focused job sets
+# ASTRA_PREPUSH_SKIP_ROOT_TESTS=1 to skip the root lanes below instead of
+# compiling the app a second time. The local hook leaves it unset, and the
+# release gate always keeps its root lanes.
+if [[ "${ASTRA_PREPUSH_SKIP_ROOT_TESTS:-0}" == "1" && "${ASTRA_RELEASE_GATE:-0}" != "1" ]]; then
+  if [[ "$ROOT_VALIDATION_REQUIRED" == "1" ]]; then
+    printf '\n==> Skipping root-package lanes: ASTRA_PREPUSH_SKIP_ROOT_TESTS=1\n'
+  fi
+  ROOT_VALIDATION_REQUIRED=0
+fi
+
 if [[ "$ROOT_VALIDATION_REQUIRED" == "1" ]]; then
   run script/swift_test.sh --filter "$FOCUSED_SWIFT_TEST_FILTER"
 fi

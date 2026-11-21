@@ -71,6 +71,26 @@ struct SwiftPMValidationArchitectureTests {
         #expect(prePush.contains("AppBundlePackagingTests"))
     }
 
+    @Test("CI compiles the root package once without dropping a lane")
+    func ciCompilesRootPackageOnceWithoutDroppingLanes() throws {
+        let root = try repositoryRoot()
+        let ciWorkflow = try fileText(".github/workflows/ci.yml", root: root)
+        let prePush = try fileText("script/prepush.sh", root: root)
+
+        // The focused job may skip the pre-push root lanes only while the full
+        // job runs the unfiltered suite and the strict one-worker step.
+        #expect(ciWorkflow.contains(#"ASTRA_PREPUSH_SKIP_ROOT_TESTS: "1""#))
+        #expect(ciWorkflow.contains("script/swift_test.sh --no-parallel\n"))
+        #expect(ciWorkflow.contains(#"LIBDISPATCH_COOPERATIVE_POOL_STRICT: "1""#))
+        // The release gate keeps its root lanes even if the switch is set.
+        #expect(prePush.contains(
+            #""${ASTRA_PREPUSH_SKIP_ROOT_TESTS:-0}" == "1" && "${ASTRA_RELEASE_GATE:-0}" != "1""#
+        ))
+        // Pull requests reuse the build saved by main and never save their own.
+        #expect(ciWorkflow.contains("if: github.event_name != 'pull_request'\n        uses: actions/cache/save@v5"))
+        #expect(ciWorkflow.contains("python3 script/ci_source_mtimes.py sync .build/ci-source-mtimes.json"))
+    }
+
     private func repositoryRoot() throws -> URL {
         var candidate = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         while true {
