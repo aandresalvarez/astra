@@ -184,10 +184,12 @@ def test_target_names(root=ROOT):
 
 
 def propose(log_paths, shards=3, root=ROOT):
-    """Heaviest names first into the lighter listed shard, until the rest is one share.
+    """Heaviest suites first into the lighter listed shard, until the rest is one share.
 
     A name weighs what its filter selects among the measured suites: its own
-    suite and every suite whose type name contains it.
+    suite and every suite whose type name contains it. Suites go in by their
+    own time, so the name of a heavy suite is preferred to a shorter name that
+    happens to select it.
     """
     totals = {}
     for log_path in log_paths:
@@ -203,10 +205,12 @@ def propose(log_paths, shards=3, root=ROOT):
     selects = {type_name: {name for name, other in type_of.items() if type_name in other}
                for type_name in type_of.values()}
     weight = {type_name: sum(mean[name] for name in names) for type_name, names in selects.items()}
+    own = {type_name: sum(mean[name] for name, other in type_of.items() if other == type_name)
+           for type_name in selects}
     listed = [[] for _ in range(shards - 1)]
     loads = [0.0] * (shards - 1)
     taken = set()
-    for type_name in sorted(weight, key=lambda item: (-weight[item], item)):
+    for type_name in sorted(own, key=lambda item: (-own[item], item)):
         if any(type_name in target for target in targets):
             continue  # It would select every test of that target, not one suite.
         if selects[type_name] & taken:

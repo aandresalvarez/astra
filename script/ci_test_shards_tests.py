@@ -247,6 +247,12 @@ class TestShardPlanTests(unittest.TestCase):
             [log_of({'A': 60, 'B': 50, 'XA': 5, 'Unlisted': 300})], shards=3, root=root)
         self.assertEqual(listed, [['ATests'], ['BTests']])
         self.assertEqual(loads, [65.0, 50.0, 300.0])
+        # A light suite whose name selects the heavy ones does not take their place:
+        # the heavy suites are listed by their own names, and the split stays valid.
+        listed, loads = ci_test_shards.propose(
+            [log_of({'A': 1, 'XA': 50, 'YA': 40})], shards=3, root=self.planner_fixture(['A', 'XA', 'YA'])[0])
+        self.assertEqual(listed, [['XATests'], ['YATests']])
+        self.assertEqual(loads, [50.0, 40.0, 1.0])
 
     def test_proposed_plan_always_passes_the_plan_validator(self):
         root, log_of = self.planner_fixture('ABC')
