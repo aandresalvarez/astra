@@ -55,8 +55,7 @@ struct RuntimeReservationReleaseOwnTaskTests {
         b.workspace = a.workspace
         let submission = try ExecutionRequestSubmissionService.submitInitial(for: b, into: h.context).get()
         let first = try #require(try TaskTurnRequestRepository.request(id: submission.requestID, in: h.context))
-        let proposal = try RuntimeWorkspaceContinuation.preview(task: b, request: first, context: h.context)
-        try RuntimeWorkspaceContinuation.authorize(proposal, task: b, request: first, context: h.context)
+        try RuntimeWorkspaceLegacyDecision.save(task: b, request: first, context: h.context)
         // B is admitted over the decision and its first turn ends, with tools
         // that could not be shown stopped, like any tool-using run.
         let run: TaskRun

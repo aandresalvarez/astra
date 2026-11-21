@@ -33,6 +33,8 @@ final class TaskQueue {
     var resourceOwnershipStore: RuntimeExecutionOwnerStore?
     var resourceOwnershipReadFailed = false
     var waitingOwnershipPasses = 0
+    var ownershipJournalStamp: Date? // The journal folder's change time at the last full ownership read.
+    var waitingBanners: [WaitingBannerKey: (text: String, active: Bool)] = [:] // Kept between passes; see `resourceBlockerSummary`.
     var activeResourceLocks: [TaskResourceLockClaim] {
         var seen: Set<TaskResourceLockClaim> = []
         return (localResourceLocks + persistedResourceLocks).filter { seen.insert($0).inserted }
@@ -706,7 +708,7 @@ final class TaskQueue {
                 request,
                 to: .waitingForResource,
                 blockingTaskID: blockingTaskID,
-                blockerSummary: blockingTaskID == nil ? nil : resourceBlockerSummary(pendingClaims, modelContext: modelContext),
+                blockerSummary: blockingTaskID == nil ? nil : resourceBlockerSummary(pendingClaims, modelContext: modelContext, request: request, task: task),
                 modelContext: modelContext
             )
             guard let resourceLease = await waitForResourceLocks(
@@ -1372,7 +1374,7 @@ final class TaskQueue {
                         blockingTaskID: activeConflict?.holder.taskID,
                         blockerSummary: activeConflict == nil
                             ? "Waiting behind an earlier request for \(TaskExecutionResourceBroker.displayName(primary))."
-                            : resourceBlockerSummary(claims, modelContext: modelContext),
+                            : resourceBlockerSummary(claims, modelContext: modelContext, request: blocked.request, task: blocked.task),
                         modelContext: modelContext
                     )
                     if !wasAlreadyWaiting {

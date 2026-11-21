@@ -22,7 +22,6 @@ struct ReviewedWorkspaceSSHJob: Codable, Equatable {
 
 enum WorkspaceSSHWait: LocalizedError {
     case pending([String])
-    static let summaryPrefix = "Waiting for confirmation of "
 
     var errorDescription: String? {
         switch self {
@@ -33,7 +32,7 @@ enum WorkspaceSSHWait: LocalizedError {
     static func summary(_ ids: [String]) -> String {
         let list = ids.sorted().prefix(4).map { String($0.prefix(8)) }.joined(separator: ", ")
         let noun = ids.count == 1 ? "job" : "jobs"
-        return "\(summaryPrefix)\(ids.count) SSH \(noun) (\(list)\(ids.count > 4 ? ", …" : ""))."
+        return "Waiting for confirmation of \(ids.count) SSH \(noun) (\(list)\(ids.count > 4 ? ", …" : ""))."
     }
 }
 
@@ -103,13 +102,19 @@ enum RuntimeWorkspaceRemoteJobs {
         return (digest, safe)
     }
 
-    static func check(_ jobs: [ReviewedWorkspaceSSHJob], reviewed: [ReviewedWorkspaceSSHJob],
-                      savingDecision: Bool) throws {
+    /// How the owner's jobs are named to a person, by job ID: the label the
+    /// agent gave the job, when it gave one, and the connection it runs on.
+    static func names(task: AgentTask, owner: RuntimeExecutionOwnerRecord, context: ModelContext) -> [String: (label: String?, host: String)] {
+        let found = (try? records(RemoteWorkspaceJobRegistration.loadAll(task: task, owner: owner, context: context))) ?? []
+        return Dictionary(found.map { ($0.1.jobID, ($0.1.label, $0.1.connectionName)) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    static func check(_ jobs: [ReviewedWorkspaceSSHJob], reviewed: [ReviewedWorkspaceSSHJob]) throws {
         // Missing or replaced protected records cannot satisfy a saved decision.
         let missing = reviewed.filter { original in !jobs.contains(where: { original.identifies($0) }) }
         let blocking = jobs.filter { job in
             if job.status.isTerminal { return !job.reachable && reviewed.contains(where: { $0.identifies(job) }) }
-            return !(reviewed.contains(where: { $0.identifies(job) }) && (savingDecision || job.sealed))
+            return !(reviewed.contains(where: { $0.identifies(job) }) && job.sealed)
         }
         let ids = Set((missing + blocking).map(\.jobID))
         if !ids.isEmpty { throw WorkspaceSSHWait.pending(Array(ids)) }
