@@ -18,8 +18,8 @@ jobs:
     # A signal in a few minutes: script self-tests, the small standalone
     # packages, architecture fitness, and the Git contract lane. This job does
     # not compile the root package. ASTRA_PREPUSH_SKIP_ROOT_TESTS turns off the
-    # root-package lanes of script/prepush.sh because the full-suite job below
-    # runs every root-package test, so one run compiles the app once, not twice.
+    # root-package lanes of script/prepush.sh because the test shards below
+    # run every root-package test, so one run compiles the app once, not twice.
     # The switch has no effect outside GitHub Actions or on the release gate.
     timeout-minutes: 15
     steps:
@@ -33,46 +33,33 @@ jobs:
           ASTRA_PREPUSH_SKIP_ROOT_TESTS: "1"
         run: |
           python3 script/ci_source_mtimes_tests.py
+          python3 script/ci_test_shards_tests.py
           script/prepush.sh
 
-  full-swift-test-suite:
-    name: Full Swift test suite
-    # Runs on every trigger the workflow supports (pull_request, push to
-    # main, workflow_dispatch). This job previously deadlocked
-    # 100% of the time on pull_request: Swift Testing executes tests
-    # concurrently, and the suite's synchronous process-spawning tests
-    # exhaust the 3-4 core runner's cooperative thread pool - every test
-    # reports "started", zero ever complete, and the job burns a macOS
-    # runner until the 6-hour cap (evidence: run 28639570525 - 4,002
-    # started / 0 finished / orphaned bash+sleep children at cleanup;
-    # three more runs hung identically). Locally the wider core count
-    # masks the deadlock. --no-parallel below serializes execution and
-    # fixed it - the suite itself runs in ~3-4 minutes once built, and the
-    # full job (checkout, cache restore, build, test) completes in
-    # ~13-14 minutes on a warm cache (PR #209's own run: 13m30s). Two
-    # further CI-only failures (real, unmocked host dependencies in
-    # scenario tests - gh auth status, then
-    # ~/.astra/tools/astra-host-control - both only present on a
-    # developer machine, not a clean runner) were found and fixed in
-    # #207 and #208. Gating restored on pull_request after a final green
-    # dispatch run (28767049711) on main with both fixes merged.
-    # Cold compilation takes ~24 minutes and the serial tests ~33, so the job
-    # only fits its 60-minute cap when the build is reused. The build cache is
-    # saved by runs on main (never by pull requests) under a key that names
-    # the commit, and every run restores the newest one for its toolchain.
+  build-app-and-tests:
+    name: Build app and tests
+    # Compiles the root package once per run and hands the build to the test
+    # shards below through the build cache.
+    # Cold compilation takes 17 to 22 minutes, so every run restores the
+    # newest build saved for its toolchain: a pull request's own last build
+    # when it has one, otherwise the newest build of main. Every run saves its
+    # build under a key that names the commit.
     # script/ci_source_mtimes.py then gives unchanged files the modification
     # time the cached build saw, because SwiftPM recompiles any file whose
     # time differs and a fresh checkout stamps every file with "now".
-    # A push to main skips the two test steps only when the pushed tree is
+    # A push to main skips the test shards only when the pushed tree is
     # exactly the head of a pull request into main that already contained the
     # previous main and passed this workflow. A direct push, or a merge made
     # before the checks finished or while the branch was behind, is tested.
     runs-on: macos-26
-    timeout-minutes: 60
+    timeout-minutes: 45
     permissions:
       contents: read
       actions: read
       pull-requests: read
+    outputs:
+      build-key: ${{ steps.toolchain.outputs.key }}
+      already-tested: ${{ steps.tested.outputs.already }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -83,17 +70,20 @@ jobs:
         id: toolchain
         run: |
           swift --version
-          echo "id=$(swift --version 2>&1 | shasum -a 256 | cut -c 1-16)" >> "$GITHUB_OUTPUT"
+          id="$(swift --version 2>&1 | shasum -a 256 | cut -c 1-16)"
+          echo "prefix=$RUNNER_OS-ci-build-$id-" >> "$GITHUB_OUTPUT"
+          echo "key=$RUNNER_OS-ci-build-$id-$GITHUB_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Restore the SwiftPM build
+        id: restore
         uses: actions/cache/restore@v5
         with:
           path: |
             .build
             ~/.swiftpm
-          key: ${{ runner.os }}-ci-build-${{ steps.toolchain.outputs.id }}-${{ github.sha }}
+          key: ${{ steps.toolchain.outputs.key }}
           restore-keys: |
-            ${{ runner.os }}-ci-build-${{ steps.toolchain.outputs.id }}-
+            ${{ steps.toolchain.outputs.prefix }}
 
       - name: Reuse source file times from the restored build
         run: python3 script/ci_source_mtimes.py sync .build/ci-source-mtimes.json
@@ -102,13 +92,13 @@ jobs:
         run: swift build --build-tests
 
       - name: Save the SwiftPM build
-        if: github.event_name != 'pull_request'
+        if: steps.restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
         with:
           path: |
             .build
             ~/.swiftpm
-          key: ${{ runner.os }}-ci-build-${{ steps.toolchain.outputs.id }}-${{ github.sha }}
+          key: ${{ steps.toolchain.outputs.key }}
 
       - name: Check whether this tree already passed on its pull request
         id: tested
@@ -141,18 +131,135 @@ jobs:
           echo "already=$already" >> "$GITHUB_OUTPUT"
           echo "Tests already passed for this tree: $already ($reason)." | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - name: Run full Swift test suite
-        if: steps.tested.outputs.already != 'true'
+  swift-test-shards:
+    name: Swift tests (shard ${{ matrix.shard }} of 3)
+    # The full suite, split into three jobs that run at the same time. Each
+    # job runs its part serially: Swift Testing's parallel mode deadlocked
+    # 100% of the time on these 3-4 core runners, because the suite's
+    # synchronous process-spawning tests exhaust the cooperative thread pool
+    # (evidence: run 28639570525 - 4,002 started / 0 finished / orphaned
+    # bash+sleep children at cleanup; three more runs hung identically).
+    # --no-parallel below serializes execution and fixed it.
+    # script/ci_test_shards.py decides which suites a shard runs. Every shard
+    # but the last filters on the suite names script/ci_test_shards.json lists
+    # for it, and the last shard skips exactly those names, so a suite nobody
+    # listed still runs there and the plan cannot drop a test.
+    # The shards test the build the job above saved (--skip-build), so the
+    # three parts run the same binary and none of them compiles.
+    needs: build-app-and-tests
+    if: needs.build-app-and-tests.outputs.already-tested != 'true'
+    runs-on: macos-26
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Restore this run's build
+        id: build
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            .build
+            ~/.swiftpm
+          key: ${{ needs.build-app-and-tests.outputs.build-key }}
+
+      - name: Build here when this run's build could not be restored
+        if: steps.build.outputs.cache-hit != 'true'
+        run: |
+          echo "::warning::This run's build was not in the cache, so this shard compiles it again."
+          swift build --build-tests
+
+      - name: Run this shard of the full Swift test suite
+        env:
+          SHARD: ${{ matrix.shard }}
         run: |
           python3 script/permission_repair_test_harness_tests.py
-          script/swift_test.sh --no-parallel
+          shard_arguments="$(python3 script/ci_test_shards.py arguments "$SHARD")"
+          echo "Shard $SHARD: swift test --no-parallel --skip-build $shard_arguments"
+          # Unquoted on purpose, one argument per word: the plan only accepts
+          # suite names made of letters, digits and "_".
+          script/swift_test.sh --no-parallel --skip-build $shard_arguments
 
       - name: Verify process progress with one cooperative worker
-        if: steps.tested.outputs.already != 'true'
+        if: matrix.shard == 1
         timeout-minutes: 5
         env:
           LIBDISPATCH_COOPERATIVE_POOL_STRICT: "1"
-        run: script/swift_test.sh --filter 'ProcessWaitExecutorTests|ProcessDescriptorIsolationTests|ProcessBinaryRunnerTests|SpawnedChildSignalStateTests|OpenCodeRunnerCompletionTests|OpenCodeCompletionProofTests|HostControlParentDeathSupervisorTests'
+        run: script/swift_test.sh --skip-build --filter 'ProcessWaitExecutorTests|ProcessDescriptorIsolationTests|ProcessBinaryRunnerTests|SpawnedChildSignalStateTests|OpenCodeRunnerCompletionTests|OpenCodeCompletionProofTests|HostControlParentDeathSupervisorTests'
+
+  full-swift-test-suite:
+    name: Full Swift test suite
+    # The required check. It passes only when the build and every test shard
+    # succeeded. It runs even when a job it needs failed or was cancelled,
+    # because GitHub counts a skipped required check as passed.
+    # The one accepted skip: on a push to main, the shards do not run when the
+    # build job found that this exact tree already passed on its pull request.
+    needs: [build-app-and-tests, swift-test-shards]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require the build and every test shard
+        env:
+          BUILD_RESULT: ${{ needs.build-app-and-tests.result }}
+          SHARDS_RESULT: ${{ needs.swift-test-shards.result }}
+          ALREADY_TESTED: ${{ needs.build-app-and-tests.outputs.already-tested }}
+        run: |
+          echo "Build: $BUILD_RESULT. Test shards: $SHARDS_RESULT. Tree already tested on its pull request: ${ALREADY_TESTED:-false}."
+          [[ "$BUILD_RESULT" == "success" ]] || exit 1
+          [[ "$SHARDS_RESULT" == "success" ]] && exit 0
+          [[ "$SHARDS_RESULT" == "skipped" && "$GITHUB_EVENT_NAME" == "push" && "$ALREADY_TESTED" == "true" ]]
+
+  prune-build-caches:
+    name: Prune superseded build caches
+    # Every run saves a build of about 0.8 GB and the repository's caches are
+    # limited to 10 GB. Once a ref has a newer build, its older ones are never
+    # restored again, so this job deletes them instead of leaving the choice
+    # of what to evict to GitHub. main keeps one earlier build for runs that
+    # are restoring it right now. This job checks out no code, so the token
+    # that may delete caches never reaches code from a pull request.
+    needs: build-app-and-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Delete the builds this ref no longer needs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP_KEY: ${{ needs.build-app-and-tests.outputs.build-key }}
+        run: |
+          set -u
+          prefix="${KEEP_KEY%%-ci-build-*}-ci-build-"
+          keep_earlier=0
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] && keep_earlier=1
+          listing="$(gh api "repos/$GITHUB_REPOSITORY/actions/caches?ref=$GITHUB_REF&key=$prefix&sort=created_at&direction=desc&per_page=100" \
+            --jq '.actions_caches[] | "\(.id) \(.key)"' || true)"
+          if ! grep -qF " $KEEP_KEY" <<< "$listing"; then
+            echo "This run's build is not in the cache, so nothing is deleted."
+            exit 0
+          fi
+          while read -r id key; do
+            [[ -n "$id" && "$key" != "$KEEP_KEY" ]] || continue
+            if ((keep_earlier > 0)); then
+              keep_earlier=$((keep_earlier - 1))
+              continue
+            fi
+            if gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/caches/$id" > /dev/null; then
+              echo "Deleted $key"
+            else
+              echo "Could not delete $key"
+            fi
+          done <<< "$listing"
 
   whitespace:
     name: Whitespace
