@@ -241,6 +241,7 @@ extension TaskQueue {
         var first: String?
         // One run can hold several of these locks; it counts once.
         var holders = Set<UUID>()
+        var unreadable = false
         var asked: Set<TaskResourceLockClaim> = []
         for conflict in conflicts where !RuntimeWorkspaceReviewWording.folders([conflict.requested]).isEmpty
             && asked.insert(conflict.holder).inserted {
@@ -248,14 +249,19 @@ extension TaskQueue {
             if answer.active { return answer.text }
             first = first ?? answer.text
             holders.formUnion(answer.holders)
+            unreadable = unreadable || answer.unreadable
         }
+        // Every folder of the conflicts asked about, not only the first.
+        let held = RuntimeWorkspaceReviewWording.folders(conflicts.filter { asked.contains($0.holder) }.map(\.requested))
+        // A holder ASTRA cannot read is something nobody can decide past, so it is said first.
+        if unreadable, holders.count > 1 { return RuntimeWorkspaceReviewWording.unreadableBanner(folders: held) }
         // With several earlier runs in the way, no one of them says when this starts.
         guard holders.count > 1 else {
             return first ?? TaskExecutionResourceBroker.blockerSummary(requested: claims, active: activeResourceLocks, holderTitle: title)
         }
         let decidable = !asked.contains { $0.taskID == task?.id }
             && (request.flatMap { waiting in task.map { RuntimeWorkspaceReview.qualifies(waiting, task: $0, context: modelContext) } } ?? false)
-        return RuntimeWorkspaceReviewWording.severalHolders(holders.count, folders: folders, decidable: decidable)
+        return RuntimeWorkspaceReviewWording.severalHolders(holders.count, folders: held, decidable: decidable)
     }
 
     /// The line for one lock, whether its holder is itself at work, and the
@@ -263,7 +269,7 @@ extension TaskQueue {
     @MainActor
     private func waitingBanner(for conflict: TaskExecutionResourceBroker.Conflict, modelContext: ModelContext,
                                request: TaskTurnRequest?, task: AgentTask?,
-                               title: (UUID) -> String?) -> (text: String, active: Bool, holders: Set<UUID>) {
+                               title: (UUID) -> String?) -> (text: String, active: Bool, holders: Set<UUID>, unreadable: Bool) {
         let folders = RuntimeWorkspaceReviewWording.folders([conflict.requested])
         let overlap = TaskExecutionResourceBroker.containment(holder: conflict.holder, requested: conflict.requested)
         // "Review workspace" decides about other tasks, for a request a person
@@ -274,9 +280,10 @@ extension TaskQueue {
         // Kept by the lock itself, so a kept answer reads no journal.
         let key = WaitingBannerKey(holder: conflict.holder, folders: folders, decidable: decidable, overlap: overlap)
         if let kept = waitingBanners[key] { return kept }
-        func keep(_ text: String, active: Bool, holders: Set<UUID> = [UUID()]) -> (text: String, active: Bool, holders: Set<UUID>) {
-            waitingBanners[key] = (text, active, holders)
-            return (text, active, holders)
+        func keep(_ text: String, active: Bool, holders: Set<UUID> = [UUID()],
+                  unreadable: Bool = false) -> (text: String, active: Bool, holders: Set<UUID>, unreadable: Bool) {
+            waitingBanners[key] = (text, active, holders, unreadable)
+            return (text, active, holders, unreadable)
         }
         // A lock a worker in this process holds is a task at work, whatever its saved record says.
         guard persistedResourceLocks.contains(conflict.holder), !localResourceLocks.contains(conflict.holder) else {
@@ -286,7 +293,7 @@ extension TaskQueue {
         // A saved lock whose record is missing or cannot be read is not a task
         // at work: nobody can be waited for, and nothing can be decided.
         guard let store = resourceOwnershipStore, let saved = try? store.records() else {
-            return keep(RuntimeWorkspaceReviewWording.unreadableBanner(folders: folders), active: false)
+            return keep(RuntimeWorkspaceReviewWording.unreadableBanner(folders: folders), active: false, unreadable: true)
         }
         // A released record keeps its claims; only a current holder answers.
         let records = saved.filter { RuntimeResourceOwnership.retainsResources($0) && $0.resourceClaims?.contains(conflict.holder) == true }
@@ -294,16 +301,21 @@ extension TaskQueue {
         // at work is the one to name, and otherwise the first.
         var chosen: (record: RuntimeExecutionOwnerRecord, owner: AgentTask, blockers: [RuntimeReservationRelease.Blocker])?
         var told = Set<UUID>()
+        var untold = false
         for record in records {
-            guard let owner = try? RuntimeReservationRelease.owner(of: record, context: modelContext) else { continue }
+            // Every current holder counts, also one whose task cannot be told.
             told.insert(record.executionID)
+            guard let owner = try? RuntimeReservationRelease.owner(of: record, context: modelContext) else { untold = true; continue }
             // An answer that cannot be read is something ASTRA cannot confirm.
             let blockers = (try? RuntimeReservationRelease.standing(record, task: owner, store: store, context: modelContext)) ?? [.lineageUnreadable]
             if blockers.contains(where: \.holderIsActive) { chosen = (record, owner, blockers); break }
             chosen = chosen ?? (record, owner, blockers)
         }
         // A record whose task cannot be told is not a task at work, and not one to decide about.
-        guard let chosen else { return keep(RuntimeWorkspaceReviewWording.unreadableBanner(folders: folders), active: false) }
+        guard let chosen else {
+            return keep(RuntimeWorkspaceReviewWording.unreadableBanner(folders: folders), active: false,
+                holders: told.isEmpty ? [UUID()] : told, unreadable: true)
+        }
         var jobs: [String: RuntimeWorkspaceReviewWording.SSHJob] = [:]
         if chosen.blockers.contains(where: { if case .sshJobs = $0 { true } else { false } }) {
             for (id, name) in RuntimeWorkspaceRemoteJobs.names(task: chosen.owner, owner: chosen.record, context: modelContext) {
@@ -312,7 +324,7 @@ extension TaskQueue {
         }
         let active = chosen.blockers.contains(where: \.holderIsActive)
         return keep(RuntimeWorkspaceReviewWording.banner(holder: chosen.owner.title, folders: folders, blockers: chosen.blockers,
-            jobs: jobs, decidable: decidable, overlap: overlap), active: active, holders: told)
+            jobs: jobs, decidable: decidable, overlap: overlap), active: active, holders: told, unreadable: untold)
     }
 
     @MainActor

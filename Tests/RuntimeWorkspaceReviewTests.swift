@@ -988,6 +988,72 @@ struct RuntimeWorkspaceReviewTests {
         #expect(queue.resourceBlockerSummary(wanted, modelContext: h.context).hasPrefix("2 earlier runs still hold "))
     }
 
+    @Test("Several holders of different folders are all named, and one ASTRA cannot read is said first")
+    func bannerAggregatesFoldersAndUnreadableHolders() throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let mine = Survivor(process: try Self.alive, name: "python3")
+        let data = FileManager.default.temporaryDirectory.appendingPathComponent("astra-review-\(UUID().uuidString)/dataset")
+        let (a, _) = try holder(h, title: "Export report") { record, _ in proof(&record, survivors: observation(record, [mine])) }
+        let (other, original) = try holder(h, title: "Clean data") { record, _ in
+            record.resourceClaims = [.init(taskID: record.taskID, resourceKey: data.path, accessMode: .write, runMode: "previous")]
+        }
+        let (b, request) = try next(h, after: a)
+        try claims(request, TaskExecutionResourceClaimResolver.admissionClaims(for: request, task: b)
+            + [TaskExecutionResourceClaim(kind: .workspace, key: data.path, access: .exclusive)], h)
+        let queue = TaskQueue(poolSize: 0)
+        queue.refreshResourceOwnership(in: h.context)
+        let wanted = queue.resourceLockClaims(for: request, task: b, runMode: "request", sandboxEnforcement: .off)
+        // Two runs, two folders: both folders are named, and nothing is promised.
+        let both = queue.resourceBlockerSummary(wanted, modelContext: h.context, request: request, task: b)
+        #expect(both.hasPrefix("Waiting for you: 2 earlier runs still hold ") && both.contains("dataset") && !both.contains("start it now"), "\(both)")
+        // The second holder's record goes; only its history still says what it reserved.
+        h.context.insert(TaskEvent(task: other, eventType: TaskEventTypes.System.runtimeExecutionOwnership,
+            payload: TaskEvent.payloadString(original, fallback: "{}"), run: other.runs.first))
+        let store = RuntimeExecutionOwner.store(in: h.context)
+        do {
+            let lease = try store.acquire(taskID: other.id, taskOwnerID: other.persistentModelID)
+            try FileManager.default.removeItem(at: lease.recordURL)
+        }
+        try h.context.save()
+        queue.refreshResourceOwnership(in: h.context)
+        let unread = queue.resourceBlockerSummary(wanted, modelContext: h.context, request: request, task: b)
+        #expect(unread.hasPrefix("ASTRA cannot read its record of who is using ") && unread.contains("dataset"), "\(unread)")
+    }
+
+    @Test("A receipt whose task cannot be told still counts beside a readable copy, so nothing is promised")
+    func bannerCountsAnUnattributableReceipt() throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let mine = Survivor(process: try Self.alive, name: "python3")
+        let (a, original) = try holder(h, title: "Export report")
+        let (copy, held) = try holder(h, title: "Imported copy") { record, _ in proof(&record, survivors: observation(record, [mine])) }
+        let store = RuntimeExecutionOwner.store(in: h.context)
+        for task in [a, copy] {
+            let lease = try store.acquire(taskID: task.id, taskOwnerID: task.persistentModelID)
+            try FileManager.default.removeItem(at: lease.recordURL)
+        }
+        // The first is saved as an old build wrote it, with no owner; the copy shares its ID and its claims.
+        let old = RuntimeExecutionOwnerRecord(taskID: a.id, ownerID: original.ownerID, executionID: original.executionID,
+            runID: original.runID, appProcess: original.appProcess, providerProcess: original.providerProcess, runtime: original.runtime,
+            sessionID: nil, state: .finished, limits: original.limits, stopProof: original.stopProof,
+            settlementInProgress: false, settlementLocalWorkStopped: true, settlementToolsStopped: true,
+            resourceClaims: original.resourceClaims, providerLaunchCount: 1, resourcesReleased: false, updatedAt: original.updatedAt)
+        do { let lease = try store.acquire(taskID: a.id); try lease.save(old) }
+        copy.id = a.id; try h.context.save()
+        let moved = RuntimeExecutionOwnerRecord(taskID: a.id, taskOwnerID: copy.persistentModelID, ownerID: held.ownerID,
+            executionID: held.executionID, runID: held.runID, appProcess: held.appProcess, providerProcess: held.providerProcess,
+            runtime: held.runtime, sessionID: nil, state: .finished, limits: held.limits, stopProof: held.stopProof,
+            settlementInProgress: false, settlementLocalWorkStopped: true, settlementToolsStopped: true,
+            resourceClaims: original.resourceClaims, providerLaunchCount: 1, resourcesReleased: false, updatedAt: held.updatedAt)
+        try save(moved, h)
+        let (b, request) = try next(h, after: a)
+        let queue = TaskQueue(poolSize: 0)
+        queue.refreshResourceOwnership(in: h.context)
+        let wanted = queue.resourceLockClaims(for: request, task: b, runMode: "request", sandboxEnforcement: .off)
+        let text = queue.resourceBlockerSummary(wanted, modelContext: h.context, request: request, task: b)
+        // The old receipt's task cannot be told, so the copy's leftover process is not the only thing in the way.
+        #expect(text.hasPrefix("ASTRA cannot read its record of who is using ") && !text.contains("start it now"), "\(text)")
+    }
+
     @Test("A copy whose reservation already ended is not asked about, even though its record keeps the claim")
     func bannerSkipsAReleasedCopy() throws {
         let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
