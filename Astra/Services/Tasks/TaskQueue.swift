@@ -32,6 +32,7 @@ final class TaskQueue {
     var persistedResourceLocks: [TaskResourceLockClaim] = []
     var resourceOwnershipStore: RuntimeExecutionOwnerStore?
     var resourceOwnershipReadFailed = false
+    var waitingOwnershipPasses = 0
     var activeResourceLocks: [TaskResourceLockClaim] {
         var seen: Set<TaskResourceLockClaim> = []
         return (localResourceLocks + persistedResourceLocks).filter { seen.insert($0).inserted }
@@ -1394,6 +1395,7 @@ final class TaskQueue {
                         modelContext: modelContext
                     )
                 }
+                refreshOwnershipWhileWaiting(blocked: !resourceBlocked.isEmpty, in: modelContext)
                 await waitForDispatchSignal(fallback: .milliseconds(500))
                 continue
             }

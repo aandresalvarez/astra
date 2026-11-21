@@ -69,7 +69,7 @@ struct RuntimeRecoveryHostRestartTests {
         #expect(try !RuntimeResourceOwnership.claims(in: store, context: h.context).isEmpty)
 
         let boot = afterEverything
-        try RuntimeHostNoToolReceiptReconciliation.reconcile(in: store, context: h.context, bootedAt: boot)
+        try RuntimeReservationRelease.reconcile(in: store, context: h.context, bootedAt: boot)
         let released = try #require(try RuntimeExecutionOwner.existing(task: task, context: h.context))
         #expect(released.resourcesReleased == true && released.canReplace && released.inheritedToolUncertainty == false)
         #expect(released.stopProof?.toolsStopped == true)
@@ -79,7 +79,7 @@ struct RuntimeRecoveryHostRestartTests {
         #expect(TaskHistoryRead.events(for: task, ofTypes: [TaskEventTypes.System.runtimeExecutionOwnership.rawValue]).count == 1)
 
         // Asking again changes nothing.
-        try RuntimeHostNoToolReceiptReconciliation.reconcile(in: store, context: h.context, bootedAt: boot)
+        try RuntimeReservationRelease.reconcile(in: store, context: h.context, bootedAt: boot)
         #expect(try RuntimeExecutionOwner.existing(task: task, context: h.context) == released)
 
         let next = h.makeTask(runtime: .codexCLI, goal: "A new instruction", model: "test")
@@ -105,7 +105,7 @@ struct RuntimeRecoveryHostRestartTests {
         #expect(Self.dead.presence == .absent)
     }
 
-    @Test("An earlier attempt labelled not started does not hold the owner back unless its settlement is open",
+    @Test("An earlier attempt labelled not started does not hold the owner back once a restart has passed",
           arguments: ["unspent", "spentAndCancelled", "toolsNotSettled", "stillSettling"])
     func unlaunchedHistory(shape: String) throws {
         let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
@@ -132,12 +132,17 @@ struct RuntimeRecoveryHostRestartTests {
         try save(attempt, h)
         try store.retain(attempt)
         try save(last, h)
-        try RuntimeHostNoToolReceiptReconciliation.reconcile(in: store, context: h.context, bootedAt: afterEverything)
-        let released = shape == "unspent" || shape == "spentAndCancelled"
-        #expect(try RuntimeExecutionOwner.existing(task: task, context: h.context)?.resourcesReleased == released)
+        try RuntimeReservationRelease.reconcile(in: store, context: h.context, bootedAt: afterEverything)
+        // A settlement barrier the attempt left open is answered by the restart
+        // as well: no check ASTRA started outlives it. Only the stop proof,
+        // which Retry reads, still needs that barrier closed.
+        let current = try #require(try RuntimeExecutionOwner.existing(task: task, context: h.context))
+        #expect(current.resourcesReleased == true && current.reservationRelease?.basis == .hostRestart)
+        #expect(current.canReplace == (shape == "unspent" || shape == "spentAndCancelled"))
     }
 
-    @Test("Every earlier execution of the owner must have ended before the restart too", arguments: ["clean", "remote", "cancelled"])
+    @Test("Every earlier execution of the owner is asked too; only one a restart cannot answer holds",
+          arguments: ["clean", "remote", "cancelled", "container"])
     func history(fault: String) throws {
         let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
         let task = h.makeTask(runtime: .claudeCode, goal: "Earlier work", model: "test")
@@ -150,49 +155,48 @@ struct RuntimeRecoveryHostRestartTests {
                 toolsStopped: false, remoteWorkExcluded: false, capturedAt: proof.capturedAt)
         }
         if fault == "cancelled" { first.cancellationRequested = true }
+        if fault == "container" {
+            var environment = WorkspaceExecutionEnvironment.host; environment.kind = .dockerImage
+            firstRun.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(environment)
+            try h.context.save()
+        }
         var last = record(task, run: lastRun, owner: first.ownerID)
         last.retainedExecutionHead = first.executionID
         let store = RuntimeExecutionOwner.store(in: h.context)
         try save(first, h)
         try store.retain(first)
         try save(last, h)
-        try RuntimeHostNoToolReceiptReconciliation.reconcile(in: store, context: h.context, bootedAt: afterEverything)
+        try RuntimeReservationRelease.reconcile(in: store, context: h.context, bootedAt: afterEverything)
         let current = try #require(try RuntimeExecutionOwner.existing(task: task, context: h.context))
-        #expect((current.resourcesReleased == true) == (fault == "clean"))
-        if fault != "clean" { #expect(current == last) }
+        // A cancelled earlier execution, and one whose tools ran with an SSH
+        // route open, are as gone as any other after a restart. The reservation
+        // ends; the stop proof is upgraded only for the clean one. A container
+        // keeps its own processes across the host's exit record.
+        #expect((current.resourcesReleased == true) == (fault != "container"))
+        #expect(current.canReplace == (fault == "clean"))
+        if fault == "container" { #expect(current == last) }
     }
 
+    /// What a restart does answer (a failed or cancelled turn, an open
+    /// settlement barrier, an unrecorded exit, a registration with no job, a
+    /// tool run with an SSH route open) is in `RuntimeReservationReleaseTests`.
     @Test("Anything a restart cannot answer keeps the reservation", arguments: [
-        "noBootTime", "bootBeforeEnd", "runEndedAfterBoot", "journalAfterBoot", "remote", "managedSSH", "cancelled", "runFailed",
-        "running", "noHostSnapshot", "sessionPending", "sshPending", "remoteRegistration", "appAlive", "unreaped", "groupNotEmpty",
-        "settling", "unverifiedState", "otherRuntime"])
+        "noBootTime", "bootBeforeEnd", "journalAfterBoot",
+        "running", "noHostSnapshot", "sessionPending", "sshPending", "appAlive", "otherRuntime"])
     func gates(fault: String) throws {
         let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
         let (task, run) = try finishedTask(h)
         var saved = record(task, run: run)
         let store = RuntimeExecutionOwner.store(in: h.context)
         var boot: Date? = afterEverything
-        func proof(reaped: Bool = true, groupEmpty: Bool = true, remoteExcluded: Bool = true, managed: Bool? = nil) {
-            let old = saved.stopProof!
-            saved.stopProof = .init(executionID: old.executionID, process: old.process, reaped: reaped, processGroupEmpty: groupEmpty,
-                toolsStopped: false, remoteWorkExcluded: remoteExcluded, capturedAt: old.capturedAt, managedSSHOnly: managed)
-        }
         switch fault {
         case "noBootTime": boot = nil
         case "bootBeforeEnd": boot = Date().addingTimeInterval(-600)
-        case "runEndedAfterBoot": run.completedAt = Date().addingTimeInterval(60)
         case "journalAfterBoot": boot = Date().addingTimeInterval(-10)   // after the run and the proof, before the journal was written
-        case "remote": proof(remoteExcluded: false)
-        case "managedSSH": proof(managed: true)
-        case "cancelled": saved.cancellationRequested = true
-        case "runFailed": run.status = .failed; run.typedStopReason = .providerRunWallClockExceeded
         case "running": let other = TaskRun(task: task); other.startedAt = Date().addingTimeInterval(-100); other.status = .running; h.context.insert(other)
         case "noHostSnapshot": run.executionEnvironmentSnapshotJSON = nil
         case "sessionPending": saved.sessionVerificationPending = true
         case "sshPending": saved.pendingSSHJobSetDigest = "digest"
-        case "remoteRegistration":
-            try FileManager.default.createDirectory(at: store.root.deletingLastPathComponent()
-                .appendingPathComponent("remote-jobs/\(task.id.uuidString)"), withIntermediateDirectories: true)
         case "appAlive":
             saved = RuntimeExecutionOwnerRecord(taskID: saved.taskID, taskOwnerID: saved.taskOwnerID, ownerID: saved.ownerID,
                 executionID: saved.executionID, runID: saved.runID,
@@ -201,14 +205,10 @@ struct RuntimeRecoveryHostRestartTests {
                 stopProof: saved.stopProof, inheritedToolUncertainty: true, settlementInProgress: false,
                 settlementLocalWorkStopped: true, settlementToolsStopped: true, resourceClaims: saved.resourceClaims,
                 resourcesReleased: false, updatedAt: saved.updatedAt)
-        case "unreaped": proof(reaped: false)
-        case "groupNotEmpty": proof(groupEmpty: false)
-        case "settling": saved.settlementInProgress = true
-        case "unverifiedState": saved.state = .unverified
         default: saved.runtime = "another_runtime"
         }
         try save(saved, h); try h.context.save()
-        try RuntimeHostNoToolReceiptReconciliation.reconcile(in: store, context: h.context, bootedAt: boot)
+        try RuntimeReservationRelease.reconcile(in: store, context: h.context, bootedAt: boot)
         #expect(try RuntimeExecutionOwner.existing(task: task, context: h.context) == saved)
         #expect(try !RuntimeResourceOwnership.claims(in: store, context: h.context).isEmpty)
     }

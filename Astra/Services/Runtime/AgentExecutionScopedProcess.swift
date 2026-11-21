@@ -76,8 +76,9 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
 
     /// `observingLocalSurvivors` lets the process table answer what the
     /// transcript could not: whether anything a tool started is still alive.
-    /// The caller passes it only where local processes are the whole question
-    /// (host placement, no remote route, stdout closed, no helper activity).
+    /// The caller passes it on the host once stdout closed with no helper
+    /// activity. With an SSH route the answer covers this Mac only, so it is
+    /// recorded for the reservation and does not say the tools stopped.
     func stopProof(executionID: UUID, toolsStopped: Bool, remoteWorkExcluded: Bool, managedSSHOnly: Bool = false,
                    observingLocalSurvivors: Bool = false) -> RuntimeExecutionStopProof? {
         let proof: RuntimeExecutionStopProof? = lock.withLock {
