@@ -97,9 +97,14 @@ final class RuntimeExecutionOwnerStore {
             guard try read() == original, original.taskID == reconciled.taskID,
                   original.taskOwnerID == reconciled.taskOwnerID, original.ownerID == reconciled.ownerID,
                   original.executionID == reconciled.executionID, original.runID == reconciled.runID,
-                  reconciled.resourcesReleased == true, reconciled.canReplace else { throw Failure.unreadable }
+                  reconciled.resourcesReleased == true,
+                  reconciled.canReplace || reconciled.reservationRelease != nil else { throw Failure.unreadable }
             let directory = try RuntimeExecutionOwnerStore.reconciliations(root: recordURL.deletingLastPathComponent(), create: true)
-            let url = directory.appendingPathComponent(original.executionID.uuidString + ".release")
+            // A reservation that ended without the execution becoming
+            // replaceable is saved under its own name. A build from before it
+            // existed refuses such an entry as a ".release" and then admits nothing.
+            let url = directory.appendingPathComponent(original.executionID.uuidString
+                + (reconciled.canReplace ? ".release" : RuntimeExecutionOwnerStore.reservationEntry))
             let entry = ExecutionReconciliation(originalDigest: try RuntimeExecutionOwnerStore.receiptDigest(original), reconciled: reconciled)
             var published = reconciled
             if let existing: ExecutionReconciliation = try RuntimeExecutionOwnerStore.readValue(url) {
@@ -255,6 +260,7 @@ final class RuntimeExecutionOwnerStore {
         let digest = SHA256.hash(data: try encoder.encode(owner)).map { String(format: "%02x", $0) }.joined()
         return root.appendingPathComponent(id.uuidString + "-" + digest + ".json")
     }
+    fileprivate static let reservationEntry = ".reservation"
     private struct ExecutionReconciliation: Codable, Equatable {
         let originalDigest: String
         let reconciled: RuntimeExecutionOwnerRecord
@@ -270,7 +276,9 @@ final class RuntimeExecutionOwnerStore {
         let directory = root.appendingPathComponent("reconciliations")
         guard FileManager.default.fileExists(atPath: directory.path) else { return original }
         _ = try Self.reconciliations(root: root, create: false)
-        guard let entry: ExecutionReconciliation = try Self.readValue(directory.appendingPathComponent(original.executionID.uuidString + ".release")) else { return original }
+        let name = original.executionID.uuidString
+        guard let entry: ExecutionReconciliation = try Self.readValue(directory.appendingPathComponent(name + ".release"))
+                ?? Self.readValue(directory.appendingPathComponent(name + Self.reservationEntry)) else { return original }
         var repaired = entry.reconciled
         var beforeAttribution = original
         if repaired.taskOwnerID == nil {
@@ -285,7 +293,8 @@ final class RuntimeExecutionOwnerStore {
         guard repaired.taskID == original.taskID,
               repaired.taskOwnerID == (original.taskOwnerID ?? entry.reconciled.taskOwnerID),
               repaired.ownerID == original.ownerID, repaired.executionID == original.executionID,
-              repaired.runID == original.runID, repaired.resourcesReleased == true, repaired.canReplace,
+              repaired.runID == original.runID, repaired.resourcesReleased == true,
+              repaired.canReplace || repaired.reservationRelease != nil,
               try entry.originalDigest == Self.receiptDigest(beforeAttribution) else { throw Failure.unreadable }
         return repaired
     }

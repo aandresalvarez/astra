@@ -85,10 +85,11 @@ struct RuntimeRecoveryLocalSurvivorTests {
         let known = try #require(process.stopProof(executionID: id, toolsStopped: true, remoteWorkExcluded: true,
             observingLocalSurvivors: true))
         #expect(known.toolsStopped && known.localSurvivors == nil)
-        // Remote work is a separate question the process table cannot answer.
+        // Remote work is a separate question the process table cannot answer:
+        // what it showed is kept for the reservation and the tools stay unproven.
         let remote = try #require(process.stopProof(executionID: id, toolsStopped: false, remoteWorkExcluded: false,
             observingLocalSurvivors: true))
-        #expect(remote.toolsStopped && !remote.permitsReplacement)
+        #expect(!remote.toolsStopped && remote.localSurvivors?.clean == true && !remote.permitsReplacement)
     }
 
     @Test("A daemon outside the process group is found, named, and scoped to its own launch")
