@@ -382,6 +382,36 @@ struct TaskWorktreeResourceScopeTests {
         })
     }
 
+    @Test("Without sandboxing, a worktree task that can also write a folder of the main checkout holds the Git directory as a writer")
+    func mainCheckoutFolderBesideAWorktreeHoldsTheGitDirectoryAsAWriter() throws {
+        let fixture = try WorktreeFixture(worktrees: ["wt-a", "wt-b"])
+        defer { fixture.remove() }
+        let subfolder = try fixture.makeDirectory("main/Sources")
+        let gitDirectory = fixture.path("main/.git")
+        // A sibling with nothing in the main checkout: its own worktree, and the Git directory as a reader.
+        let sibling = lease([
+            TaskExecutionResourceClaim(kind: .workspace, key: fixture.path("wt-b"), access: .exclusive),
+            TaskExecutionResourceClaim(kind: .gitCommonDirectory, key: gitDirectory, access: .shared)
+        ], taskID: UUID())
+        // The stronger need wins whichever root is listed first, and stays one
+        // claim when submission already claimed the directory for a Git command.
+        for (paths, goal) in [([fixture.checkout.path, subfolder], "Update the parser."),
+                              ([subfolder, fixture.checkout.path], "Update the parser."),
+                              ([fixture.checkout.path, subfolder], "Commit the parser update with git.")] {
+            let task = fixture.task("Ship feature A", pinnedTo: "wt-a", in: fixture.workspace(additionalPaths: paths))
+            task.goal = goal
+            let request = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 1,
+                                          resourceClaims: TaskExecutionResourceClaimResolver.claims(for: task))
+            let claims = TaskExecutionResourceAdmissionPolicy.lockClaims(
+                for: request, task: task, runMode: "test", sandboxEnforcement: .off)
+            #expect(claims.contains { $0.resourceKey == fixture.path("wt-a") && $0.accessMode == .write })
+            #expect(claims.contains { $0.resourceKey == subfolder && $0.accessMode == .write })
+            #expect(claims.filter { $0.resourceKind == .gitCommonDirectory }.map(\.accessMode) == [.write])
+            #expect(!TaskExecutionResourceBroker.canAcquire(sibling, active: claims))
+            #expect(!TaskExecutionResourceBroker.canAcquire(claims, active: sibling))
+        }
+    }
+
     @Test("Every read-only workspace folder is labeled in the prompt")
     func readOnlyWorkspaceFolderIsLabeled() throws {
         let fixture = try WorktreeFixture(worktrees: [])

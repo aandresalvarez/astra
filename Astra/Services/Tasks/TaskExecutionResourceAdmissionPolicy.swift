@@ -173,16 +173,23 @@ enum TaskExecutionResourceAdmissionPolicy {
         sandboxEnforcement: ExecutionSandboxEnforcement
     ) -> [TaskExecutionResourceClaim] {
         guard sandboxEnforcement == .off else { return [] }
-        var seen = Set(existing.filter { $0.kind == .gitCommonDirectory }.map(\.key))
-        return existing.compactMap { claim in
-            guard claim.kind == .workspace, claim.access == .exclusive,
-                  let commonDirectory = GitCheckoutLayout.commonDirectory(for: claim.key) else { return nil }
+        // One task can hold both kinds of root in one repository: a linked
+        // worktree and a folder of the main checkout. The stronger need wins,
+        // whichever root comes first and whatever is claimed already.
+        var needed: [String: TaskExecutionResourceAccess] = [:]
+        for claim in existing where claim.kind == .workspace && claim.access == .exclusive {
+            guard let commonDirectory = GitCheckoutLayout.commonDirectory(for: claim.key) else { continue }
             let key = URL(fileURLWithPath: commonDirectory).standardizedFileURL.path
-            guard seen.insert(key).inserted else { return nil }
             // A checkout that keeps its own Git directory elsewhere (a submodule,
             // a separate Git directory) is a main checkout, not a linked worktree.
             let linkedWorktree = GitCheckoutLayout.linkedWorktreeCommonDirectory(containing: claim.key) == commonDirectory
-            return TaskExecutionResourceClaim(kind: .gitCommonDirectory, key: key, access: linkedWorktree ? .shared : .exclusive)
+            if !linkedWorktree { needed[key] = .exclusive } else if needed[key] == nil { needed[key] = .shared }
+        }
+        let held = existing.filter { $0.kind == .gitCommonDirectory }
+        return needed.sorted { $0.key < $1.key }.compactMap { key, access in
+            // The broker merges claims on one directory, and exclusive wins.
+            let covered = held.contains { $0.key == key && ($0.access == .exclusive || access == .shared) }
+            return covered ? nil : TaskExecutionResourceClaim(kind: .gitCommonDirectory, key: key, access: access)
         }
     }
 

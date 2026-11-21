@@ -72,6 +72,56 @@ struct TaskWorktreeSourceCheckoutWatchTests {
         #expect(await TaskWorktreeSourceCheckoutWatch.changes(since: [before]).first?.appeared == ["?? later.txt"])
     }
 
+    @Test("A file that was already changed before the run is named when it is written again, restored or deleted")
+    func earlierDirtThatChanges() async throws {
+        let repo = try repository(); defer { try? FileManager.default.removeItem(at: repo) }
+        let tracked = repo.appendingPathComponent("tracked.txt"), notes = repo.appendingPathComponent("notes.txt")
+        try "mine\n".write(to: tracked, atomically: true, encoding: .utf8)
+        try "note\n".write(to: notes, atomically: true, encoding: .utf8)
+        try "keep\n".write(to: repo.appendingPathComponent("keep.txt"), atomically: true, encoding: .utf8)
+        let before = try #require(await TaskWorktreeSourceCheckoutWatch.snapshot(of: repo.path))
+        #expect(before.status == [" M tracked.txt", "?? keep.txt", "?? notes.txt"])
+        // Writing the bytes it already had is not a change.
+        try "mine\n".write(to: tracked, atomically: true, encoding: .utf8)
+        #expect(await TaskWorktreeSourceCheckoutWatch.changes(since: [before]).isEmpty)
+
+        // The same status line with other content: Git has no copy of what was overwritten.
+        try "theirs\n".write(to: tracked, atomically: true, encoding: .utf8)
+        let again = try #require(await TaskWorktreeSourceCheckoutWatch.changes(since: [before]).first)
+        #expect(again.rewritten == [" M tracked.txt"] && again.rewrittenCount == 1)
+        #expect(again.appeared.isEmpty && again.disappeared.isEmpty && again.headBefore == again.headAfter)
+        #expect(TaskWorktreeSourceCheckoutWatch.message(again).contains("already changed before the run and changed again: tracked.txt"))
+
+        // A restored edit and a deleted untracked file leave no line behind.
+        try git(["checkout", "--", "tracked.txt"], in: repo)
+        try FileManager.default.removeItem(at: notes)
+        let gone = try #require(await TaskWorktreeSourceCheckoutWatch.changes(since: [before]).first)
+        #expect(gone.disappeared == [" M tracked.txt", "?? notes.txt"] && gone.disappearedCount == 2)
+        #expect(gone.appeared.isEmpty && gone.rewritten.isEmpty)
+        #expect(TaskWorktreeSourceCheckoutWatch.message(gone).contains("no longer listed as changed (restored, deleted or committed): tracked.txt, notes.txt"))
+
+        // A path whose status code changed is listed once, as new or modified.
+        try git(["add", "keep.txt"], in: repo)
+        let staged = try #require(await TaskWorktreeSourceCheckoutWatch.changes(since: [before]).first)
+        #expect(staged.appeared == ["A  keep.txt"] && staged.disappeared == [" M tracked.txt", "?? notes.txt"])
+    }
+
+    @Test("The worker watches the checkout its launch uses, and records on every exit after a provider ran")
+    func workerCallSites() throws {
+        let worker = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Astra/Services/Runtime/AgentRuntimeWorker.swift")
+        let lines = try String(contentsOf: worker, encoding: .utf8).components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        // The provider runs where the frozen launch says, so that is the checkout to watch.
+        #expect(lines.contains { $0.contains("TaskWorktreeSourceCheckoutWatch.capture(for: launchTask,") })
+        let record = "await TaskWorktreeSourceCheckoutWatch.record(since: sourceCheckoutsBeforeRun, task: task, run: run, modelContext: modelContext)"
+        // A verified, cancelled wait ends the run before the usual recording, after either attempt.
+        let retired = lines.indices.filter { lines[$0] == "if wait.retired {" }
+        #expect(retired.count == 2 && retired.allSatisfy { lines[$0 + 1] == record })
+        // So does a re-run the prompt budget refuses. The fourth is the ordinary end of a run.
+        #expect(lines.filter { $0 == record }.count == 4)
+    }
+
     @Test("A folder that is not a checkout, or one that is gone afterwards, reports nothing")
     func unreadableIsNotAChange() async throws {
         let plain = FileManager.default.temporaryDirectory.appendingPathComponent("astra-source-plain-\(UUID().uuidString)")

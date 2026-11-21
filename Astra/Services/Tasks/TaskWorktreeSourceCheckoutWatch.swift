@@ -8,6 +8,8 @@ import ASTRAPersistence
 /// worktree replaced. Sibling worktree tasks still run together: ASTRA looks
 /// at that checkout before and after the run and records what changed there.
 /// It reverts nothing. The checkout is a Git working tree, and Git is the undo.
+/// For a file that was already changed there before the run, Git has no copy
+/// of what the run overwrote, so that case is named separately.
 ///
 /// The record says the checkout changed while the run worked, not that the run
 /// changed it: a person editing there at the same time looks the same. No
@@ -20,6 +22,9 @@ enum TaskWorktreeSourceCheckoutWatch {
         /// Empty when Git could not say.
         let head: String
         let status: Set<String>
+        /// The content of each regular file `status` names, by its status
+        /// line, so a second write to a file that was already dirty is seen.
+        let dirtyContent: [String: AgentFileChangeDetector.FileFingerprint]
     }
 
     struct Change: Codable, Equatable, Sendable {
@@ -30,6 +35,12 @@ enum TaskWorktreeSourceCheckoutWatch {
         /// `git status --porcelain` lines present after the run and not before, capped at `reportLimit`.
         let appeared: [String]
         let appearedCount: Int
+        /// Lines present before and after whose file has different content now, capped the same way.
+        let rewritten: [String]
+        let rewrittenCount: Int
+        /// Lines present before the run and gone now, for a path no line names any more, capped the same way.
+        let disappeared: [String]
+        let disappearedCount: Int
     }
 
     /// One snapshot per source checkout the task's worktree replaced. Empty
@@ -50,7 +61,27 @@ enum TaskWorktreeSourceCheckoutWatch {
         guard GitCheckoutLayout.worktreeRoot(containing: checkout) != nil else { return nil }
         let status = await AgentFileChangeDetector.gitStatusSnapshot(workspacePath: checkout)
         let head = await head(of: checkout)
-        return Snapshot(checkout: checkout, head: head, status: status)
+        let dirtyContent = await BlockingWork.run { content(of: status, in: checkout) }
+        return Snapshot(checkout: checkout, head: head, status: status, dirtyContent: dirtyContent)
+    }
+
+    /// A deleted file and a folder Git lists as untracked have no entry: they
+    /// are compared by their status line alone, so a change inside such a
+    /// folder is not seen. A file over the detector's size limit is compared
+    /// by size and time.
+    private static func content(of status: Set<String>, in checkout: String) -> [String: AgentFileChangeDetector.FileFingerprint] {
+        var content: [String: AgentFileChangeDetector.FileFingerprint] = [:]
+        for line in status {
+            guard let path = AgentFileChangeDetector.absolutePaths(fromGitStatus: [line], workspacePath: checkout).first else { continue }
+            content[line] = AgentFileChangeDetector.fileFingerprints(for: [path], workspacePath: checkout)[path]
+        }
+        return content
+    }
+
+    /// Rewriting a file with the bytes it already had is not a change.
+    private static func differs(_ before: AgentFileChangeDetector.FileFingerprint, _ after: AgentFileChangeDetector.FileFingerprint) -> Bool {
+        guard let was = before.checksum, let now = after.checksum else { return before != after }
+        return before.size != after.size || was != now
     }
 
     /// What differs now from each earlier snapshot. A checkout Git can no
@@ -60,10 +91,23 @@ enum TaskWorktreeSourceCheckoutWatch {
         for earlier in before {
             guard let now = await snapshot(of: earlier.checkout) else { continue }
             let appeared = now.status.subtracting(earlier.status).sorted()
+            // A line both snapshots have names a file that was dirty all along.
+            let rewritten = now.status.intersection(earlier.status).filter { line in
+                guard let was = earlier.dirtyContent[line], let isNow = now.dirtyContent[line] else { return false }
+                return differs(was, isNow)
+            }.sorted()
+            // A path that only changed its status code is already in `appeared`.
+            let stillNamed = AgentFileChangeDetector.absolutePaths(fromGitStatus: now.status, workspacePath: earlier.checkout)
+            let disappeared = earlier.status.subtracting(now.status).filter { line in
+                AgentFileChangeDetector.absolutePaths(fromGitStatus: [line], workspacePath: earlier.checkout).isDisjoint(with: stillNamed)
+            }.sorted()
             let headMoved = !earlier.head.isEmpty && !now.head.isEmpty && earlier.head != now.head
-            guard headMoved || !appeared.isEmpty else { continue }
+            guard headMoved || !appeared.isEmpty || !rewritten.isEmpty || !disappeared.isEmpty else { continue }
+            let limit = Change.reportLimit
             changes.append(Change(checkout: earlier.checkout, headBefore: earlier.head, headAfter: now.head,
-                appeared: Array(appeared.prefix(Change.reportLimit)), appearedCount: appeared.count))
+                appeared: Array(appeared.prefix(limit)), appearedCount: appeared.count,
+                rewritten: Array(rewritten.prefix(limit)), rewrittenCount: rewritten.count,
+                disappeared: Array(disappeared.prefix(limit)), disappearedCount: disappeared.count))
         }
         return changes
     }
@@ -84,7 +128,9 @@ enum TaskWorktreeSourceCheckoutWatch {
                 "run_id": run.id.uuidString,
                 "checkout": change.checkout,
                 "head_moved": change.headBefore == change.headAfter ? "false" : "true",
-                "appeared": String(change.appearedCount)
+                "appeared": String(change.appearedCount),
+                "rewritten": String(change.rewrittenCount),
+                "disappeared": String(change.disappearedCount)
             ], level: .warning)
         }
     }
@@ -95,11 +141,16 @@ enum TaskWorktreeSourceCheckoutWatch {
         if change.headBefore != change.headAfter, !change.headBefore.isEmpty, !change.headAfter.isEmpty {
             parts.append("its commit moved from \(change.headBefore.prefix(8)) to \(change.headAfter.prefix(8))")
         }
-        if change.appearedCount > 0 {
-            let shown = change.appeared.prefix(5).map { String($0.dropFirst(3)) }
-            let more = change.appearedCount - shown.count
-            parts.append("new or modified there: " + shown.joined(separator: ", ") + (more > 0 ? " and \(more) more" : ""))
+        func list(_ label: String, _ lines: [String], _ count: Int) {
+            guard count > 0 else { return }
+            let shown = lines.prefix(5).map { String($0.dropFirst(3)) }
+            let more = count - shown.count
+            parts.append(label + shown.joined(separator: ", ") + (more > 0 ? " and \(more) more" : ""))
         }
+        list("new or modified there: ", change.appeared, change.appearedCount)
+        list("already changed before the run and changed again: ", change.rewritten, change.rewrittenCount)
+        list("changed before the run and no longer listed as changed (restored, deleted or committed): ",
+             change.disappeared, change.disappearedCount)
         return "The checkout this task's worktree came from, \(name), changed while this run worked: "
             + parts.joined(separator: "; ")
             + ". This run was expected to change only its worktree. ASTRA reverted nothing; review \(change.checkout) with Git."
