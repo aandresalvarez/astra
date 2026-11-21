@@ -42,6 +42,21 @@ public enum GitCheckoutLayout {
         }
     }
 
+    /// The common directory of the checkout containing `path` when that
+    /// checkout is a linked worktree: its `.git` is a file naming an admin
+    /// directory whose `commondir` names another one. Nil for a main
+    /// checkout, wherever its Git directory is kept (a submodule, a separate
+    /// Git directory), and whenever that can't be told.
+    public static func linkedWorktreeCommonDirectory(containing path: String) -> String? {
+        guard let root = worktreeRoot(containing: path) else { return nil }
+        let dotGit = (root as NSString).appendingPathComponent(".git")
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: dotGit, isDirectory: &isDirectory), !isDirectory.boolValue,
+              let gitDirectory = linkedWorktreeGitDirectory(at: dotGit, root: root),
+              let common = commonDirectory(ofWorktreeRoot: root), common != gitDirectory else { return nil }
+        return common
+    }
+
     /// True when something is at `path`, following links; false only when
     /// it is confirmed missing; nil when that can't be told.
     private static func itemExists(_ path: String) -> Bool? {
