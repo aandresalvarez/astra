@@ -268,8 +268,8 @@ extension TaskQueue {
             waitingBanners[key] = (text, active)
             return (text, active)
         }
-        // A lock a working task holds in this process has no saved record to ask.
-        guard persistedResourceLocks.contains(conflict.holder) else {
+        // A lock a worker in this process holds is a task at work, whatever its saved record says.
+        guard persistedResourceLocks.contains(conflict.holder), !localResourceLocks.contains(conflict.holder) else {
             return keep(RuntimeWorkspaceReviewWording.banner(holder: title(conflict.holder.taskID), folders: folders,
                 blockers: [.taskWorking], overlap: overlap), active: true)
         }

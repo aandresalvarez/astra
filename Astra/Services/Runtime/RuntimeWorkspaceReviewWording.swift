@@ -178,7 +178,7 @@ enum RuntimeWorkspaceReviewWording {
             }
             // It starts by itself only when nothing else here needs a decision.
             let after = active.count == review.holders.count ? "This request starts when that ends."
-                : "When that ends, choose Review workspace again: something else here still needs your decision."
+                : "When that ends, something else here may still need your decision: choose Review workspace again to see."
             return Dialog(title: "Something is still running in \(place)",
                 message: lines.joined(separator: " ") + " \(after) Open the task to see it or stop it.",
                 canStart: false)

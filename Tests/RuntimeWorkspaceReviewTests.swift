@@ -892,6 +892,10 @@ struct RuntimeWorkspaceReviewTests {
         let text = queue.resourceBlockerSummary(wanted, modelContext: h.context, request: request, task: b)
         #expect(text == RuntimeWorkspaceReviewWording.unreadableBanner(folders: place))
         #expect(!text.contains("to finish"))
+        // The same lock held by a worker in this process is a task at work, record or not.
+        queue.localResourceLocks = [conflict.holder]
+        queue.waitingBanners = [:]
+        #expect(queue.resourceBlockerSummary(wanted, modelContext: h.context, request: request, task: b).hasPrefix("Waiting for “Export report” to finish in "))
     }
 
     @Test("The dialog for a holder at work promises a start only when nothing else needs a decision")
@@ -909,7 +913,7 @@ struct RuntimeWorkspaceReviewTests {
         let mixed = RuntimeWorkspaceReviewWording.dialog(.init(requestID: UUID(), holders: [
             holder("Export report", [.taskWorking]), holder("Clean data", [.lostRun])]))
         #expect(!mixed.canStart && !mixed.message.contains("This request starts when that ends"))
-        #expect(mixed.message.contains("“Export report” is still working. When that ends, choose Review workspace again: something else here still needs your decision."))
+        #expect(mixed.message.contains("“Export report” is still working. When that ends, something else here may still need your decision: choose Review workspace again to see."))
     }
 
     @Test("A caller that does not say which request waits is told the fact, not that it waits for a person")
