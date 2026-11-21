@@ -156,12 +156,13 @@ would merge the moment the PR is marked ready.
    ```
 
 2. Wait until Copilot has reviewed the head commit. It usually takes a few
-   minutes; these two values match when it has:
+   minutes; these two values match when it has (`--paginate` matters: a PR
+   with more than 30 reviews keeps the newest one on a later page):
 
    ```bash
    gh pr view <number> --json headRefOid --jq .headRefOid
-   gh api repos/aandresalvarez/astra/pulls/<number>/reviews \
-     --jq '[.[] | select(.user.login == "copilot-pull-request-reviewer[bot]") | .commit_id] | last'
+   gh api --paginate repos/aandresalvarez/astra/pulls/<number>/reviews \
+     --jq '.[] | select(.user.login == "copilot-pull-request-reviewer[bot]") | .commit_id' | tail -1
    ```
 
    If no Copilot review arrives within 15 minutes, say so in a PR comment and
@@ -172,10 +173,11 @@ would merge the moment the PR is marked ready.
    block the merge. A fix push triggers a new Copilot review, so repeat step 2
    until its latest review on the head commit has nothing left to address.
 
-4. Arm auto-merge:
+4. Arm auto-merge on the commit Copilot reviewed, so a push that lands after
+   step 2 cannot be merged unreviewed:
 
    ```bash
-   gh pr merge <number> --auto --squash
+   gh pr merge <number> --auto --squash --match-head-commit <reviewed-sha>
    ```
 
 GitHub then merges when all required checks are green and the branch is up to
