@@ -184,9 +184,13 @@ enum RuntimeWorkspaceReviewWording {
                 return "ASTRA is still closing the last run of \(name)."
             }
             // It starts by itself only when nothing else here needs a decision.
-            // Only work that is under way ends by itself; anything else needs a look again.
-            let after = review.holders.allSatisfy({ $0.blockers.allSatisfy(\.holderIsActive) }) ? "This request starts when that ends."
-                : "When that ends, something else here may still need your decision: choose Review workspace again to see."
+            // Only work that is under way ends by itself; anything else needs a
+            // look again. A holder whose lease a worker holds was not asked the rest.
+            let blockers = review.holders.flatMap(\.blockers)
+            let after = !blockers.allSatisfy({ $0.holderIsActive || $0 == .unasked })
+                ? "When that ends, something else here may still need your decision: choose Review workspace again to see."
+                : blockers.contains(.unasked) ? "When that ends, this request starts, unless ASTRA needs your decision first."
+                : "This request starts when that ends."
             return Dialog(title: "Something is still running in \(place)",
                 message: lines.joined(separator: " ") + " \(after) Open the task to see it or stop it.",
                 canStart: false)
@@ -231,7 +235,7 @@ enum RuntimeWorkspaceReviewWording {
                     sentences.append("ASTRA cannot confirm that the provider session of \(name) ended.")
                 case .lineageUnreadable:
                     sentences.append("ASTRA cannot read the earlier runs of \(name).")
-                case .taskWorking, .providerAlive, .settling:
+                case .taskWorking, .providerAlive, .settling, .unasked:
                     break
                 }
             }

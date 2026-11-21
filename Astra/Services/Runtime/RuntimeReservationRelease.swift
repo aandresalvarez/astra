@@ -75,6 +75,9 @@ enum RuntimeReservationRelease {
         case settlementUnconfirmed
         case sessionUnverified
         case lineageUnreadable
+        /// A worker holds the task's lease, so nothing else about this
+        /// reservation could be asked. It comes only with `taskWorking`.
+        case unasked
 
         var isRunning: Bool {
             switch self {
@@ -109,6 +112,7 @@ enum RuntimeReservationRelease {
             case .settlementUnconfirmed: ["settlement_unconfirmed"]
             case .sessionUnverified: ["session_unverified"]
             case .lineageUnreadable: ["lineage_unreadable"]
+            case .unasked: ["unasked"]
             }
         }
     }
@@ -296,14 +300,16 @@ enum RuntimeReservationRelease {
 
     /// What keeps one saved reservation now, for a person to read: the
     /// rule's answer under the task lease. A lease held elsewhere is a
-    /// worker still at work. Empty when the rule would end the reservation.
+    /// worker still at work, and the rest is not asked: copies of one task
+    /// share the lease, so a finished copy beside a working one answers the
+    /// same. Empty when the rule would end the reservation.
     static func standing(_ record: RuntimeExecutionOwnerRecord, task: AgentTask, store: RuntimeExecutionOwnerStore,
                          context: ModelContext, bootedAt: Date? = ProviderSharedStateReadObservation.hostBootTime(),
                          observe: (RuntimeLocalSurvivorObservation.Launch) -> RuntimeLocalSurvivorObservation
                              = { RuntimeExecutionLocalSurvivors.observe($0) }) throws -> [Blocker] {
         let lease: RuntimeExecutionOwnerStore.Lease
         do { lease = try self.lease(for: record, store: store) }
-        catch RuntimeExecutionOwnerStore.Failure.busy { return [.taskWorking] }
+        catch RuntimeExecutionOwnerStore.Failure.busy { return [.taskWorking, .unasked] }
         defer { withExtendedLifetime(lease) {} }
         guard try lease.read() == record else { throw RuntimeExecutionOwnerStore.Failure.busy }
         guard case .held(let blockers) = verdict(record, task: task, journal: lease.recordURL, store: store,

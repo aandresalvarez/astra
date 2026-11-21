@@ -151,7 +151,11 @@ struct RuntimeWorkspaceReviewTests {
         #expect(owner.record.workspaceContinuationRequestID == nil && owner.record.inheritedToolUncertainty == false)
         // While the first works, the second waits for it, and that is not a decision either.
         let waiting = try #require(try preview(h, c, other))
-        #expect(!waiting.canStart && waiting.holders.map(\.taskID) == [b.id] && waiting.holders.first?.blockers == [.taskWorking])
+        #expect(!waiting.canStart && waiting.holders.map(\.taskID) == [b.id] && waiting.holders.first?.blockers == [.taskWorking, .unasked])
+        // The worker holds the lease, so nothing else was asked, and the dialog does not promise a start.
+        let told = RuntimeWorkspaceReviewWording.dialog(waiting).message
+        #expect(told.contains("When that ends, this request starts, unless ASTRA needs your decision first.")
+            && !told.contains("This request starts when that ends"))
     }
 
     @Test("A holder released by a decision accepts its own next message; its Retry stays refused")
@@ -918,6 +922,15 @@ struct RuntimeWorkspaceReviewTests {
             holder("Export report", [.taskWorking]), holder("Clean data", [.lostRun])]))
         #expect(!mixed.canStart && !mixed.message.contains("This request starts when that ends"))
         #expect(mixed.message.contains("“Export report” is still working. When that ends, something else here may still need your decision: choose Review workspace again to see."))
+        // A finished copy beside a working one shares its lease and answers only that it works:
+        // the rest was not asked, so neither copy is promised to end it all by finishing.
+        let copies = RuntimeWorkspaceReviewWording.dialog(.init(requestID: UUID(), holders: [
+            holder("Export report", [.taskWorking, .unasked]), holder("Export report", [.taskWorking, .unasked])]))
+        #expect(!copies.canStart && !copies.message.contains("This request starts when that ends"))
+        #expect(copies.message.contains("When that ends, this request starts, unless ASTRA needs your decision first."))
+        let unaskedAndKnown = RuntimeWorkspaceReviewWording.dialog(.init(requestID: UUID(), holders: [
+            holder("Export report", [.taskWorking, .unasked]), holder("Clean data", [.lostRun])]))
+        #expect(unaskedAndKnown.message.contains("When that ends, something else here may still need your decision"))
     }
 
     @Test("A caller that does not say which request waits is told the fact, not that it waits for a person")
