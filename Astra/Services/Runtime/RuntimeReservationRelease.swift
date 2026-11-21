@@ -75,6 +75,11 @@ enum RuntimeReservationRelease {
         case settlementUnconfirmed
         case sessionUnverified
         case lineageUnreadable
+        /// The holder is still at work, so the rest is not known yet: a
+        /// worker holds the task's lease, or the provider still runs and has
+        /// left no exit record to ask. It comes only with `taskWorking` or
+        /// `providerAlive`.
+        case unasked
 
         var isRunning: Bool {
             switch self {
@@ -109,6 +114,7 @@ enum RuntimeReservationRelease {
             case .settlementUnconfirmed: ["settlement_unconfirmed"]
             case .sessionUnverified: ["session_unverified"]
             case .lineageUnreadable: ["lineage_unreadable"]
+            case .unasked: ["unasked"]
             }
         }
     }
@@ -204,7 +210,8 @@ enum RuntimeReservationRelease {
 
             if let process = execution.providerProcess {
                 switch process.presence {
-                case .present: hold(.providerAlive(pid: process.pid)); return
+                // Its exit, and whatever it leaves, cannot be asked until it ends.
+                case .present: hold(.providerAlive(pid: process.pid)); hold(.unasked); return
                 case .unknown: if !beforeBoot { hold(.lostRun); return }
                 case .absent: break
                 }
@@ -275,8 +282,12 @@ enum RuntimeReservationRelease {
     static func owner(of record: RuntimeExecutionOwnerRecord, context: ModelContext) throws -> AgentTask? {
         let taskID = record.taskID
         let tasks = try context.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID }))
-        let matching = tasks.filter { record.taskOwnerID == nil || $0.persistentModelID == record.taskOwnerID }
-        return matching.count == 1 ? matching.first : nil
+        if let owner = record.taskOwnerID { return tasks.first { $0.persistentModelID == owner } }
+        // A receipt from before owners were recorded. One row is its task.
+        // Among copies, it is the one whose history recorded this execution.
+        guard tasks.count > 1 else { return tasks.first }
+        guard let owner = try? RuntimeTaskOwnerJournal.legacyOwner(record, context: context) else { return nil }
+        return tasks.first { $0.persistentModelID == owner }
     }
 
     /// Throws `busy` while a worker of that task holds it. Copies of one
@@ -292,14 +303,16 @@ enum RuntimeReservationRelease {
 
     /// What keeps one saved reservation now, for a person to read: the
     /// rule's answer under the task lease. A lease held elsewhere is a
-    /// worker still at work. Empty when the rule would end the reservation.
+    /// worker still at work, and the rest is not asked: copies of one task
+    /// share the lease, so a finished copy beside a working one answers the
+    /// same. Empty when the rule would end the reservation.
     static func standing(_ record: RuntimeExecutionOwnerRecord, task: AgentTask, store: RuntimeExecutionOwnerStore,
                          context: ModelContext, bootedAt: Date? = ProviderSharedStateReadObservation.hostBootTime(),
                          observe: (RuntimeLocalSurvivorObservation.Launch) -> RuntimeLocalSurvivorObservation
                              = { RuntimeExecutionLocalSurvivors.observe($0) }) throws -> [Blocker] {
         let lease: RuntimeExecutionOwnerStore.Lease
         do { lease = try self.lease(for: record, store: store) }
-        catch RuntimeExecutionOwnerStore.Failure.busy { return [.taskWorking] }
+        catch RuntimeExecutionOwnerStore.Failure.busy { return [.taskWorking, .unasked] }
         defer { withExtendedLifetime(lease) {} }
         guard try lease.read() == record else { throw RuntimeExecutionOwnerStore.Failure.busy }
         guard case .held(let blockers) = verdict(record, task: task, journal: lease.recordURL, store: store,

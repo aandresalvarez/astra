@@ -112,6 +112,13 @@ enum RuntimeWorkspaceReviewWording {
         "ASTRA cannot read its record of who is using \(folders.isEmpty ? "this workspace" : plain(folders)). Nothing was started."
     }
 
+    /// More than one earlier run holds what a request waits for, none of them
+    /// at work. No one of them can say when the request starts.
+    nonisolated static func severalHolders(_ count: Int, folders: [String], decidable: Bool) -> String {
+        (decidable ? decisionPrefix : "") + "\(count) earlier runs still hold \(folders.isEmpty ? "this workspace" : plain(folders)), "
+            + "and ASTRA cannot confirm that their work ended."
+    }
+
     /// The line on a waiting task: the holder, the folder and the one thing
     /// in the way. A request nobody can decide for, such as a schedule, is
     /// not `decidable`: it is told the same fact without being told to act.
@@ -138,6 +145,11 @@ enum RuntimeWorkspaceReviewWording {
         if !left.isEmpty {
             var processes = left.prefix(3).map { "\($0.name) (process \($0.process.pid))" }
             if left.count > 3 { processes.append("\(left.count - 3) more") }
+            // That process stopping is enough only when it is all that is left.
+            guard blockers.allSatisfy({ if case .survivors = $0 { true } else { false } }) else {
+                return "\(you)\(name) ended but left \(list(processes)) running in \(place), "
+                    + "and ASTRA cannot confirm the rest of its work ended.\(tail)"
+            }
             return "\(name) ended but left \(list(processes)) running in \(place). "
                 + "This starts when \(left.count == 1 ? "that stops" : "those stop")\(decidable ? ", or you can start it now" : "").\(tail)"
         }
@@ -171,8 +183,16 @@ enum RuntimeWorkspaceReviewWording {
                 }
                 return "ASTRA is still closing the last run of \(name)."
             }
+            // It starts by itself only when nothing else here needs a decision.
+            // Only work that is under way ends by itself; anything else needs a
+            // look again. A holder whose worker or provider still runs was not asked the rest.
+            let blockers = review.holders.flatMap(\.blockers)
+            let after = !blockers.allSatisfy({ $0.holderIsActive || $0 == .unasked })
+                ? "When that ends, something else here may still need your decision: choose Review workspace again to see."
+                : blockers.contains(.unasked) ? "When that ends, this request starts, unless ASTRA needs your decision first."
+                : "This request starts when that ends."
             return Dialog(title: "Something is still running in \(place)",
-                message: lines.joined(separator: " ") + " This request starts when that ends. Open the task to see it or stop it.",
+                message: lines.joined(separator: " ") + " \(after) Open the task to see it or stop it.",
                 canStart: false)
         }
         var paragraphs: [String] = []
@@ -215,7 +235,7 @@ enum RuntimeWorkspaceReviewWording {
                     sentences.append("ASTRA cannot confirm that the provider session of \(name) ended.")
                 case .lineageUnreadable:
                     sentences.append("ASTRA cannot read the earlier runs of \(name).")
-                case .taskWorking, .providerAlive, .settling:
+                case .taskWorking, .providerAlive, .settling, .unasked:
                     break
                 }
             }
