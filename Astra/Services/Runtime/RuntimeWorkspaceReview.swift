@@ -28,6 +28,8 @@ enum RuntimeWorkspaceReview {
         let claims: [TaskResourceLockClaim]
         /// Everything else it reserves. A decision frees those with it.
         let otherClaims: [TaskResourceLockClaim]
+        /// The open SSH jobs `blockers` names, each with the launch it is.
+        var jobs: [ReviewedWorkspaceSSHJob] = []
 
         var isActive: Bool { blockers.contains(where: \.holderIsActive) }
     }
@@ -93,7 +95,8 @@ enum RuntimeWorkspaceReview {
             guard !blockers.isEmpty else { throw RuntimeExecutionOwnerStore.Failure.busy }
             let reserved = (record.resourceClaims ?? []).filter { $0.resourceKind != .nativeSession }
             holders.append(Holder(taskID: owner.id, title: owner.title, receipt: record, blockers: blockers,
-                claims: reserved.filter(conflicts.contains), otherClaims: reserved.filter { !conflicts.contains($0) }))
+                claims: reserved.filter(conflicts.contains), otherClaims: reserved.filter { !conflicts.contains($0) },
+                jobs: try RuntimeReservationRelease.openJobs(blockers, of: record, task: owner, context: context)))
         }
         // A fence that no readable receipt accounts for cannot be decided about.
         guard Set(conflicts).isSubset(of: Set(holders.flatMap(\.claims))) else { throw RuntimeExecutionOwnerStore.Failure.unreadable }
@@ -122,7 +125,7 @@ enum RuntimeWorkspaceReview {
         guard let fresh = try inspect(task: task, request: request, context: context, store: store,
             sandboxEnforcement: sandboxEnforcement, bootedAt: bootedAt, observe: observe) else { return }
         guard fresh == reviewed, fresh.canStart else { throw RuntimeExecutionOwnerStore.Failure.busy }
-        try RuntimeReservationRelease.release(fresh.holders.map { .init(receipt: $0.receipt, blockers: $0.blockers) },
+        try RuntimeReservationRelease.release(fresh.holders.map { .init(receipt: $0.receipt, blockers: $0.blockers, jobs: $0.jobs) },
             decidedFor: request.id, store: store, context: context, bootedAt: bootedAt, observe: observe)
         for holder in fresh.holders {
             guard let owner = try RuntimeReservationRelease.owner(of: holder.receipt, context: context) else { continue }

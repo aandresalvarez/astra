@@ -9,6 +9,8 @@ extension TaskQueue {
         let store = RuntimeExecutionOwner.store(in: context)
         resourceOwnershipStore = store
         waitingBanners = [:]
+        // Taken before the read, so a journal written during it is read next time.
+        ownershipJournalStamp = Self.journalStamp(store)
         do {
             try RuntimeReservationRelease.reconcile(in: store, context: context)
             persistedResourceLocks = try RuntimeResourceOwnership.claims(in: store, context: context)
@@ -31,10 +33,25 @@ extension TaskQueue {
         guard waitingOwnershipPasses % Self.waitingOwnershipRefreshInterval == 0 else { return }
         // What a banner says is asked again on the pass that asks the rule.
         waitingBanners = [:]
-        let ended = (try? RuntimeReservationRelease.reconcile(in: RuntimeExecutionOwner.store(in: context), context: context)) ?? 0
-        if ended > 0 { refreshResourceOwnership(in: context) }
+        let store = RuntimeExecutionOwner.store(in: context)
+        let ended = (try? RuntimeReservationRelease.reconcile(in: store, context: context)) ?? 0
+        // A release this process did not make, by the rule or by a person's
+        // decision in another ASTRA instance on the same store, leaves the
+        // rule nothing to end here and the locks read earlier in place. It
+        // does change the journal folder. So on every sixth asking pass,
+        // about thirty seconds, the folder's change time is compared with the
+        // one seen at the last full read, and ownership is read again when it
+        // moved. The full read is too slow for every pass.
+        let foreign = waitingOwnershipPasses % (Self.waitingOwnershipRefreshInterval * Self.foreignReleaseCheckInterval) == 0
+            && Self.journalStamp(store) != ownershipJournalStamp
+        if ended > 0 || foreign { refreshResourceOwnership(in: context) }
     }
     static let waitingOwnershipRefreshInterval = 10
+    static let foreignReleaseCheckInterval = 6
+    /// When the journal folder last gained, lost or replaced a file.
+    static func journalStamp(_ store: RuntimeExecutionOwnerStore) -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: store.root.path))?[.modificationDate] as? Date
+    }
 
     @MainActor
     func resourceAccess(for task: AgentTask) -> TaskResourceAccessMode {
@@ -239,34 +256,44 @@ extension TaskQueue {
                                title: (UUID) -> String?) -> (text: String, active: Bool) {
         let folders = RuntimeWorkspaceReviewWording.folders([conflict.requested])
         let overlap = TaskExecutionResourceBroker.containment(holder: conflict.holder, requested: conflict.requested)
-        // A lock a working task holds in this process, or one that no single
-        // saved record accounts for: it is at work, or cannot be told apart.
-        let holders = persistedResourceLocks.contains(conflict.holder)
-            ? ((try? resourceOwnershipStore?.records())?.filter { $0.resourceClaims?.contains(conflict.holder) == true } ?? []) : []
-        guard holders.count == 1, let holder = holders.first, let store = resourceOwnershipStore,
-              let owner = try? RuntimeReservationRelease.owner(of: holder, context: modelContext) else {
-            return (RuntimeWorkspaceReviewWording.banner(holder: title(conflict.holder.taskID), folders: folders,
-                blockers: [.taskWorking], overlap: overlap), true)
-        }
         // "Review workspace" decides about other tasks. A task that waits for
         // its own earlier run is told the fact, not told to act.
-        let decidable = holder.taskID != task?.id
+        let decidable = conflict.holder.taskID != task?.id
             && (request.flatMap { waiting in task.map { RuntimeWorkspaceReview.qualifies(waiting, task: $0, context: modelContext) } } ?? true)
-        let key = WaitingBannerKey(executionID: holder.executionID, folders: folders, decidable: decidable, overlap: overlap)
-        if let kept = waitingBanners[key], kept.holder == holder { return (kept.text, kept.active) }
-        // An answer that cannot be read is something ASTRA cannot confirm.
-        let blockers = (try? RuntimeReservationRelease.standing(holder, task: owner, store: store, context: modelContext)) ?? [.lineageUnreadable]
+        // Kept by the lock itself, so a kept answer reads no journal.
+        let key = WaitingBannerKey(holder: conflict.holder, folders: folders, decidable: decidable, overlap: overlap)
+        if let kept = waitingBanners[key] { return kept }
+        func keep(_ text: String, active: Bool) -> (text: String, active: Bool) {
+            waitingBanners[key] = (text, active)
+            return (text, active)
+        }
+        // A lock a working task holds in this process has no saved record to ask.
+        let records = persistedResourceLocks.contains(conflict.holder)
+            ? ((try? resourceOwnershipStore?.records())?.filter { $0.resourceClaims?.contains(conflict.holder) == true } ?? []) : []
+        guard !records.isEmpty, let store = resourceOwnershipStore else {
+            return keep(RuntimeWorkspaceReviewWording.banner(holder: title(conflict.holder.taskID), folders: folders,
+                blockers: [.taskWorking], overlap: overlap), active: true)
+        }
+        // Copies of one task can hold the same lock. Each is asked: one that is
+        // at work is the one to name, and otherwise the first.
+        var chosen: (record: RuntimeExecutionOwnerRecord, owner: AgentTask, blockers: [RuntimeReservationRelease.Blocker])?
+        for record in records {
+            guard let owner = try? RuntimeReservationRelease.owner(of: record, context: modelContext) else { continue }
+            // An answer that cannot be read is something ASTRA cannot confirm.
+            let blockers = (try? RuntimeReservationRelease.standing(record, task: owner, store: store, context: modelContext)) ?? [.lineageUnreadable]
+            if blockers.contains(where: \.holderIsActive) { chosen = (record, owner, blockers); break }
+            chosen = chosen ?? (record, owner, blockers)
+        }
+        // A record whose task cannot be told is not a task at work, and not one to decide about.
+        guard let chosen else { return keep(RuntimeWorkspaceReviewWording.unreadableBanner(folders: folders), active: false) }
         var jobs: [String: RuntimeWorkspaceReviewWording.SSHJob] = [:]
-        if blockers.contains(where: { if case .sshJobs = $0 { true } else { false } }) {
-            for (id, name) in RuntimeWorkspaceRemoteJobs.names(task: owner, owner: holder, context: modelContext) {
+        if chosen.blockers.contains(where: { if case .sshJobs = $0 { true } else { false } }) {
+            for (id, name) in RuntimeWorkspaceRemoteJobs.names(task: chosen.owner, owner: chosen.record, context: modelContext) {
                 jobs[id] = .init(label: name.label, host: name.host)
             }
         }
-        let text = RuntimeWorkspaceReviewWording.banner(holder: owner.title, folders: folders, blockers: blockers,
-            jobs: jobs, decidable: decidable, overlap: overlap)
-        let active = blockers.contains(where: \.holderIsActive)
-        waitingBanners[key] = (holder, text, active)
-        return (text, active)
+        return keep(RuntimeWorkspaceReviewWording.banner(holder: chosen.owner.title, folders: folders, blockers: chosen.blockers,
+            jobs: jobs, decidable: decidable, overlap: overlap), active: chosen.blockers.contains(where: \.holderIsActive))
     }
 
     @MainActor
@@ -296,7 +323,7 @@ extension TaskQueue {
 
 /// One banner per holder, folder and kind of waiter.
 struct WaitingBannerKey: Hashable {
-    let executionID: UUID
+    let holder: TaskResourceLockClaim
     let folders: [String]
     let decidable: Bool
     let overlap: String?

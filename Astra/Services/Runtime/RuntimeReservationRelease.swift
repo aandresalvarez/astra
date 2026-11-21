@@ -312,6 +312,19 @@ enum RuntimeReservationRelease {
     struct Reviewed: Equatable {
         let receipt: RuntimeExecutionOwnerRecord
         let blockers: [Blocker]
+        /// The open SSH jobs `blockers` names, each with the launch it is.
+        var jobs: [ReviewedWorkspaceSSHJob] = []
+    }
+
+    /// The open SSH jobs an answer names, with the launch each one is. An
+    /// answer keeps only job IDs, and a job started again under the same ID
+    /// is not the job a person was shown.
+    static func openJobs(_ blockers: [Blocker], of record: RuntimeExecutionOwnerRecord, task: AgentTask,
+                         context: ModelContext) throws -> [ReviewedWorkspaceSSHJob] {
+        let ids = Set(blockers.flatMap { blocker -> [String] in if case .sshJobs(let ids) = blocker { ids } else { [] } })
+        guard !ids.isEmpty else { return [] }
+        return try RuntimeWorkspaceRemoteJobs.inventory(task: task, owner: record, context: context)
+            .filter { ids.contains($0.jobID) }.sorted { ($0.executionID, $0.jobID) < ($1.executionID, $1.jobID) }
     }
 
     /// A person's decision ends the reservations they reviewed, past what
@@ -333,7 +346,9 @@ enum RuntimeReservationRelease {
             guard try lease.read() == item.receipt, !item.blockers.isEmpty,
                   !item.blockers.contains(where: \.holderIsActive),
                   verdict(item.receipt, task: task, journal: lease.recordURL, store: store, context: context,
-                      bootedAt: bootedAt, whole: true, observe: observe) == .held(item.blockers) else { throw RuntimeExecutionOwnerStore.Failure.busy }
+                      bootedAt: bootedAt, whole: true, observe: observe) == .held(item.blockers),
+                  try openJobs(item.blockers, of: item.receipt, task: task, context: context) == item.jobs
+            else { throw RuntimeExecutionOwnerStore.Failure.busy }
             holders.append((item.receipt, task, lease, item.blockers.flatMap(\.auditNames)))
         }
         for holder in holders {

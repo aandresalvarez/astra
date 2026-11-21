@@ -722,6 +722,104 @@ struct RuntimeWorkspaceReviewTests {
             newUserTurn: true, newUserRequest: true, userRequest: message) == nil)
     }
 
+    @Test("A release made by another ASTRA instance is noticed by a waiting queue on its slower check, and not on every pass")
+    func foreignReleaseIsNoticed() throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (a, original) = try holder(h)
+        let (b, request) = try next(h, after: a)
+        let queue = TaskQueue(poolSize: 0)
+        queue.refreshResourceOwnership(in: h.context)
+        let wanted = queue.resourceLockClaims(for: request, task: b, runMode: "request", sandboxEnforcement: .off)
+        #expect(queue.persistedResourceLocks.contains { $0.taskID == a.id })
+        #expect(!TaskExecutionResourceBroker.canAcquire(wanted, active: queue.activeResourceLocks))
+        // Another instance lets a person start past the holder: only the journal changes.
+        var released = original
+        released.resourcesReleased = true; released.providerSharedStateReleased = true
+        released.reservationRelease = .init(basis: .decision, requestID: UUID(), named: ["lost_run"])
+        try save(released, h)
+        // The rule has nothing left to end, so its own passes do not read ownership again.
+        let slow = TaskQueue.waitingOwnershipRefreshInterval * TaskQueue.foreignReleaseCheckInterval
+        for _ in 1..<slow { queue.refreshOwnershipWhileWaiting(blocked: true, in: h.context) }
+        #expect(queue.persistedResourceLocks.contains { $0.taskID == a.id })
+        // The slower check sees that the journal folder changed, and reads it.
+        queue.refreshOwnershipWhileWaiting(blocked: true, in: h.context)
+        #expect(!queue.persistedResourceLocks.contains { $0.taskID == a.id })
+        #expect(TaskExecutionResourceBroker.canAcquire(wanted, active: queue.activeResourceLocks))
+        // A folder that did not change is not read again.
+        let stamp = queue.ownershipJournalStamp
+        for _ in 1...slow { queue.refreshOwnershipWhileWaiting(blocked: true, in: h.context) }
+        #expect(queue.ownershipJournalStamp == stamp && stamp != nil)
+    }
+
+    @Test("An SSH job started again under the same ID while the dialog is open is not the job a person was shown")
+    func sshJobStartedAgainUnderTheSameID() throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (a, original) = try holder(h) { record, _ in proof(&record, managed: true) }
+        let job = try sshJob(h, task: a, owner: original, label: "Nightly export")
+        let (b, request) = try next(h, after: a)
+        let review = try #require(try preview(h, b, request))
+        let shown = try #require(review.holders.first).jobs
+        let nonce = try #require(job.launchNonce)
+        #expect(review.holders.first?.blockers == [.sshJobs([job.jobID])] && shown.map(\.nonce) == [nonce])
+        // The same ID, another launch.
+        let root = RemoteWorkspaceJobRegistration.directory(taskID: a.id, executionID: original.executionID, context: h.context)
+        try RemoteWorkspaceJobStore(rootPath: root.appendingPathComponent("jobs").path)
+            .update(jobID: job.jobID) { $0.launchNonce = UUID().uuidString.lowercased() }
+        #expect(throws: (any Error).self) { try start(h, review, b, request) }
+        // The release refuses it too, whoever asks.
+        let store = RuntimeExecutionOwner.store(in: h.context)
+        #expect(throws: (any Error).self) {
+            try RuntimeReservationRelease.release([.init(receipt: original, blockers: [.sshJobs([job.jobID])], jobs: shown)],
+                decidedFor: request.id, store: store, context: h.context, bootedAt: boot)
+        }
+        #expect(try RuntimeExecutionOwner.existing(task: a, context: h.context) == original && reconciliations(h).isEmpty)
+        // Asked again, the launch that is there now is the one shown and decided.
+        let again = try #require(try preview(h, b, request))
+        #expect(again != review && again.holders.first?.blockers == review.holders.first?.blockers)
+        try start(h, again, b, request)
+        #expect(try RuntimeExecutionOwner.existing(task: a, context: h.context)?.reservationRelease?.basis == .decision)
+    }
+
+    @Test("A kept banner reads no journal, and copies of one finished task are not called a task at work", arguments: [-1, 0, 1])
+    func bannerForCopiesAndKeptAnswers(working: Int) throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (a, first) = try holder(h, title: "Export report")
+        let (copy, held) = try holder(h, title: "Imported copy")
+        let store = RuntimeExecutionOwner.store(in: h.context)
+        // The copy's row and record carry the first holder's ID and its lock.
+        do {
+            let lease = try store.acquire(taskID: copy.id, taskOwnerID: copy.persistentModelID)
+            try FileManager.default.removeItem(at: lease.recordURL)
+        }
+        copy.id = a.id; try h.context.save()
+        let moved = RuntimeExecutionOwnerRecord(taskID: a.id, taskOwnerID: copy.persistentModelID, ownerID: held.ownerID,
+            executionID: held.executionID, runID: held.runID, appProcess: held.appProcess, providerProcess: held.providerProcess,
+            runtime: held.runtime, sessionID: nil, state: .finished, limits: held.limits, stopProof: held.stopProof,
+            settlementInProgress: false, settlementLocalWorkStopped: true, settlementToolsStopped: true,
+            resourceClaims: first.resourceClaims, providerLaunchCount: 1, resourcesReleased: false, updatedAt: held.updatedAt)
+        try save(moved, h)
+        if working >= 0 { [a, copy][working].runs.first?.status = .running; try h.context.save() }
+        let (b, request) = try next(h, after: a)
+        let queue = TaskQueue(poolSize: 0)
+        queue.refreshResourceOwnership(in: h.context)
+        let wanted = queue.resourceLockClaims(for: request, task: b, runMode: "request", sandboxEnforcement: .off)
+        func banner() -> String { queue.resourceBlockerSummary(wanted, modelContext: h.context, request: request, task: b) }
+        let text = banner()
+        if working >= 0 {
+            // Whichever copy is at work is the one named.
+            #expect(text.hasPrefix("Waiting for “\([a, copy][working].title)” to finish in "), "\(text)")
+        } else {
+            // Two finished copies are two finished tasks, not one that is still working.
+            #expect(text.hasPrefix("Waiting for you: ASTRA lost track of a run of “") && !text.contains("to finish"), "\(text)")
+        }
+        // The answer is kept by the lock. Asked again before the next asking
+        // pass, it does not read the journals: one that became unreadable changes nothing.
+        RuntimeProviderResourceRegistry.unregister(store.root)
+        try Data("not a receipt".utf8).write(to: store.root.appendingPathComponent(UUID().uuidString + ".json"))
+        #expect(throws: (any Error).self) { try store.records() }
+        #expect(banner() == text)
+    }
+
     @Test("The banner on a waiting task names the holder, the folder and the one thing in the way")
     func bannerWording() throws {
         let me = Survivor(process: try Self.alive, name: "python3")

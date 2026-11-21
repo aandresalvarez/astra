@@ -33,8 +33,8 @@ final class TaskQueue {
     var resourceOwnershipStore: RuntimeExecutionOwnerStore?
     var resourceOwnershipReadFailed = false
     var waitingOwnershipPasses = 0
-    /// The waiting banner per holder, kept between passes. See `resourceBlockerSummary`.
-    var waitingBanners: [WaitingBannerKey: (holder: RuntimeExecutionOwnerRecord, text: String, active: Bool)] = [:]
+    var ownershipJournalStamp: Date? // The journal folder's change time at the last full ownership read.
+    var waitingBanners: [WaitingBannerKey: (text: String, active: Bool)] = [:] // Kept between passes; see `resourceBlockerSummary`.
     var activeResourceLocks: [TaskResourceLockClaim] {
         var seen: Set<TaskResourceLockClaim> = []
         return (localResourceLocks + persistedResourceLocks).filter { seen.insert($0).inserted }
