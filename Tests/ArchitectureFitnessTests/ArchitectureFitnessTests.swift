@@ -1527,6 +1527,30 @@ struct ArchitectureFitnessTests {
         )
     }
 
+    @Test("One rule ends a saved reservation")
+    func reservationReleaseHasOneOwner() throws {
+        let root = try repositoryRoot()
+        // The rule itself, the same question asked at exit in `finish()`, and
+        // the two stop-proof upgrades the rule calls once it has released.
+        let allowed: Set<String> = [
+            "Astra/Services/Runtime/RuntimeReservationRelease.swift",
+            "Astra/Services/Runtime/RuntimeExecutionOwner.swift",
+            "Astra/Services/Runtime/RuntimeHostNoToolReceiptReconciliation.swift",
+            "Astra/Services/Runtime/RuntimeHostRestartRelease.swift"
+        ]
+        let violations = try swiftFiles(under: root.appendingPathComponent("Astra"))
+            .compactMap { file -> String? in
+                let relative = relativePath(for: file, root: root)
+                guard !allowed.contains(relative) else { return nil }
+                return try String(contentsOf: file, encoding: .utf8).contains("resourcesReleased = true") ? relative : nil
+            }
+
+        #expect(
+            violations.isEmpty,
+            "A reservation ends in RuntimeReservationRelease. A second place that decides it brings back per-case exits: \(violations)"
+        )
+    }
+
     @Test("Provider-bound launches stay behind the durable request queue")
     func providerLaunchesStayBehindDurableRequestQueue() throws {
         let root = try repositoryRoot()
@@ -1668,6 +1692,14 @@ struct ArchitectureFitnessTests {
             "Whitespace"
         ])
         #expect(branchProtection["allow_fork_syncing"] as? Bool == false)
+        let requiredReviews = try #require(
+            branchProtection["required_pull_request_reviews"] as? [String: Any]
+        )
+        // Agent PRs merge on green checks; only CODEOWNERS paths need the owner.
+        #expect(requiredReviews["required_approving_review_count"] as? Int == 0)
+        #expect(requiredReviews["require_code_owner_reviews"] as? Bool == true)
+        #expect(requiredReviews["dismiss_stale_reviews"] as? Bool == true)
+        #expect(branchProtection["required_conversation_resolution"] as? Bool == true)
         #expect(focusedTargetScript.contains("Tools/MCPGatewaySupport"))
         #expect(focusedTargetScript.contains("MCPGatewaySupportTests"))
         #expect(focusedTargetScript.contains("Tools/MailToolSupport"))
@@ -1717,8 +1749,11 @@ struct ArchitectureFitnessTests {
         #expect(memoryTraceScript.contains(#"*"/ASTRA Dev.app/Contents/MacOS/ASTRA Dev"*"#))
         #expect(!memoryTraceScript.contains("/ASTRA Dev.app/Contents/MacOS/ASTRA$"))
         #expect(!codeowners.contains("* @aandresalvarez"))
-        #expect(codeowners.contains("Astra/Services/Runtime/"))
+        #expect(codeowners.contains("Astra/Models/"))
         #expect(codeowners.contains("Astra/Services/Persistence/"))
+        #expect(codeowners.contains(".github/"))
+        #expect(codeowners.contains(".githooks/"))
+        #expect(codeowners.contains("script/configure_branch_protection.sh"))
         #expect(codeowners.contains("Tests/ArchitectureFitnessTests/"))
         #expect(codeowners.contains("Tests/AppSemanticFitnessTests.swift"))
     }

@@ -32,6 +32,13 @@ struct RuntimeWorkspaceContinuationAuthorization: Codable, Equatable {
         let workspaceOwnerID: PersistentIdentifier
         let claims: [TaskResourceLockClaim]
     }
+
+    /// The same decision, for the holders that still reserve something.
+    func covering(_ standing: [Source]) -> Self {
+        .init(taskID: taskID, taskOwnerID: taskOwnerID, requestID: requestID, sourceEventID: sourceEventID,
+              approvedAt: approvedAt, sources: standing, beneficiaryReceiptDigest: beneficiaryReceiptDigest,
+              workspaceScope: workspaceScope, inheritedAuthorizationID: inheritedAuthorizationID)
+    }
 }
 
 @MainActor
@@ -102,8 +109,9 @@ enum RuntimeWorkspaceContinuation {
             let id = record.taskID
             let candidates = try context.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == id }))
             let owners = try candidates.filter { try RuntimeTaskOwnerJournal.read(task: $0, context: context) == record }
+            // The holder's turn must be over; it need not have succeeded.
             guard owners.count == 1, let owner = owners.first,
-                  RuntimeCompletedUserTurnContinuation.hasCompletedTurn(record, task: owner, context: context) else { throw RuntimeExecutionOwnerStore.Failure.busy }
+                  RuntimeCompletedUserTurnContinuation.hasEndedTurn(record, task: owner, context: context) else { throw RuntimeExecutionOwnerStore.Failure.busy }
             let jobs = try RuntimeWorkspaceRemoteJobs.inventory(task: owner, owner: record, context: context).filter { !$0.status.isTerminal }
             if !reviewSSHJobs { try RuntimeWorkspaceRemoteJobs.check(jobs, reviewed: [], savingDecision: false) }
             sources.append(.init(taskOwnerID: owner.persistentModelID, receipt: record, reviewedSSHJobs: jobs.isEmpty ? nil : jobs,
@@ -179,7 +187,18 @@ enum RuntimeWorkspaceContinuation {
             context: context, claims: claims, previous: previous) : nil
         let authorizationID = existing?.requestID ?? inherited?.requestID ?? previous?.workspaceContinuationRequestID ?? request.id
         let savedAuthorization = try existing ?? (authorizationID == request.id ? nil : store.workspaceContinuation(requestID: authorizationID))
-        guard let authorization = savedAuthorization ?? inherited else { return nil }
+        guard var authorization = savedAuthorization ?? inherited else { return nil }
+        // A saved decision covers holders. One whose reservation has since
+        // ended needs no exception, and when none is left this is ordinary
+        // admission. The request the decision admitted still resumes its own
+        // interrupted preparation on it.
+        if savedAuthorization != nil {
+            let standing = try authorization.sources.filter { try holdsReservation($0, context: context) }
+            let resumes = previous.map { $0.workspaceContinuationRequestID == authorizationID
+                && resumesPreparation($0, task: task, request: request, context: context) } ?? false
+            guard !standing.isEmpty || resumes else { return nil }
+            authorization = authorization.covering(standing)
+        }
         if authorization.requestID != request.id, authorization.sources.contains(where: { $0.reviewedSSHJobs != nil }) { return nil }
         guard authorization.taskID == task.id, authorization.taskOwnerID == task.persistentModelID,
               authorization.requestID == authorizationID, request.state.isActive,
@@ -214,12 +233,23 @@ enum RuntimeWorkspaceContinuation {
                   }) else { throw RuntimeExecutionOwnerStore.Failure.busy }
             excluded += now
         }
-        let leases = try lockSources(authorization, store: store, context: context)
+        let leases = authorization.sources.isEmpty ? [] : try lockSources(authorization, store: store, context: context)
         // A new task needs no exception once every reviewed owner has
         // independently released its resources. Use ordinary admission.
         if leases.isEmpty && previous == nil { return nil }
         return Admission(authorization: authorization, leases: leases, needsPersistence: savedAuthorization == nil,
             excludedClaims: Set(excluded.filter { $0.resourceKind == .workspace || $0.resourceKind == .gitCommonDirectory }))
+    }
+
+    /// Whether a reviewed holder still reserves anything. A holder that
+    /// cannot be read is treated as holding, so `lockSources` fails closed.
+    private static func holdsReservation(_ source: RuntimeWorkspaceContinuationAuthorization.Source,
+                                         context: ModelContext) throws -> Bool {
+        let id = source.receipt.taskID
+        let candidates = try context.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == id }))
+        guard let owner = candidates.first(where: { $0.persistentModelID == source.taskOwnerID }),
+              let current = try RuntimeTaskOwnerJournal.read(task: owner, context: context) else { return true }
+        return RuntimeResourceOwnership.retainsResources(current)
     }
 
     static func resumesPreparation(_ saved: RuntimeExecutionOwnerRecord, task: AgentTask,
@@ -317,7 +347,7 @@ enum RuntimeWorkspaceContinuation {
             guard let owner = candidates.first(where: { $0.persistentModelID == source.taskOwnerID }),
                   let current = try RuntimeTaskOwnerJournal.read(task: owner, context: context),
                   current.ownerID == saved.ownerID, current.executionID == saved.executionID, current.runID == saved.runID,
-                  RuntimeCompletedUserTurnContinuation.hasCompletedTurn(current, task: owner, context: context) else { throw RuntimeExecutionOwnerStore.Failure.busy }
+                  RuntimeCompletedUserTurnContinuation.hasEndedTurn(current, task: owner, context: context) else { throw RuntimeExecutionOwnerStore.Failure.busy }
             if !savingDecision, source.reviewedSSHJobs != nil, current.resourcesReleased == true, current.canReplace { continue }
             guard current == saved else { throw RuntimeExecutionOwnerStore.Failure.busy }
             let jobs = try RuntimeWorkspaceRemoteJobs.inventory(task: owner, owner: saved, context: context)

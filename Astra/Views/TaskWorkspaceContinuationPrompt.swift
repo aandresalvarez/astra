@@ -5,6 +5,15 @@ import WorkspaceToolSupport
 
 @MainActor
 enum TaskWorkspaceContinuationPrompt {
+    /// A holder whose last run failed did not "finish". Say that it stopped,
+    /// and name the tasks whose last run ended without completing.
+    nonisolated static func opening(names: [String], unfinished: [String]) -> String {
+        let all = names.joined(separator: ", ")
+        let uncertainty = "earlier tool effects remain unverified and could still be active."
+        guard !unfinished.isEmpty else { return "The provider finished in \(all), but \(uncertainty)" }
+        return "The provider has stopped in \(all), but the last run in \(unfinished.joined(separator: ", ")) ended without completing, and \(uncertainty)"
+    }
+
     static func present(task: AgentTask, requestID: UUID, queue: TaskQueue, context: ModelContext) {
         do {
             guard let request = try TaskTurnRequestRepository.request(id: requestID, in: context) else { return }
@@ -20,14 +29,17 @@ enum TaskWorkspaceContinuationPrompt {
             }
             let proposal = try RuntimeWorkspaceContinuation.preview(task: task, request: request, context: context,
                 previous: previous, reviewSSHJobs: true)
-            let names = proposal.sources.compactMap { source -> String? in
+            let holders = proposal.sources.compactMap { source -> (title: String, completed: Bool)? in
                 let id = source.receipt.taskID
-                return try? context.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == id }))
-                    .first(where: { $0.persistentModelID == source.taskOwnerID })?.title
+                guard let owner = try? context.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == id }))
+                    .first(where: { $0.persistentModelID == source.taskOwnerID }) else { return nil }
+                return (owner.title, owner.runs.first { $0.id == source.receipt.runID }?.status == .completed)
             }
+            let names = holders.map(\.title)
+            let unfinished = holders.filter { !$0.completed }.map(\.title)
             let alert = NSAlert()
             alert.messageText = "Continue this workspace?"
-            alert.informativeText = "The provider finished in \(names.joined(separator: ", ")), but earlier tool effects remain unverified and could still be active. Continue to resume this workspace despite that uncertainty. ASTRA will remember this decision for tasks you start here after each previous task finishes. Active work, failed cleanup, changed resources and scheduled tasks remain blocked. Your history and execution evidence stay preserved."
+            alert.informativeText = "\(Self.opening(names: names, unfinished: unfinished)) Continue to resume this workspace despite that uncertainty. ASTRA will remember this decision for tasks you start here after each previous task finishes. Active work, failed cleanup, changed resources and scheduled tasks remain blocked. Your history and execution evidence stay preserved."
             let jobs = proposal.sources.flatMap { $0.reviewedSSHJobs ?? [] }
             var action = "Continue workspace"
             if !jobs.isEmpty {
@@ -37,7 +49,7 @@ enum TaskWorkspaceContinuationPrompt {
                 let legacy = jobs.contains(where: \.legacy)
                     ? " For older attempts the host can block a delayed launch and check for its supervisor, but their earlier effects remain unknown."
                     : ""
-                alert.informativeText = "\(names.joined(separator: ", ")) finished locally. ASTRA will recheck these jobs before starting this saved request.\(legacy) Continuing accepts earlier unverified tool effects for this request only.\n\n" + lines.joined(separator: "\n")
+                alert.informativeText = "\(names.joined(separator: ", ")) \(unfinished.isEmpty ? "finished" : "ended") locally. ASTRA will recheck these jobs before starting this saved request.\(legacy) Continuing accepts earlier unverified tool effects for this request only.\n\n" + lines.joined(separator: "\n")
                 if jobs.count > lines.count { alert.informativeText += "\n…and \(jobs.count - lines.count) more." }
                 action = allSealed ? "Continue this request" : "Continue when verified"
             }

@@ -86,7 +86,7 @@ struct RuntimeHostNoToolReceiptReconciliationTests {
         let request = try #require(try TaskTurnRequestRepository.request(id: submitted.requestID, in: h.context))
         _ = TaskTurnRequestStateMachine.transition(request, to: cancelled ? .cancelled : .waitingForResource, terminalReason: cancelled ? "cancelled_by_user" : nil)
         try h.context.save()
-        try RuntimeHostNoToolReceiptReconciliation.reconcile(in: store, context: h.context)
+        try RuntimeReservationRelease.reconcile(in: store, context: h.context)
         #expect(try store.read(taskID: task.id) == record)
         lease = nil
         let recovery = TaskTurnRequestRecoveryService.recoverInterruptedRequests(modelContext: h.context, autoExportWorkspaces: false)
@@ -95,7 +95,7 @@ struct RuntimeHostNoToolReceiptReconciliationTests {
         #expect(repaired.canReplace && repaired.hostNoToolReconciliationOriginalProof == record.stopProof)
         #expect(try RuntimeResourceOwnership.claims(in: store, context: h.context).isEmpty)
         let eventCount = task.events.count
-        try RuntimeHostNoToolReceiptReconciliation.reconcile(in: store, context: h.context)
+        try RuntimeReservationRelease.reconcile(in: store, context: h.context)
         #expect(task.events.count == eventCount)
         #expect(request.id == submitted.requestID && request.state == (cancelled ? .cancelled : .waitingForWorker))
         #expect(task.runs.count == 1 && run.output == "Keep this answer" && run.tokensUsed == 42)
