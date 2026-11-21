@@ -148,10 +148,15 @@ class TestShardPlanTests(unittest.TestCase):
         self.addCleanup(folder.cleanup)
         root = Path(folder.name)
         (root / 'Tests' / 'Nested').mkdir(parents=True)
+        (root / 'Package.swift').write_text(
+            'let package = Package(targets: [\n'
+            '    .testTarget(\n        name: "FixtureTargetTests",\n        path: "Tests"\n    )\n])\n'
+        )
         (root / 'Tests' / 'Heavy.swift').write_text(
             '@Suite("Heavy suite", .serialized)\n@MainActor\nstruct HeavyTests {\n'
             '    @Suite("Inner suite")\n    struct InnerTests {}\n}\n'
             '@Suite("Twin suite")\nstruct TwinOneTests {}\n'
+            '@Suite("Target suite")\nstruct TargetTests {}\n'
         )
         (root / 'Tests' / 'Nested' / 'Medium.swift').write_text(
             '@Suite("Medium suite")\nfinal class MediumTests {}\n'
@@ -173,15 +178,55 @@ class TestShardPlanTests(unittest.TestCase):
             '✔ Suite "Undeclared suite" passed after 20.000 seconds.',
             '◇ Suite "Small suite" started.',
             '✔ Suite "Small suite" passed after 10.000 seconds.',
+            '◇ Suite "Target suite" started.',
+            '✔ Suite "Target suite" passed after 35.000 seconds.',
+            '✔ Test run with 9 tests in 7 suites passed after 155.000 seconds.',
+            # The strict one-worker step of the same job runs a suite again.
+            '◇ Suite "Heavy suite" started.',
+            '✔ Suite "Heavy suite" passed after 7.000 seconds.',
+            '✔ Test run with 1 test in 1 suite passed after 7.000 seconds.',
         ]))
+        # Only the first test run of the log counts.
         self.assertEqual(ci_test_shards.suite_seconds(str(log)), {
             'Heavy suite': 40.0, 'Medium suite': 30.0, 'Twin suite': 20.0,
-            'Undeclared suite': 20.0, 'Small suite': 10.0,
+            'Undeclared suite': 20.0, 'Small suite': 10.0, 'Target suite': 35.0,
         })
         listed, loads = ci_test_shards.propose([str(log)], shards=3, root=str(root))
-        # The ambiguous and the undeclared suite cannot be named, so they stay in the last shard.
-        self.assertEqual(listed, [['HeavyTests'], ['MediumTests']])
-        self.assertEqual(loads, [40.0, 30.0, 50.0])
+        # The ambiguous and the undeclared suite cannot be named, and TargetTests is part of
+        # a test target's name, so a filter on it would select that whole target: all three
+        # stay in the last shard.
+        self.assertEqual(listed, [['HeavyTests'], ['MediumTests', 'SmallTests']])
+        self.assertEqual(loads, [40.0, 40.0, 75.0])
+
+    def test_proposed_plan_always_passes_the_plan_validator(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        root = Path(folder.name)
+        (root / 'Tests').mkdir()
+        (root / 'Package.swift').write_text('let package = Package(targets: [])\n')
+        (root / 'Tests' / 'Suites.swift').write_text(
+            '@Suite("A suite")\nstruct ATests {}\n'
+            '@Suite("B suite")\nstruct BTests {}\n'
+            '@Suite("C suite")\nstruct CTests {}\n'
+        )
+
+        def log_of(seconds):
+            log = root / f'job-{len(seconds)}.log'
+            log.write_text(''.join(
+                f'◇ Suite "{name} suite" started.\n✔ Suite "{name} suite" passed after {value}.000 seconds.\n'
+                for name, value in seconds.items()))
+            return str(log)
+
+        # The second suite alone already passes the listed share, and still fills its shard.
+        listed, loads = ci_test_shards.propose(
+            [log_of({'A': 60, 'B': 50, 'C': 40})], shards=3, root=str(root))
+        self.assertEqual(listed, [['ATests'], ['BTests']])
+        self.assertEqual(loads, [60.0, 50.0, 40.0])
+        self.assertEqual(
+            ci_test_shards.load_plan(self.write_plan({'version': 1, 'shards': listed})), listed)
+        # One measured suite cannot fill two listed shards, so nothing is proposed.
+        with self.assertRaises(ci_test_shards.PlanError):
+            ci_test_shards.propose([log_of({'A': 60})], shards=3, root=str(root))
 
     def test_command_line_prints_one_line_of_arguments_and_fails_loudly(self):
         def run(*arguments):

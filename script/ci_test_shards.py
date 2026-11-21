@@ -25,7 +25,10 @@ Usage:
 
 `plan` needs the logs of every test job of each run it reads: one log when a
 single job ran the whole suite, all the shards' logs otherwise. A suite it
-finds in no log counts as zero seconds.
+finds in no log counts as zero seconds. It reads only the first test run of a
+log, because the strict one-worker step that follows in shard 1 runs suites a
+second time. It never proposes a name that is part of a test target's name,
+which would select that whole target.
 """
 import json
 import os
@@ -38,6 +41,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PLAN_PATH = os.path.join(ROOT, 'script', 'ci_test_shards.json')
 TEST_SOURCE_ROOTS = ('Tests', 'ASTRAGitContracts/Tests')
 
+TEST_TARGET = re.compile(r'\.testTarget\(\s*name:\s*"([^"]+)"')
+RUN_ENDED = re.compile(r'[✔✘] Test run with [0-9]+ tests? in [0-9]+ suites? (?:passed|failed) after')
 SUITE_STARTED = re.compile(r'◇ Suite (.+) started\.$')
 SUITE_ENDED = re.compile(r'[✔✘] Suite (.+) (?:passed|failed) after ([0-9.]+) seconds')
 SUITE_ATTRIBUTE = re.compile(r'@Suite\(\s*"((?:[^"\\]|\\.)*)"')
@@ -56,7 +61,11 @@ def load_plan(path=PLAN_PATH):
         plan = json.load(handle)
     if not isinstance(plan, dict) or plan.get('version') != PLAN_VERSION:
         raise PlanError(f'{path}: expected a plan with "version": {PLAN_VERSION}')
-    shards = plan.get('shards')
+    return validated(plan.get('shards'), path)
+
+
+def validated(shards, path):
+    """The listed shards of a plan, or a PlanError saying what `swift test` could not run."""
     if not isinstance(shards, list) or not shards:
         raise PlanError(f'{path}: "shards" must list at least one shard')
     names = []
@@ -122,11 +131,13 @@ def check(list_path, shards):
 
 
 def suite_seconds(log_path):
-    """Seconds per top-level suite, by display name, from the log of a serial test job."""
+    """Seconds per top-level suite, by display name, from the first test run in a job log."""
     open_suites = []
     seconds = {}
     with open(log_path, encoding='utf-8', errors='replace') as handle:
         for line in handle:
+            if RUN_ENDED.search(line):
+                break  # A later run in the same job repeats suites that already ran.
             started = SUITE_STARTED.search(line)
             if started:
                 open_suites.append(started.group(1))
@@ -165,6 +176,12 @@ def suite_type_names(root=ROOT):
     return types
 
 
+def test_target_names(root=ROOT):
+    """Names of the package's test targets, each the first part of its tests' identifiers."""
+    with open(os.path.join(root, 'Package.swift'), encoding='utf-8') as handle:
+        return set(TEST_TARGET.findall(handle.read()))
+
+
 def propose(log_paths, shards=3, root=ROOT):
     """Heaviest suites first into the lighter listed shard, until the rest is one share."""
     totals = {}
@@ -174,11 +191,13 @@ def propose(log_paths, shards=3, root=ROOT):
     mean = {name: sum(values) / len(values) for name, values in totals.items()}
     total = sum(mean.values())
     types = suite_type_names(root)
+    targets = test_target_names(root)
     listed = [[] for _ in range(shards - 1)]
     loads = [0.0] * (shards - 1)
     chosen = []
     for name, value in sorted(mean.items(), key=lambda item: (-item[1], item[0])):
-        if sum(loads) + value > total * (shards - 1) / shards:
+        # Every listed shard gets a suite before the listed share can end the list.
+        if sum(loads) + value > total * (shards - 1) / shards and all(listed):
             break
         candidates = types.get(name, set())
         if len(candidates) != 1:
@@ -186,11 +205,13 @@ def propose(log_paths, shards=3, root=ROOT):
         type_name = next(iter(candidates))
         if any(type_name in other or other in type_name for other in chosen):
             continue
+        if any(type_name in target for target in targets):
+            continue  # It would select every test of that target, not one suite.
         lighter = loads.index(min(loads))
         listed[lighter].append(type_name)
         loads[lighter] += value
         chosen.append(type_name)
-    return listed, loads + [total - sum(loads)]
+    return validated(listed, 'proposed plan'), loads + [total - sum(loads)]
 
 
 def main(argv):
