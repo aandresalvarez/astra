@@ -185,7 +185,7 @@ enum RuntimeWorkspaceReviewWording {
             }
             // It starts by itself only when nothing else here needs a decision.
             // Only work that is under way ends by itself; anything else needs a
-            // look again. A holder whose lease a worker holds was not asked the rest.
+            // look again. A holder whose worker or provider still runs was not asked the rest.
             let blockers = review.holders.flatMap(\.blockers)
             let after = !blockers.allSatisfy({ $0.holderIsActive || $0 == .unasked })
                 ? "When that ends, something else here may still need your decision: choose Review workspace again to see."

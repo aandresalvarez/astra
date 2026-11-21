@@ -207,6 +207,8 @@ struct RuntimeWorkspaceReviewTests {
         let dialog = RuntimeWorkspaceReviewWording.dialog(review)
         #expect(!dialog.canStart && dialog.title.hasPrefix("Something is still running in "))
         #expect(dialog.message.contains("“Export report”") && !dialog.message.contains("Starting now"))
+        // A live worker or provider has no exit to ask yet: no start is promised for when it ends.
+        if fault == "providerAlive" || fault == "liveLease" { #expect(!dialog.message.contains("This request starts when that ends")) }
         #expect(throws: (any Error).self) { try start(h, review, b, request) }
         live = nil
         #expect(try store.read(taskID: a.id, taskOwnerID: a.persistentModelID) == saved && reconciliations(h).isEmpty)
@@ -530,7 +532,7 @@ struct RuntimeWorkspaceReviewTests {
         let found = try #require(review.holders.first).blockers
         switch fault {
         case "providerAlive":
-            #expect(found == [.lostRun, .providerAlive(pid: me.pid)] && !review.canStart)
+            #expect(found == [.lostRun, .providerAlive(pid: me.pid), .unasked] && !review.canStart)
             #expect(!RuntimeWorkspaceReviewWording.dialog(review).canStart)
             #expect(throws: (any Error).self) { try start(h, review, b, request) }
             #expect(try store.read(taskID: a.id, taskOwnerID: a.persistentModelID) == current && reconciliations(h).isEmpty)

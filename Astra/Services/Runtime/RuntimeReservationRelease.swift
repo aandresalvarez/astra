@@ -75,8 +75,10 @@ enum RuntimeReservationRelease {
         case settlementUnconfirmed
         case sessionUnverified
         case lineageUnreadable
-        /// A worker holds the task's lease, so nothing else about this
-        /// reservation could be asked. It comes only with `taskWorking`.
+        /// The holder is still at work, so the rest is not known yet: a
+        /// worker holds the task's lease, or the provider still runs and has
+        /// left no exit record to ask. It comes only with `taskWorking` or
+        /// `providerAlive`.
         case unasked
 
         var isRunning: Bool {
@@ -208,7 +210,8 @@ enum RuntimeReservationRelease {
 
             if let process = execution.providerProcess {
                 switch process.presence {
-                case .present: hold(.providerAlive(pid: process.pid)); return
+                // Its exit, and whatever it leaves, cannot be asked until it ends.
+                case .present: hold(.providerAlive(pid: process.pid)); hold(.unasked); return
                 case .unknown: if !beforeBoot { hold(.lostRun); return }
                 case .absent: break
                 }
