@@ -91,8 +91,9 @@ For the receipt and every execution retained in its lineage, all of these must h
 5. **Nothing off this Mac is open.**
    - every run of the lineage ran on the host, not in a container;
    - the lineage has no SSH job ASTRA tracks that has not ended. A job record that cannot be read
-     counts as not ended, and so does a receipt that recorded jobs at its exit
-     (`pendingSSHJobSetDigest`) when none can be found now.
+     counts as not ended. Where a receipt recorded its jobs at exit (`pendingSSHJobSetDigest`),
+     the set found now must be exactly that set: a missing or replaced job record is not an ended
+     job, even when every job still found has ended.
 
    An SSH route alone does not hold a reservation (decision 1). The reservation protects a folder
    on this Mac. A job on another machine cannot write that folder, and a local `ssh` that is still
@@ -401,8 +402,10 @@ Under this spec, with enforcement Off:
   enforcement on. Before and after each turn ASTRA compares the source checkout
   (`git status --porcelain` and `HEAD`, the snapshot `AgentFileChangeDetector` already takes for
   the task's own path). A difference is recorded on the task as an event naming the files, shown
-  on the task, and shown to the next task that needs that checkout. Nothing is reverted; Git is
-  the undo.
+  on the task, and shown to the next task that needs that checkout. Nothing is reverted. Git is
+  the undo only for what Git recorded: an uncommitted edit or an untracked file that was already
+  there and that the run overwrites or deletes cannot be brought back, because the watch keeps
+  fingerprints, not copies.
 - **A read-only turn in the checkout itself still waits.** This document first proposed keeping
   its shared claim and watching the checkout the same way. The owner decided against it
   (decision 10): outside a worktree a shared claim on a checkout still becomes exclusive when
@@ -619,8 +622,9 @@ new task back to unchecked.
 - **Parallel tasks in one non-code workspace can still touch the same file** when an agent writes
   outside its folder with enforcement Off. The policy and the prompt say where to write, and the
   notice says when it did not. Nothing prevents it.
-- **Detection is after the fact.** For a repository the undo is Git. For a cloud-synced folder
-  there is none, which is why that type keeps one writer and asks.
+- **Detection is after the fact.** For a repository the undo is Git, for what Git recorded; an
+  uncommitted edit or an untracked file that a run overwrites or deletes is lost. For a
+  cloud-synced folder there is none, which is why that type keeps one writer and asks.
 
 ## Decisions
 
