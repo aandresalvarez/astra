@@ -809,8 +809,9 @@ struct RuntimeWorkspaceReviewTests {
             // Whichever copy is at work is the one named.
             #expect(text.hasPrefix("Waiting for “\([a, copy][working].title)” to finish in "), "\(text)")
         } else {
-            // Two finished copies are two finished tasks, not one that is still working.
-            #expect(text.hasPrefix("Waiting for you: ASTRA lost track of a run of “") && !text.contains("to finish"), "\(text)")
+            // Two finished copies are two finished runs, not one that is still working,
+            // and neither of them alone says when this starts.
+            #expect(text.hasPrefix("Waiting for you: 2 earlier runs still hold ") && !text.contains("to finish"), "\(text)")
         }
         // The answer is kept by the lock. Asked again before the next asking
         // pass, it does not read the journals: one that became unreadable changes nothing.
@@ -909,6 +910,9 @@ struct RuntimeWorkspaceReviewTests {
         }
         let alone = RuntimeWorkspaceReviewWording.dialog(.init(requestID: UUID(), holders: [holder("Export report", [.taskWorking])]))
         #expect(!alone.canStart && alone.message.contains("“Export report” is still working. This request starts when that ends."))
+        // A holder at work that also left something unanswered is not promised to end it all by finishing.
+        let more = RuntimeWorkspaceReviewWording.dialog(.init(requestID: UUID(), holders: [holder("Export report", [.taskWorking, .container])]))
+        #expect(!more.canStart && more.message.contains("When that ends, something else here may still need your decision"))
         // When the working task ends, the other holder still needs the person.
         let mixed = RuntimeWorkspaceReviewWording.dialog(.init(requestID: UUID(), holders: [
             holder("Export report", [.taskWorking]), holder("Clean data", [.lostRun])]))
@@ -963,6 +967,55 @@ struct RuntimeWorkspaceReviewTests {
             payload: TaskEvent.payloadString(old, fallback: "{}"), run: a.runs.first))
         try h.context.save()
         #expect(try RuntimeReservationRelease.owner(of: old, context: h.context)?.persistentModelID == a.persistentModelID)
+    }
+
+    @Test("With several earlier runs in the way, the banner promises no start; a released copy is not one of them")
+    func bannerWithSeveralHolders() throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let mine = Survivor(process: try Self.alive, name: "python3")
+        // One holder left only a process, the other is a run ASTRA lost track of.
+        let (a, _) = try holder(h, title: "Export report") { record, _ in proof(&record, survivors: observation(record, [mine])) }
+        let (other, _) = try holder(h, title: "Clean data")
+        other.workspace = a.workspace; try h.context.save()
+        let (b, request) = try next(h, after: a)
+        let queue = TaskQueue(poolSize: 0)
+        queue.refreshResourceOwnership(in: h.context)
+        let wanted = queue.resourceLockClaims(for: request, task: b, runMode: "request", sandboxEnforcement: .off)
+        let text = queue.resourceBlockerSummary(wanted, modelContext: h.context, request: request, task: b)
+        #expect(text.hasPrefix("Waiting for you: 2 earlier runs still hold ") && !text.contains("This starts when"), "\(text)")
+        // Asked without the request, the same fact and no call to act.
+        queue.waitingBanners = [:]
+        #expect(queue.resourceBlockerSummary(wanted, modelContext: h.context).hasPrefix("2 earlier runs still hold "))
+    }
+
+    @Test("A copy whose reservation already ended is not asked about, even though its record keeps the claim")
+    func bannerSkipsAReleasedCopy() throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (a, first) = try holder(h, title: "Export report")
+        let (copy, held) = try holder(h, title: "Imported copy")
+        let store = RuntimeExecutionOwner.store(in: h.context)
+        do {
+            let lease = try store.acquire(taskID: copy.id, taskOwnerID: copy.persistentModelID)
+            try FileManager.default.removeItem(at: lease.recordURL)
+        }
+        copy.id = a.id; try h.context.save()
+        let moved = RuntimeExecutionOwnerRecord(taskID: a.id, taskOwnerID: copy.persistentModelID, ownerID: held.ownerID,
+            executionID: held.executionID, runID: held.runID, appProcess: held.appProcess, providerProcess: held.providerProcess,
+            runtime: held.runtime, sessionID: nil, state: .finished, limits: held.limits, stopProof: held.stopProof,
+            settlementInProgress: false, settlementLocalWorkStopped: true, settlementToolsStopped: true,
+            resourceClaims: first.resourceClaims, providerLaunchCount: 1, resourcesReleased: false, updatedAt: held.updatedAt)
+        try save(moved, h)
+        // The first copy's reservation ended; its record still lists the same claim.
+        var released = first
+        released.resourcesReleased = true; released.providerSharedStateReleased = true
+        released.reservationRelease = .init(basis: .exitProof)
+        try save(released, h)
+        let (b, request) = try next(h, after: a)
+        let queue = TaskQueue(poolSize: 0)
+        queue.refreshResourceOwnership(in: h.context)
+        let wanted = queue.resourceLockClaims(for: request, task: b, runMode: "request", sandboxEnforcement: .off)
+        let text = queue.resourceBlockerSummary(wanted, modelContext: h.context, request: request, task: b)
+        #expect(text.hasPrefix("Waiting for you: ASTRA lost track of a run of “Imported copy”"), "\(text)")
     }
 
     @Test("The banner on a waiting task names the holder, the folder and the one thing in the way")
