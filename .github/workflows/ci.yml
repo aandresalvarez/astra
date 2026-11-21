@@ -43,7 +43,9 @@ jobs:
     # Cold compilation takes 17 to 22 minutes, so every run restores the
     # newest build saved for its toolchain: a pull request's own last build
     # when it has one, otherwise the newest build of main. Every run saves its
-    # build under a key that names the commit.
+    # build under a key that names the commit. Nothing in this workflow deletes
+    # a build: GitHub removes a cache nobody read for 7 days and, once the
+    # repository holds more than 10 GB, the least recently used ones first.
     # script/ci_source_mtimes.py then gives unchanged files the modification
     # time the cached build saw, because SwiftPM recompiles any file whose
     # time differs and a fresh checkout stamps every file with "now".
@@ -226,55 +228,6 @@ jobs:
           [[ "$BUILD_RESULT" == "success" ]] || exit 1
           [[ "$SHARDS_RESULT" == "success" ]] && exit 0
           [[ "$SHARDS_RESULT" == "skipped" && "$GITHUB_EVENT_NAME" == "push" && "$ALREADY_TESTED" == "true" ]]
-
-  prune-build-caches:
-    name: Prune superseded build caches
-    # Every run saves a build of about 0.8 GB and the repository's caches are
-    # limited to 10 GB. Once a ref has a newer build, its older ones are never
-    # restored again, so this job deletes them instead of leaving the choice
-    # of what to evict to GitHub. main keeps one earlier build for runs that
-    # are restoring it right now. This job checks out no code, so the token
-    # that may delete caches is never in a job that builds or runs the
-    # repository's code. It guarantees no more than that: a pull request from
-    # this repository can edit this workflow, its permissions included, and a
-    # pull request from a fork gets a read-only token whatever is written here.
-    needs: build-app-and-tests
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      actions: write
-    steps:
-      - name: Delete the builds this ref no longer needs
-        env:
-          GH_TOKEN: ${{ github.token }}
-          KEEP_KEY: ${{ needs.build-app-and-tests.outputs.build-key }}
-        run: |
-          set -u
-          prefix="${KEEP_KEY%%-ci-build-*}-ci-build-"
-          keep_earlier=0
-          [[ "$GITHUB_REF" == "refs/heads/main" ]] && keep_earlier=1
-          listing="$(gh api "repos/$GITHUB_REPOSITORY/actions/caches?ref=$GITHUB_REF&key=$prefix&sort=created_at&direction=desc&per_page=100" \
-            --jq '.actions_caches[] | "\(.id) \(.key)"' || true)"
-          # The listing is newest first. A re-run of an older run finds a newer
-          # build ahead of its own, and that build is the one to keep.
-          newest="$(head -n 1 <<< "$listing")"
-          if [[ "${newest#* }" != "$KEEP_KEY" ]]; then
-            echo "This run's build is not the newest of $GITHUB_REF, so nothing is deleted."
-            exit 0
-          fi
-          echo "Keeping $KEEP_KEY"
-          while read -r id key; do
-            [[ -n "$id" && "$key" != "$KEEP_KEY" ]] || continue
-            if ((keep_earlier > 0)); then
-              keep_earlier=$((keep_earlier - 1))
-              continue
-            fi
-            if gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/caches/$id" > /dev/null; then
-              echo "Deleted $key"
-            else
-              echo "Could not delete $key"
-            fi
-          done <<< "$listing"
 
   whitespace:
     name: Whitespace

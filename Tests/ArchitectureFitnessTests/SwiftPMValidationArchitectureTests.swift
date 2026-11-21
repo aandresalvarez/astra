@@ -126,14 +126,9 @@ struct SwiftPMValidationArchitectureTests {
         #expect(ciWorkflow.contains(
             #"[[ "$SHARDS_RESULT" == "skipped" && "$GITHUB_EVENT_NAME" == "push" && "$ALREADY_TESTED" == "true" ]]"#
         ))
-        // Only the prune job may delete caches, and it checks out no code.
-        #expect(ciWorkflow.components(separatedBy: "actions: write").count == 2)
-        let pruneJob = try #require(
-            ciWorkflow.components(separatedBy: "  prune-build-caches:\n").last?
-                .components(separatedBy: "  whitespace:\n").first
-        )
-        #expect(pruneJob.contains("actions: write"))
-        #expect(!pruneJob.contains("actions/checkout"))
+        // No job of this workflow gets a token that can write: superseded
+        // builds are left to GitHub's own cache eviction.
+        #expect(!ciWorkflow.contains(": write"))
     }
 
     private func repositoryRoot() throws -> URL {
