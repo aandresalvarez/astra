@@ -52,15 +52,44 @@ enum RuntimeWorkspaceReviewWording {
     /// Docker Desktop alone leaves nine. The record keeps every one of them.
     nonisolated static let namedProcessLimit = 6
 
+    /// Why a holder may take no new message even after a decision. Admission
+    /// refuses one while the task's provider session is unconfirmed or its
+    /// earlier runs cannot be read, and a decision changes neither. `task`
+    /// is how the sentence refers to the holder.
+    nonisolated static func refusesNewMessage(_ blockers: [RuntimeReservationRelease.Blocker], task: String) -> String? {
+        if blockers.contains(.sessionUnverified) { return "it cannot confirm that \(task) provider session ended" }
+        if blockers.contains(.lineageUnreadable) { return "it cannot read \(task) earlier runs" }
+        return nil
+    }
+
     /// The line left in a holder's history after a person started past it.
     /// Nothing asks about that run again afterwards, so its Retry does not
-    /// come back; the task itself continues with a new message.
-    nonisolated static func holderNote(folders: [String], on date: Date = Date()) -> String {
+    /// come back. The task itself continues with a new message, unless
+    /// admission would refuse that too; then the line says so.
+    nonisolated static func holderNote(folders: [String], blockers: [RuntimeReservationRelease.Blocker] = [],
+                                       on date: Date = Date()) -> String {
         let day = date.formatted(.dateTime.month(.abbreviated).day())
         let place = folders.isEmpty ? "its folders" : code(folders)
-        return "You let other tasks use \(place) on \(day), before ASTRA could confirm that this run's work had ended. "
-            + "Retry is not available for that run. Send a new message here to continue."
+        let start = "You let other tasks use \(place) on \(day), before ASTRA could confirm that this run's work had ended. "
+        guard let reason = refusesNewMessage(blockers, task: "this task's") else {
+            return start + "Retry is not available for that run. Send a new message here to continue."
+        }
+        return start + "Retry is not available for that run, and ASTRA may refuse a new message here too, because \(reason). "
+            + "Start a new task to carry on this work."
     }
+
+    /// "Review workspace" on a request that waits for something that is not a
+    /// folder: an account, a browser profile, a container. `summary` is the
+    /// line the task already shows.
+    nonisolated static let otherResourceTitle = "This request is not waiting for a folder"
+    nonisolated static func otherResourceMessage(_ summary: String) -> String {
+        "\(summary) Review workspace decides about folders only. Your request stays saved and starts when that is free."
+    }
+
+    /// The decision was written for at least one holder and a later save failed.
+    nonisolated static let unsavedDecisionTitle = "ASTRA could not finish saving this decision"
+    nonisolated static let unsavedDecisionMessage = "Your request stays saved and starts as soon as its folder is free. "
+        + "Choose Review workspace again if it is still waiting."
 
     /// "Review workspace" on a task that waits only for its own earlier run.
     /// The review decides about other tasks, so there is nothing to offer.
@@ -195,8 +224,16 @@ enum RuntimeWorkspaceReviewWording {
             paragraphs.append(sentences.joined(separator: " "))
         }
         let holders = list(review.holders.map { "“\($0.title)”" })
-        paragraphs.append("Starting now lets this request, and any later one, use \(place). "
-            + "After that, Retry is not available in \(holders) for that run. A new message there still works.")
+        // A holder admission would still refuse is not promised a way on.
+        let stuck = review.holders.filter { refusesNewMessage($0.blockers, task: "its") != nil }.map { "“\($0.title)”" }
+        let open = review.holders.filter { refusesNewMessage($0.blockers, task: "its") == nil }.map { "“\($0.title)”" }
+        var closing = "Starting now lets this request, and any later one, use \(place). "
+            + "After that, Retry is not available in \(holders) for that run."
+        if !open.isEmpty { closing += " A new message \(stuck.isEmpty ? "there" : "in \(list(open))") still works." }
+        if !stuck.isEmpty {
+            closing += " ASTRA may refuse a new message in \(list(stuck)) too, for the reason above. A new task can carry on that work."
+        }
+        paragraphs.append(closing)
         return Dialog(title: "Start in \(place) now?", message: paragraphs.joined(separator: "\n\n"), canStart: true)
     }
 }

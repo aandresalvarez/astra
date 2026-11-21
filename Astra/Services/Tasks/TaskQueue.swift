@@ -34,7 +34,7 @@ final class TaskQueue {
     var resourceOwnershipReadFailed = false
     var waitingOwnershipPasses = 0
     /// The waiting banner per holder, kept between passes. See `resourceBlockerSummary`.
-    var waitingBanners: [WaitingBannerKey: (holder: RuntimeExecutionOwnerRecord, text: String)] = [:]
+    var waitingBanners: [WaitingBannerKey: (holder: RuntimeExecutionOwnerRecord, text: String, active: Bool)] = [:]
     var activeResourceLocks: [TaskResourceLockClaim] {
         var seen: Set<TaskResourceLockClaim> = []
         return (localResourceLocks + persistedResourceLocks).filter { seen.insert($0).inserted }

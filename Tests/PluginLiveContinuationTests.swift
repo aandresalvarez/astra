@@ -133,8 +133,8 @@ struct PluginLiveContinuationTests {
             // provider exits. Start past it as a person would in "Review
             // workspace". Nothing is remembered, so every successor is asked,
             // and no holder's exit record is rewritten.
-            if let review = try RuntimeWorkspaceReview.preview(task: next, request: request, context: harness.context) {
-                try RuntimeWorkspaceReview.start(review, task: next, request: request, context: harness.context)
+            if let review = try RuntimeWorkspaceReview.preview(task: next, request: request, context: harness.context, sandboxEnforcement: .off) {
+                try RuntimeWorkspaceReview.start(review, task: next, request: request, context: harness.context, sandboxEnforcement: .off)
             }
             let events = try await E2ETestSupport.withLiveProviderSlot {
                 var events: [ParsedEvent] = []

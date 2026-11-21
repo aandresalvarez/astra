@@ -76,15 +76,15 @@ struct RuntimeWorkspaceReviewTests {
 
     /// now is what the process table shows when it is asked; nil is a table that cannot be read.
     private func preview(_ h: HeadlessChatHarness, _ task: AgentTask, _ request: TaskTurnRequest,
-                         now: [Survivor]? = []) throws -> RuntimeWorkspaceReview.Review? {
-        try RuntimeWorkspaceReview.preview(task: task, request: request, context: h.context, bootedAt: boot) { launch in
+                         now: [Survivor]? = [], enforcement: ExecutionSandboxEnforcement = .off) throws -> RuntimeWorkspaceReview.Review? {
+        try RuntimeWorkspaceReview.preview(task: task, request: request, context: h.context, sandboxEnforcement: enforcement, bootedAt: boot) { launch in
             .init(launch: launch, observedAt: Date(), complete: now != nil, survivors: now ?? [])
         }
     }
 
     private func start(_ h: HeadlessChatHarness, _ review: RuntimeWorkspaceReview.Review, _ task: AgentTask,
                        _ request: TaskTurnRequest, now: [Survivor]? = []) throws {
-        try RuntimeWorkspaceReview.start(review, task: task, request: request, context: h.context, bootedAt: boot) { launch in
+        try RuntimeWorkspaceReview.start(review, task: task, request: request, context: h.context, sandboxEnforcement: .off, bootedAt: boot) { launch in
             .init(launch: launch, observedAt: Date(), complete: now != nil, survivors: now ?? [])
         }
     }
@@ -490,6 +490,238 @@ struct RuntimeWorkspaceReviewTests {
         #expect(!b.events.contains { $0.type == TaskEventTypes.System.runtimeWorkspaceContinuationAuthorized.rawValue })
     }
 
+    @Test("A decision is shown every run of the holder, not only the last: an earlier run's live provider refuses, and what it left is named",
+          arguments: ["providerAlive", "survivor", "container"])
+    func earlierRunsAreAsked(fault: String) throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let me = try Self.alive
+        let mine = Survivor(process: me, name: "python3")
+        // The last run is one ASTRA lost track of. That alone holds the folder,
+        // and the rule stops there; a person deciding is shown the run before it too.
+        let (a, last) = try holder(h) { record, _ in proof(&record, reaped: false) }
+        let earlier = TaskRun(task: a)
+        earlier.startedAt = Date().addingTimeInterval(-90); earlier.completedAt = Date().addingTimeInterval(-80)
+        earlier.status = .completed; earlier.typedStopReason = .completed
+        var environment = WorkspaceExecutionEnvironment.host
+        if fault == "container" { environment.kind = .dockerImage }
+        earlier.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(environment)
+        h.context.insert(earlier); try h.context.save()
+        let execution = UUID()
+        let provider = fault == "providerAlive" ? me : Self.dead
+        var first = RuntimeExecutionOwnerRecord(taskID: last.taskID, taskOwnerID: last.taskOwnerID, ownerID: last.ownerID,
+            executionID: execution, runID: earlier.id, appProcess: last.appProcess, providerProcess: provider,
+            runtime: last.runtime, sessionID: nil, state: .finished, limits: last.limits,
+            stopProof: RuntimeExecutionStopProof(executionID: execution, process: provider, reaped: true, processGroupEmpty: true,
+                toolsStopped: false, remoteWorkExcluded: true, capturedAt: Date().addingTimeInterval(-80), managedSSHOnly: nil),
+            settlementInProgress: false, settlementLocalWorkStopped: true, settlementToolsStopped: true,
+            resourceClaims: last.resourceClaims, providerLaunchCount: 1, resourcesReleased: false, updatedAt: Date().addingTimeInterval(-80))
+        if fault == "survivor" { proof(&first, survivors: observation(first, [mine])) }
+        var current = last
+        current.retainedExecutionHead = first.executionID
+        let store = RuntimeExecutionOwner.store(in: h.context)
+        try save(first, h); try store.retain(first); try save(current, h)
+
+        let (b, request) = try next(h, after: a)
+        let review = try #require(try preview(h, b, request))
+        let found = try #require(review.holders.first).blockers
+        switch fault {
+        case "providerAlive":
+            #expect(found == [.lostRun, .providerAlive(pid: me.pid)] && !review.canStart)
+            #expect(!RuntimeWorkspaceReviewWording.dialog(review).canStart)
+            #expect(throws: (any Error).self) { try start(h, review, b, request) }
+            #expect(try store.read(taskID: a.id, taskOwnerID: a.persistentModelID) == current && reconciliations(h).isEmpty)
+        case "survivor":
+            #expect(found == [.lostRun, .survivors([mine])] && review.canStart)
+            #expect(RuntimeWorkspaceReviewWording.dialog(review).message.contains("python3 (process \(me.pid)), which it started, is still running."))
+            try start(h, review, b, request)
+            let released = try #require(try store.read(taskID: a.id, taskOwnerID: a.persistentModelID))
+            #expect(released.reservationRelease?.named == ["lost_run", "process:python3:\(me.pid)"])
+        default:
+            #expect(found == [.lostRun, .container] && review.canStart)
+            #expect(RuntimeWorkspaceReviewWording.dialog(review).message.contains("ran in a container that ASTRA cannot look inside"))
+        }
+        // The rule itself still stops at the last run: it has no decision to disclose.
+        let journal = try store.acquire(taskID: a.id, taskOwnerID: a.persistentModelID).recordURL
+        if fault != "survivor" {
+            #expect(RuntimeReservationRelease.verdict(current, task: a, journal: journal, store: store, context: h.context, bootedAt: boot)
+                == .held([.lostRun]))
+        }
+    }
+
+    @Test("What a leftover process started while the dialog was open is named before anything is decided")
+    func leftoverProcessStartsAnother() throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let first = Survivor(process: try Self.alive, name: "python3")
+        let second = Survivor(process: .init(pid: first.process.pid + 1, startedSeconds: 2, startedMicroseconds: 2), name: "node")
+        // The exit recorded one process, and it is still there.
+        let (a, original) = try holder(h) { record, _ in proof(&record, survivors: observation(record, [first])) }
+        let (b, request) = try next(h, after: a)
+        let review = try #require(try preview(h, b, request, now: [first]))
+        #expect(review.holders.first?.blockers == [.survivors([first])])
+        // It starts another one while the dialog is open: the old answer is not decided on.
+        #expect(throws: (any Error).self) { try start(h, review, b, request, now: [first, second]) }
+        #expect(try RuntimeExecutionOwner.existing(task: a, context: h.context) == original && reconciliations(h).isEmpty)
+        let again = try #require(try preview(h, b, request, now: [first, second]))
+        #expect(again.holders.first?.blockers == [.survivors([first, second])])
+        // A process table that cannot be read keeps the one already known.
+        let unread = try #require(try preview(h, b, request, now: nil))
+        #expect(unread.holders.first?.blockers == [.processTableUnreadable, .survivors([first])])
+    }
+
+    @Test("The last look at who holds the folders, and the releases, happen inside the admission fence")
+    func startLooksInsideTheAdmissionFence() throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let mine = Survivor(process: try Self.alive, name: "python3")
+        let (a, _) = try holder(h) { record, _ in proof(&record, survivors: observation(record, [mine])) }
+        let (b, request) = try next(h, after: a)
+        let review = try #require(try preview(h, b, request))
+        let store = RuntimeExecutionOwner.store(in: h.context)
+        var looks = 0, fenced = 0
+        try RuntimeWorkspaceReview.start(review, task: b, request: request, context: h.context, sandboxEnforcement: .off, bootedAt: boot) { launch in
+            looks += 1
+            // Another ASTRA instance cannot publish a holder while this looks and writes.
+            do { let other = try store.acquireAdmission(); withExtendedLifetime(other) {} } catch { fenced += 1 }
+            return .init(launch: launch, observedAt: Date(), complete: true, survivors: [])
+        }
+        #expect(looks >= 2 && fenced == looks)
+        #expect(try RuntimeExecutionOwner.existing(task: a, context: h.context)?.reservationRelease?.basis == .decision)
+    }
+
+    private func claims(_ request: TaskTurnRequest, _ value: [TaskExecutionResourceClaim], _ h: HeadlessChatHarness) throws {
+        request.resourceClaimsJSON = String(decoding: try JSONEncoder().encode(value), as: UTF8.self)
+        try h.context.save()
+    }
+
+    @Test("The review sees the claims the queue admits by: a reader is in the way only when nothing enforces reading")
+    func reviewUsesTheQueuesEnforcement() throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        // A holder that only read the folder, and a waiting request that only reads it too.
+        let (a, _) = try holder(h) { record, _ in
+            record.resourceClaims = record.resourceClaims?.map {
+                .init(taskID: $0.taskID, resourceKey: $0.resourceKey, accessMode: .readOnly, runMode: $0.runMode, resourceKind: $0.resourceKind)
+            }
+        }
+        let (b, request) = try next(h, after: a)
+        try claims(request, TaskExecutionResourceClaimResolver.admissionClaims(for: request, task: b).map {
+            TaskExecutionResourceClaim(kind: $0.kind, key: $0.key, access: .shared)
+        }, h)
+        // With a sandbox two readers share the folder: there is nothing to review.
+        #expect(try preview(h, b, request, enforcement: .bestEffort) == nil)
+        // With sandboxing Off a reader is admitted as a writer, and the holder is in its way.
+        #expect(try preview(h, b, request, enforcement: .off)?.holders.map(\.taskID) == [a.id])
+    }
+
+    @Test("Only a folder brings a request to the review: a browser profile another task still holds is not decided here")
+    func onlyFoldersAreReviewed() throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let elsewhere = FileManager.default.temporaryDirectory.appendingPathComponent("astra-review-elsewhere-\(UUID().uuidString)")
+        // A holder in another folder, which also holds a browser profile.
+        let (a, original) = try holder(h) { record, _ in
+            record.resourceClaims = [
+                .init(taskID: record.taskID, resourceKey: elsewhere.path, accessMode: .write, runMode: "previous"),
+                .init(taskID: record.taskID, resourceKey: "shared-browser", accessMode: .write, runMode: "previous", resourceKind: .browserSession)]
+        }
+        let (b, request) = try next(h, after: a)
+        try claims(request, TaskExecutionResourceClaimResolver.admissionClaims(for: request, task: b)
+            + [TaskExecutionResourceClaim(kind: .browserSession, key: "shared-browser", access: .exclusive)], h)
+        let queue = TaskQueue(poolSize: 0)
+        queue.refreshResourceOwnership(in: h.context)
+        let wanted = queue.resourceLockClaims(for: request, task: b, runMode: "request", sandboxEnforcement: .off)
+        // The request does wait for that holder, but not for a folder.
+        #expect(!queue.canAcquireResourceLocks(wanted, task: b, context: h.context))
+        #expect(try preview(h, b, request) == nil)
+        #expect(try RuntimeExecutionOwner.existing(task: a, context: h.context) == original && reconciliations(h).isEmpty)
+    }
+
+    @Test("Two copies of one task that both hold the folder are released by one decision")
+    func copiesOfOneHolderAreReleasedTogether() throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (a, first) = try holder(h, title: "Export report")
+        let (copy, held) = try holder(h, title: "Imported copy")
+        let store = RuntimeExecutionOwner.store(in: h.context)
+        // The copy's row and record carry the first holder's ID. Both share one lock file.
+        do {
+            let lease = try store.acquire(taskID: copy.id, taskOwnerID: copy.persistentModelID)
+            try FileManager.default.removeItem(at: lease.recordURL)
+        }
+        copy.id = a.id; try h.context.save()
+        let moved = RuntimeExecutionOwnerRecord(taskID: a.id, taskOwnerID: copy.persistentModelID, ownerID: held.ownerID,
+            executionID: held.executionID, runID: held.runID, appProcess: held.appProcess, providerProcess: held.providerProcess,
+            runtime: held.runtime, sessionID: nil, state: .finished, limits: held.limits, stopProof: held.stopProof,
+            settlementInProgress: false, settlementLocalWorkStopped: true, settlementToolsStopped: true,
+            resourceClaims: first.resourceClaims, providerLaunchCount: 1, resourcesReleased: false, updatedAt: held.updatedAt)
+        try save(moved, h)
+        let (b, request) = try next(h, after: a)
+        let review = try #require(try preview(h, b, request))
+        #expect(Set(review.holders.map(\.receipt.executionID)) == [first.executionID, moved.executionID] && review.canStart)
+        try start(h, review, b, request)
+        #expect(try store.read(taskID: a.id, taskOwnerID: a.persistentModelID)?.reservationRelease?.basis == .decision)
+        #expect(try store.read(taskID: a.id, taskOwnerID: copy.persistentModelID)?.reservationRelease?.basis == .decision)
+        #expect(try preview(h, b, request) == nil)
+    }
+
+    @Test("Each holder's history names the folders that holder gave up, not another holder's")
+    func eachHolderIsToldItsOwnFolders() throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let data = FileManager.default.temporaryDirectory.appendingPathComponent("astra-review-\(UUID().uuidString)/dataset")
+        let (a, _) = try holder(h, title: "Export report")
+        // A second holder, of another folder the request also names.
+        let (other, _) = try holder(h, title: "Clean data") { record, _ in
+            record.resourceClaims = [.init(taskID: record.taskID, resourceKey: data.path, accessMode: .write, runMode: "previous")]
+        }
+        let (b, request) = try next(h, after: a)
+        try claims(request, TaskExecutionResourceClaimResolver.admissionClaims(for: request, task: b)
+            + [TaskExecutionResourceClaim(kind: .workspace, key: data.path, access: .exclusive)], h)
+        let review = try #require(try preview(h, b, request))
+        #expect(Set(review.holders.map(\.taskID)) == [a.id, other.id])
+        let mine = RuntimeWorkspaceReviewWording.folders(try #require(review.holders.first { $0.taskID == a.id }).claims)
+        #expect(!mine.isEmpty && !mine.contains("dataset"))
+        try start(h, review, b, request)
+        func note(_ task: AgentTask) throws -> String {
+            try #require(task.events.first { $0.type == TaskEventTypes.System.info.rawValue && $0.payload.hasPrefix("You let other tasks use") }).payload
+        }
+        #expect(try note(other).contains("`dataset`") && mine.allSatisfy { name in (try? note(other).contains("`\(name)`")) == false })
+        #expect(try !note(a).contains("`dataset`") && mine.allSatisfy { name in (try? note(a).contains("`\(name)`")) == true })
+    }
+
+    @Test("When one of several holders is still working, the banner names that one and offers no decision", arguments: [0, 1])
+    func bannerNamesTheHolderAtWork(working: Int) throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (a, _) = try holder(h, title: "Export report")
+        let (other, _) = try holder(h, title: "Clean data")
+        other.workspace = a.workspace
+        let busy = [a, other][working]
+        busy.runs.first?.status = .running; try h.context.save()
+        let (b, request) = try next(h, after: a)
+        let queue = TaskQueue(poolSize: 0)
+        queue.refreshResourceOwnership(in: h.context)
+        let wanted = queue.resourceLockClaims(for: request, task: b, runMode: "request", sandboxEnforcement: .off)
+        let text = queue.resourceBlockerSummary(wanted, modelContext: h.context, request: request, task: b)
+        #expect(text.hasPrefix("Waiting for “\(busy.title)” to finish in "), "\(text)")
+        #expect(!text.contains("Waiting for you") && !text.contains("start it now"))
+        // The dialog agrees: there is nothing to start past yet.
+        #expect(try #require(try preview(h, b, request)).canStart == false)
+    }
+
+    @Test("A holder whose provider session ASTRA cannot confirm is not promised a new message, and does not get one")
+    func stuckHolderIsNotPromisedAWayOn() throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let (a, _) = try holder(h, status: .failed, reason: .capabilitySessionExpired) { record, _ in record.sessionVerificationPending = true }
+        let (b, request) = try next(h, after: a)
+        let review = try #require(try preview(h, b, request))
+        let dialog = RuntimeWorkspaceReviewWording.dialog(review)
+        #expect(dialog.canStart && !dialog.message.contains("still works"))
+        #expect(dialog.message.contains("ASTRA may refuse a new message in “Export report” too, for the reason above. A new task can carry on that work."))
+        try start(h, review, b, request)
+        let note = try #require(a.events.first { $0.type == TaskEventTypes.System.info.rawValue && $0.payload.hasPrefix("You let other tasks use") }).payload
+        #expect(note.hasSuffix("Retry is not available for that run, and ASTRA may refuse a new message here too, because it cannot confirm that this task's provider session ended. Start a new task to carry on this work."))
+        // And that is what admission does.
+        let follow = try ExecutionRequestSubmissionService.submitFollowUp(message: "Carry on", for: a, into: h.context).get()
+        let message = try #require(try TaskTurnRequestRepository.request(id: follow.requestID, in: h.context))
+        #expect(RuntimeExecutionOwner.acquire(task: a, context: h.context, maxRunSeconds: 60,
+            newUserTurn: true, newUserRequest: true, userRequest: message) == nil)
+    }
+
     @Test("The banner on a waiting task names the holder, the folder and the one thing in the way")
     func bannerWording() throws {
         let me = Survivor(process: try Self.alive, name: "python3")
@@ -597,7 +829,11 @@ struct RuntimeWorkspaceReviewTests {
                 #expect(!text.contains(word), "\(blocker) says \(word)")
             }
             if !blocker.holderIsActive {
-                #expect(dialog.message.contains("Starting now also frees side") && dialog.message.contains("Retry is not available in “Export report” for that run. A new message there still works."))
+                // A holder admission would still refuse is not promised a way on.
+                let stuck = blocker == .sessionUnverified || blocker == .lineageUnreadable
+                #expect(dialog.message.contains("Starting now also frees side") && dialog.message.contains("Retry is not available in “Export report” for that run."))
+                #expect(dialog.message.contains("A new message there still works.") == !stuck)
+                #expect(dialog.message.contains("ASTRA may refuse a new message in “Export report” too, for the reason above. A new task can carry on that work.") == stuck)
             }
         }
         let several = RuntimeWorkspaceReviewWording.dialog(.init(requestID: UUID(), holders: [
@@ -612,5 +848,11 @@ struct RuntimeWorkspaceReviewTests {
         #expect(RuntimeWorkspaceReviewWording.folders([claim("/tmp/work/reports/.git", .gitCommonDirectory), claim("/tmp/work/reports"), claim("/tmp/other/.git", .gitCommonDirectory)]) == ["reports", "other"])
         let note = RuntimeWorkspaceReviewWording.holderNote(folders: ["reports"], on: Date(timeIntervalSince1970: 1_795_000_000))
         #expect(note.hasPrefix("You let other tasks use `reports` on ") && note.hasSuffix("Retry is not available for that run. Send a new message here to continue."))
+        let unread = RuntimeWorkspaceReviewWording.holderNote(folders: ["reports"], blockers: [.lostRun, .lineageUnreadable])
+        #expect(unread.hasSuffix("and ASTRA may refuse a new message here too, because it cannot read this task's earlier runs. Start a new task to carry on this work."))
+        let mixed = RuntimeWorkspaceReviewWording.dialog(.init(requestID: UUID(), holders: [
+            .init(taskID: UUID(), title: "Export report", receipt: record, blockers: [.lostRun], claims: [claim("/tmp/work/reports")], otherClaims: []),
+            .init(taskID: UUID(), title: "Clean data", receipt: record, blockers: [.sessionUnverified], claims: [claim("/tmp/work/reports")], otherClaims: [])]))
+        #expect(mixed.message.contains("A new message in “Export report” still works. ASTRA may refuse a new message in “Clean data” too, for the reason above."))
     }
 }

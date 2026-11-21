@@ -154,8 +154,15 @@ enum RuntimeReservationRelease {
     /// The whole rule, for the receipt and every execution retained in its
     /// lineage. `journal` is the receipt's own file: its change time is the
     /// kernel's statement of when the receipt was last written.
+    ///
+    /// `whole` is for a person's decision. The rule stops at the first
+    /// execution that holds the reservation, because nothing earlier can end
+    /// it. A person is shown, and decides past, everything there is: every
+    /// retained execution and every SSH job is asked, and the process table
+    /// is read again even where a recorded survivor already answers.
     static func verdict(_ saved: RuntimeExecutionOwnerRecord, task: AgentTask, journal: URL,
                         store: RuntimeExecutionOwnerStore, context: ModelContext, bootedAt: Date?,
+                        whole: Bool = false,
                         observe: (RuntimeLocalSurvivorObservation.Launch) -> RuntimeLocalSurvivorObservation
                             = { RuntimeExecutionLocalSurvivors.observe($0) }) -> Verdict {
         var blockers: [Blocker] = []
@@ -217,25 +224,34 @@ enum RuntimeReservationRelease {
             // jobs are asked about below.
             if proof.toolsStopped || proof.managedSSHOnly == true { return }
             guard let earlier = proof.localSurvivors else { hold(.lostRun); return }
-            // A recorded survivor that is still there answers without a scan.
+            // A recorded survivor that is still there answers the rule without a scan.
             let alive = earlier.survivors.filter { $0.process.presence != .absent }
             // In one order, so that the same processes read as the same answer.
             func ordered(_ found: [RuntimeLocalSurvivorObservation.Survivor]) -> [RuntimeLocalSurvivorObservation.Survivor] {
                 found.sorted { $0.process.pid < $1.process.pid }
             }
-            if !alive.isEmpty { hold(.survivors(ordered(alive))); return }
+            if !alive.isEmpty, !whole { hold(.survivors(ordered(alive))); return }
             let now = observe(earlier.launch)
-            if !now.complete { hold(.processTableUnreadable) }
-            else if !now.survivors.isEmpty { hold(.survivors(ordered(now.survivors))) }
+            // What a survivor started since is named with it. A table that
+            // cannot be read keeps the survivors already known.
+            let found = alive + now.survivors.filter { seen in !alive.contains { $0.process == seen.process } }
+            if !now.complete {
+                hold(.processTableUnreadable)
+                if !alive.isEmpty { hold(.survivors(ordered(alive))) }
+            } else if !found.isEmpty { hold(.survivors(ordered(found))) }
             else { askedProcessTable = true }
         }
 
         ask(saved)
         // When the receipt's own facts hold it, no earlier execution can end it.
-        guard blockers.isEmpty else { return .held(blockers) }
-        guard let retained = try? store.retainedExecutions(of: saved) else { return .held([.lineageUnreadable]) }
-        // A release is final: an execution whose reservation already ended is not asked again.
-        for execution in retained where execution.resourcesReleased != true { ask(execution) }
+        guard blockers.isEmpty || whole else { return .held(blockers) }
+        if let retained = try? store.retainedExecutions(of: saved) {
+            // A release is final: an execution whose reservation already ended is not asked again.
+            for execution in retained where execution.resourcesReleased != true { ask(execution) }
+        } else {
+            hold(.lineageUnreadable)
+            if !whole { return .held(blockers) }
+        }
         // A tracked SSH job that has not ended keeps the reservation. So does a
         // job record that cannot be read. Where a receipt recorded its jobs at
         // exit, the set found now must be that set: a missing or replaced
@@ -263,11 +279,15 @@ enum RuntimeReservationRelease {
         return matching.count == 1 ? matching.first : nil
     }
 
-    /// Throws `busy` while a worker of that task holds it.
-    private static func lease(for record: RuntimeExecutionOwnerRecord,
-                              store: RuntimeExecutionOwnerStore) throws -> RuntimeExecutionOwnerStore.Lease {
+    /// Throws `busy` while a worker of that task holds it. Copies of one
+    /// task share one lock file, so a second copy is read and written
+    /// `under` the lease the first already holds.
+    private static func lease(for record: RuntimeExecutionOwnerRecord, store: RuntimeExecutionOwnerStore,
+                              under held: RuntimeExecutionOwnerStore.Lease? = nil) throws -> RuntimeExecutionOwnerStore.Lease {
         let legacy = try store.read(taskID: record.taskID) == record
-        return try store.acquire(taskID: record.taskID, taskOwnerID: legacy ? nil : record.taskOwnerID)
+        let scope = legacy ? nil : record.taskOwnerID
+        if let held { return try held.sibling(taskOwnerID: scope, in: store) }
+        return try store.acquire(taskID: record.taskID, taskOwnerID: scope)
     }
 
     /// What keeps one saved reservation now, for a person to read: the
@@ -283,7 +303,7 @@ enum RuntimeReservationRelease {
         defer { withExtendedLifetime(lease) {} }
         guard try lease.read() == record else { throw RuntimeExecutionOwnerStore.Failure.busy }
         guard case .held(let blockers) = verdict(record, task: task, journal: lease.recordURL, store: store,
-            context: context, bootedAt: bootedAt, observe: observe) else { return [] }
+            context: context, bootedAt: bootedAt, whole: true, observe: observe) else { return [] }
         return blockers
     }
 
@@ -308,11 +328,12 @@ enum RuntimeReservationRelease {
         var holders: [(saved: RuntimeExecutionOwnerRecord, task: AgentTask, lease: RuntimeExecutionOwnerStore.Lease, named: [String])] = []
         for item in reviewed {
             guard let task = try owner(of: item.receipt, context: context) else { throw RuntimeExecutionOwnerStore.Failure.unreadable }
-            let lease = try self.lease(for: item.receipt, store: store)
+            let lease = try self.lease(for: item.receipt, store: store,
+                under: holders.first(where: { $0.saved.taskID == item.receipt.taskID })?.lease)
             guard try lease.read() == item.receipt, !item.blockers.isEmpty,
                   !item.blockers.contains(where: \.holderIsActive),
                   verdict(item.receipt, task: task, journal: lease.recordURL, store: store, context: context,
-                      bootedAt: bootedAt, observe: observe) == .held(item.blockers) else { throw RuntimeExecutionOwnerStore.Failure.busy }
+                      bootedAt: bootedAt, whole: true, observe: observe) == .held(item.blockers) else { throw RuntimeExecutionOwnerStore.Failure.busy }
             holders.append((item.receipt, task, lease, item.blockers.flatMap(\.auditNames)))
         }
         for holder in holders {

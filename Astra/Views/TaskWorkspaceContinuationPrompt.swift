@@ -8,6 +8,7 @@ import ASTRAModels
 @MainActor
 enum TaskWorkspaceContinuationPrompt {
     static func present(task: AgentTask, requestID: UUID, queue: TaskQueue, context: ModelContext) {
+        var decided = false
         do {
             guard let request = try TaskTurnRequestRepository.request(id: requestID, in: context) else { return }
             guard RuntimeWorkspaceReview.qualifies(request, task: task, context: context) else {
@@ -18,15 +19,24 @@ enum TaskWorkspaceContinuationPrompt {
                 alert.runModal()
                 return
             }
-            guard let review = try RuntimeWorkspaceReview.preview(task: task, request: request, context: context) else {
-                // No other task holds it any more: it starts without a decision,
-                // unless what it waits for is an earlier run of this same task.
+            // The review sees the claims the queue admits by.
+            let enforcement = queue.sandboxEnforcementProvider()
+            guard let review = try RuntimeWorkspaceReview.preview(task: task, request: request, context: context,
+                                                                  sandboxEnforcement: enforcement) else {
+                // No other task holds its folders any more: it starts without
+                // a decision, unless what it waits for is an earlier run of
+                // this same task or something that is not a folder.
                 queue.refreshResourceOwnership(in: context)
                 let claims = queue.resourceLockClaims(for: request, task: task, runMode: "request")
                 if !queue.canAcquireResourceLocks(claims, task: task, context: context) {
+                    let other = TaskExecutionResourceBroker.firstConflict(requested: claims, active: queue.activeResourceLocks)
+                        .map { $0.holder.taskID != task.id } ?? false
                     let alert = NSAlert()
-                    alert.messageText = RuntimeWorkspaceReviewWording.ownRunTitle
-                    alert.informativeText = RuntimeWorkspaceReviewWording.ownRunMessage
+                    alert.messageText = other ? RuntimeWorkspaceReviewWording.otherResourceTitle : RuntimeWorkspaceReviewWording.ownRunTitle
+                    alert.informativeText = other
+                        ? RuntimeWorkspaceReviewWording.otherResourceMessage(
+                            queue.resourceBlockerSummary(claims, modelContext: context, request: request, task: task))
+                        : RuntimeWorkspaceReviewWording.ownRunMessage
                     alert.addButton(withTitle: "OK")
                     alert.runModal()
                     return
@@ -54,14 +64,22 @@ enum TaskWorkspaceContinuationPrompt {
                 AstraExternalRouteStore.shared.submit(AstraExternalRoute(destination: .task(holder)))
             }
             guard choice == "Start now" else { return }
-            try RuntimeWorkspaceReview.start(review, task: task, request: request, context: context)
-            queue.refreshResourceOwnership(in: context)
-            _ = queue.signalExecutionRequest(id: requestID, task: task, modelContext: context)
+            decided = true
+            // A release that was written before a later save failed is still a
+            // release: ownership is read again and the request woken whether
+            // or not `start` returns.
+            defer {
+                queue.refreshResourceOwnership(in: context)
+                _ = queue.signalExecutionRequest(id: requestID, task: task, modelContext: context)
+            }
+            try RuntimeWorkspaceReview.start(review, task: task, request: request, context: context, sandboxEnforcement: enforcement)
         } catch {
+            let changed = error as? RuntimeExecutionOwnerStore.Failure == .busy
             let alert = NSAlert()
-            alert.messageText = "Nothing was started"
-            alert.informativeText = error as? RuntimeExecutionOwnerStore.Failure == .busy
+            alert.messageText = decided && !changed ? RuntimeWorkspaceReviewWording.unsavedDecisionTitle : "Nothing was started"
+            alert.informativeText = changed
                 ? "The folder's state changed while this was open. Your request stays saved. Choose Review workspace again to see where it stands now."
+                : decided ? RuntimeWorkspaceReviewWording.unsavedDecisionMessage
                 : "ASTRA cannot read its record of who is using this folder. Your request stays saved."
             alert.addButton(withTitle: "OK")
             alert.runModal()

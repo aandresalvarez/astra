@@ -63,6 +63,13 @@ enum TaskExecutionResourceBroker {
         return nil
     }
 
+    /// Every conflict, in the order `firstConflict` looks.
+    static func conflicts(requested: [TaskResourceLockClaim], active: [TaskResourceLockClaim]) -> [Conflict] {
+        requested.sorted(by: claimOrder).flatMap { request in
+            active.filter { conflicts($0, request) }.map { Conflict(requested: request, holder: $0) }
+        }
+    }
+
     static func canAcquire(
         _ requested: [TaskResourceLockClaim],
         active: [TaskResourceLockClaim]

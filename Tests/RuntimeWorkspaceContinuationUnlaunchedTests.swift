@@ -229,9 +229,9 @@ struct RuntimeWorkspaceContinuationUnlaunchedTests {
             ? request(ExecutionRequestSubmissionService.submitRetry(message: "Saved instruction", continuation: true, for: b, into: h.context).get(), h)
             : request(ExecutionRequestSubmissionService.submitFollowUp(message: "Try again", for: b, into: h.context).get(), h)
         let claims = TaskExecutionResourceAdmissionPolicy.lockClaims(for: saved, task: b, runMode: "request", sandboxEnforcement: .off)
-        let review = try #require(try RuntimeWorkspaceReview.preview(task: b, request: saved, context: h.context))
+        let review = try #require(try RuntimeWorkspaceReview.preview(task: b, request: saved, context: h.context, sandboxEnforcement: .off))
         #expect(review.holders.map(\.taskID) == [a.id] && review.canStart)
-        try RuntimeWorkspaceReview.start(review, task: b, request: saved, context: h.context)
+        try RuntimeWorkspaceReview.start(review, task: b, request: saved, context: h.context, sandboxEnforcement: .off)
         let owner = try #require(RuntimeExecutionOwner.acquire(task: b, context: h.context,
             maxRunSeconds: 60, userRequest: saved, resourceClaims: claims))
         defer { owner.finish() }
@@ -246,9 +246,9 @@ struct RuntimeWorkspaceContinuationUnlaunchedTests {
         let b = try legacy(h, beside: a)
         let saved = try request(ExecutionRequestSubmissionService.submitFollowUp(message: "Compare the new code", for: b, into: h.context).get(), h)
         let claims = TaskExecutionResourceAdmissionPolicy.lockClaims(for: saved, task: b, runMode: "request", sandboxEnforcement: .off)
-        let review = try #require(try RuntimeWorkspaceReview.preview(task: b, request: saved, context: h.context))
+        let review = try #require(try RuntimeWorkspaceReview.preview(task: b, request: saved, context: h.context, sandboxEnforcement: .off))
         #expect(review.holders.map(\.taskID) == [a.id] && review.canStart)
-        try RuntimeWorkspaceReview.start(review, task: b, request: saved, context: h.context)
+        try RuntimeWorkspaceReview.start(review, task: b, request: saved, context: h.context, sandboxEnforcement: .off)
         let owner = try #require(RuntimeExecutionOwner.acquire(task: b, context: h.context, maxRunSeconds: 60,
             newUserTurn: true, newUserRequest: true, userRequest: saved, resourceClaims: claims))
         defer { owner.finish() }

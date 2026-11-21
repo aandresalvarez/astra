@@ -1151,9 +1151,9 @@ struct RuntimeWorkspaceContinuationTests {
         #expect(try store.workspaceContinuation(requestID: request.id) == nil)
         // The person is asked about both holders by name, and starting past
         // them saves nothing for this request or for the workspace.
-        let review = try #require(try RuntimeWorkspaceReview.preview(task: c, request: request, context: h.context))
+        let review = try #require(try RuntimeWorkspaceReview.preview(task: c, request: request, context: h.context, sandboxEnforcement: .off))
         #expect(Set(review.holders.map(\.taskID)) == [old.id, b.id] && review.canStart)
-        try RuntimeWorkspaceReview.start(review, task: c, request: request, context: h.context)
+        try RuntimeWorkspaceReview.start(review, task: c, request: request, context: h.context, sandboxEnforcement: .off)
         #expect(try store.workspaceContinuation(requestID: request.id) == nil)
         let owner = try #require(RuntimeExecutionOwner.acquire(task: c, context: h.context, maxRunSeconds: 60, userRequest: request))
         defer { owner.finish() }
