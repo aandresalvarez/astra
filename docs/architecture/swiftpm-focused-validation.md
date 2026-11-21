@@ -80,7 +80,8 @@ Architecture fitness tests are independently runnable through
   it, and the last shard skips exactly those names. A suite nobody listed
   still runs in the last shard, so editing the plan moves suites between
   shards and cannot drop a test. `script/ci_test_shards.py plan <job log>...`
-  proposes a rebalanced plan from the measured suite times.
+  proposes a rebalanced plan from the measured suite times; give it the logs
+  of all three shard jobs of each run it should read.
 
 This boundary gives future typed Git publication domain logic a fast, testable
 home without copying unmerged publication code or creating test-only production

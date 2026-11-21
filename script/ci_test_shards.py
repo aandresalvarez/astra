@@ -14,7 +14,11 @@ matches, and it matches as a regular-expression search.
 Usage:
   ci_test_shards.py arguments <shard>   swift test arguments for one shard (1-based)
   ci_test_shards.py count               how many shards the plan has
-  ci_test_shards.py plan <log>...       propose a balanced plan from full-suite job logs
+  ci_test_shards.py plan <log>...       propose a balanced plan from test job logs
+
+`plan` needs the logs of every test job of each run it reads: one log when a
+single job ran the whole suite, all the shards' logs otherwise. A suite it
+finds in no log counts as zero seconds.
 """
 import json
 import os
@@ -79,7 +83,7 @@ def arguments(shards, shard):
 
 
 def suite_seconds(log_path):
-    """Seconds per top-level suite, by display name, from a serial full-suite job log."""
+    """Seconds per top-level suite, by display name, from the log of a serial test job."""
     open_suites = []
     seconds = {}
     with open(log_path, encoding='utf-8', errors='replace') as handle:

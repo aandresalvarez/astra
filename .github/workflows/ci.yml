@@ -248,6 +248,7 @@ jobs:
             echo "This run's build is not in the cache, so nothing is deleted."
             exit 0
           fi
+          echo "Keeping $KEEP_KEY"
           while read -r id key; do
             [[ -n "$id" && "$key" != "$KEEP_KEY" ]] || continue
             if ((keep_earlier > 0)); then
