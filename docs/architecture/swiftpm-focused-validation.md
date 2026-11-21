@@ -68,10 +68,25 @@ Architecture fitness tests are independently runnable through
   regardless of its diff, preserving the unconditional release-number,
   update, and packaging gates before signing.
 - GitHub CI's `Focused Swift tests` job with `ASTRA_PREPUSH_SKIP_ROOT_TESTS=1`:
-  the standalone checks only. The `Full Swift test suite` job of the same run
-  executes every root-package test, so CI compiles the root package once. The
-  switch has no effect outside GitHub Actions, so the local pre-push hook
-  always runs its root lanes, and the release gate ignores it.
+  the standalone checks only. The test shards behind the `Full Swift test
+  suite` check of the same run execute every root-package test, so CI compiles
+  the root package once. The switch has no effect outside GitHub Actions, so
+  the local pre-push hook always runs its root lanes, and the release gate
+  ignores it.
+- GitHub CI's `Full Swift test suite` check: one job builds the root package
+  and saves the build, then three shard jobs run the serial suite in parts
+  from that build (`swift test --no-parallel --skip-build`). Every shard but
+  the last filters on the suite names `script/ci_test_shards.json` lists for
+  it, and the last shard skips exactly those names. A suite nobody listed
+  still runs in the last shard, so editing the plan moves suites between
+  shards and cannot drop a test. A name matches anywhere in a test identifier
+  (`Module.Suite/Nested/function()`), so a module in one shard and one of its
+  suites in another would run those tests twice: after building, the build job
+  runs `script/ci_test_shards.py check` on the output of `swift test list
+  --skip-build` and fails when two shards would run the same test.
+  `script/ci_test_shards.py plan <job log>...` proposes a rebalanced plan from
+  the measured suite times; give it the logs of all three shard jobs of each
+  run it should read.
 
 This boundary gives future typed Git publication domain logic a fast, testable
 home without copying unmerged publication code or creating test-only production
