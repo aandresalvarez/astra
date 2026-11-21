@@ -116,6 +116,11 @@ struct NewTaskWorktreeDockView: View {
             await scanRepositories()
         }
         .onAppear { claimIntent(); readWorkspaceDefault() }
+        // Another window can change this workspace's default. Only what is
+        // shown follows; this task's own choice is not applied again.
+        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification).receive(on: RunLoop.main)) { _ in
+            readWorkspaceDefault()
+        }
         .onChange(of: workspace?.id) {
             choiceProblem = nil
             claimIntent()

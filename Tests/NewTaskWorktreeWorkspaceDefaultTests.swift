@@ -157,4 +157,19 @@ struct NewTaskWorktreeWorkspaceDefaultTests {
         let composer = try String(contentsOf: views.appendingPathComponent("ChatPanelView.swift"), encoding: .utf8)
         #expect(composer.contains("NewTaskWorktreeDockView("))
     }
+
+    @Test("The control follows a change made in another window, without applying the default to the task on screen")
+    func defaultControlFollowsOtherWindows() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let row = try String(contentsOf: root.appendingPathComponent("Astra/Views/NewTaskWorktreeDockView.swift"), encoding: .utf8)
+        // The row hears the stored setting change and reads it again.
+        let observer = try #require(row.range(of: ".onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)"))
+        let handler = row[observer.upperBound...].prefix(120)
+        #expect(handler.contains("readWorkspaceDefault()"))
+        // Reading it changes what is shown and nothing else: the choice of the
+        // task on screen is set only where a fresh composer first gets a repository.
+        let read = try #require(row.range(of: "private func readWorkspaceDefault() {"))
+        let body = row[read.upperBound...].prefix(while: { $0 != "}" })
+        #expect(body.contains("workspaceDefault =") && !body.contains("selection") && !body.contains("applyWorkspaceDefault"))
+    }
 }
