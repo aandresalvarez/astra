@@ -100,6 +100,14 @@ jobs:
             ~/.swiftpm
           key: ${{ steps.toolchain.outputs.key }}
 
+      - name: Check that no test runs in two shards
+        # A name in the shard plan matches anywhere in a test identifier, so a
+        # module in one shard and one of its suites in another would run those
+        # tests twice. Only the list of the tests just built can tell.
+        run: |
+          swift test list --skip-build > "$RUNNER_TEMP/test-identifiers.txt"
+          python3 script/ci_test_shards.py check "$RUNNER_TEMP/test-identifiers.txt"
+
       - name: Check whether this tree already passed on its pull request
         id: tested
         if: github.event_name == 'push'

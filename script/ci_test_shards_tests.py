@@ -64,6 +64,61 @@ class TestShardPlanTests(unittest.TestCase):
         self.assertEqual(runs['GammaTests.OtherSuite/sixth()'], [2])
         self.assertTrue(all(len(shard_numbers) == 1 for shard_numbers in runs.values()))
 
+    def test_a_test_two_listed_shards_would_both_run_is_reported(self):
+        test_ids = [
+            'ArchitectureFitnessTests.ValidationTests/pinsTheWorkflow()',
+            'ArchitectureFitnessTests.OtherFitnessTests/second()',
+            'ASTRATests.OuterTests/InnerTests/nested()',
+            'ASTRATests.OuterTests/plain()',
+            'ASTRATests.UnlistedTests/third()',
+        ]
+        # A module name in one shard and one of its suites in another.
+        counts, shared = ci_test_shards.tests_per_shard(
+            [['ValidationTests'], ['ArchitectureFitnessTests']], test_ids)
+        self.assertEqual(shared, [('ArchitectureFitnessTests.ValidationTests/pinsTheWorkflow()', [1, 2])])
+        self.assertEqual(counts, [1, 2, 3])
+        # A suite in one shard and a suite nested in it in another.
+        counts, shared = ci_test_shards.tests_per_shard([['OuterTests'], ['InnerTests']], test_ids)
+        self.assertEqual(shared, [('ASTRATests.OuterTests/InnerTests/nested()', [1, 2])])
+        self.assertEqual(counts, [2, 1, 3])
+        # The same names in one shard run every test once.
+        for shards in ([['ValidationTests', 'ArchitectureFitnessTests'], ['OuterTests', 'InnerTests']],
+                       [['OuterTests'], ['ValidationTests']]):
+            counts, shared = ci_test_shards.tests_per_shard(shards, test_ids)
+            self.assertEqual(shared, [])
+            self.assertEqual(sum(counts), len(test_ids))
+
+    def test_check_command_refuses_a_shared_test_and_an_empty_list(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        listing = Path(folder.name) / 'tests.txt'
+        shards = ci_test_shards.load_plan()
+
+        def run_check(test_ids):
+            listing.write_text(''.join(test_id + '\n' for test_id in test_ids))
+            return subprocess.run(
+                [sys.executable, str(SCRIPT), 'check', str(listing)],
+                check=False, capture_output=True, text=True,
+            )
+
+        once = [f'ASTRATests.{name}/first()' for shard in shards for name in shard]
+        once.append('ASTRATests.SuiteNobodyListed/second()')
+        passed = run_check(once)
+        self.assertEqual(passed.returncode, 0, passed.stderr)
+        listed = ', '.join(str(len(shard)) for shard in shards)
+        self.assertEqual(passed.stdout, f'{len(once)} tests, each in exactly one shard: {listed}, 1\n')
+
+        if len(shards) > 1:
+            twice = f'{shards[1][0]}.{shards[0][0]}/third()'
+            refused = run_check(once + [twice])
+            self.assertEqual(refused.returncode, 1)
+            self.assertIn(f'shards 1 and 2 would both run {twice}', refused.stderr)
+        self.assertEqual(run_check([]).returncode, 1)
+        self.assertEqual(subprocess.run(
+            [sys.executable, str(SCRIPT), 'check', str(listing.with_name('missing.txt'))],
+            check=False, capture_output=True, text=True,
+        ).returncode, 1)
+
     def test_shard_numbers_outside_the_plan_are_refused(self):
         shards = [['AlphaTests'], ['BetaTests']]
         for number in (0, 4):
@@ -153,6 +208,11 @@ class TestShardPlanTests(unittest.TestCase):
         self.assertIn(f'        shard: [{numbers}]\n', workflow)
         self.assertIn(f'(shard ${{{{ matrix.shard }}}} of {count})', workflow)
         self.assertEqual(workflow.count('script/ci_test_shards.py arguments "$SHARD"'), 1)
+        # The build job checks the plan against the tests it just built.
+        self.assertIn(
+            '          swift test list --skip-build > "$RUNNER_TEMP/test-identifiers.txt"\n'
+            '          python3 script/ci_test_shards.py check "$RUNNER_TEMP/test-identifiers.txt"\n',
+            workflow.split('  swift-test-shards:\n')[0])
 
 
 if __name__ == '__main__':

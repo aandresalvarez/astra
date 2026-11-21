@@ -79,9 +79,14 @@ Architecture fitness tests are independently runnable through
   the last filters on the suite names `script/ci_test_shards.json` lists for
   it, and the last shard skips exactly those names. A suite nobody listed
   still runs in the last shard, so editing the plan moves suites between
-  shards and cannot drop a test. `script/ci_test_shards.py plan <job log>...`
-  proposes a rebalanced plan from the measured suite times; give it the logs
-  of all three shard jobs of each run it should read.
+  shards and cannot drop a test. A name matches anywhere in a test identifier
+  (`Module.Suite/Nested/function()`), so a module in one shard and one of its
+  suites in another would run those tests twice: after building, the build job
+  runs `script/ci_test_shards.py check` on the output of `swift test list
+  --skip-build` and fails when two shards would run the same test.
+  `script/ci_test_shards.py plan <job log>...` proposes a rebalanced plan from
+  the measured suite times; give it the logs of all three shard jobs of each
+  run it should read.
 
 This boundary gives future typed Git publication domain logic a fast, testable
 home without copying unmerged publication code or creating test-only production

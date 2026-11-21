@@ -9,12 +9,19 @@ renamed one) therefore still runs, in the last shard, and no edit of the plan
 can drop a test: the plan only moves suites between shards.
 
 A name is a suite's Swift type name, the same thing `swift test --filter`
-matches, and it matches as a regular-expression search.
+matches, and it matches as a regular-expression search over the whole test
+identifier (`Module.Suite/Nested/function()`). A name therefore also selects a
+module of that name and every suite nested in a suite of that name, so two
+listed shards can both select one test. Only the built test list can tell:
+`check` reads it and refuses a plan that would run a test in two shards.
 
 Usage:
   ci_test_shards.py arguments <shard>   swift test arguments for one shard (1-based)
   ci_test_shards.py count               how many shards the plan has
+  ci_test_shards.py check <list>        fail if two shards would run the same test
   ci_test_shards.py plan <log>...       propose a balanced plan from test job logs
+
+`check` reads the output of `swift test list`, one test identifier per line.
 
 `plan` needs the logs of every test job of each run it reads: one log when a
 single job ran the whole suite, all the shards' logs otherwise. A suite it
@@ -80,6 +87,38 @@ def arguments(shards, shard):
     if shard <= len(shards):
         return ['--filter', '|'.join(shards[shard - 1])]
     return ['--skip', '|'.join(name for listed in shards for name in listed)]
+
+
+def tests_per_shard(shards, test_ids):
+    """How many tests each shard runs, and the tests two or more listed shards both run."""
+    patterns = [re.compile('|'.join(shard)) for shard in shards]
+    counts = [0] * shard_count(shards)
+    shared = []
+    for test_id in test_ids:
+        numbers = [number for number, pattern in enumerate(patterns, start=1)
+                   if pattern.search(test_id)]
+        for number in numbers or [shard_count(shards)]:
+            counts[number - 1] += 1
+        if len(numbers) > 1:
+            shared.append((test_id, numbers))
+    return counts, shared
+
+
+def check(list_path, shards):
+    """Print how the listed tests split; raise if two shards would run the same test."""
+    with open(list_path, encoding='utf-8', errors='replace') as handle:
+        test_ids = [line.strip() for line in handle if line.strip()]
+    if not test_ids:
+        raise PlanError(f'{list_path}: no test identifiers to check')
+    counts, shared = tests_per_shard(shards, test_ids)
+    for test_id, numbers in shared[:20]:
+        print(f'ci_test_shards: shards {" and ".join(map(str, numbers))} would both run {test_id}',
+              file=sys.stderr)
+    if shared:
+        raise PlanError(
+            f'{len(shared)} of {len(test_ids)} tests would run in more than one shard: '
+            'a name also matches a module or an enclosing suite of that name')
+    print(f'{len(test_ids)} tests, each in exactly one shard: ' + ', '.join(map(str, counts)))
 
 
 def suite_seconds(log_path):
@@ -161,6 +200,9 @@ def main(argv):
             return 0
         if len(argv) == 2 and argv[1] == 'count':
             print(shard_count(load_plan()))
+            return 0
+        if len(argv) == 3 and argv[1] == 'check':
+            check(argv[2], load_plan())
             return 0
         if len(argv) >= 3 and argv[1] == 'plan':
             listed, loads = propose(argv[2:], shard_count(load_plan()))
