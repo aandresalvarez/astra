@@ -181,8 +181,43 @@ enum NewTaskWorktreeComposerFlow {
         task.draftMessages = String(decoding: try JSONEncoder().encode(history), as: UTF8.self)
     }
 
+    /// A brand-new composer starts from the workspace's setting. A saved
+    /// draft never does: it keeps the choice it recorded, or off.
+    static func applyWorkspaceDefault(
+        to selection: inout NewTaskWorktreeSelection, draft: AgentTask?, workspace: Workspace?,
+        defaults: UserDefaults = .standard
+    ) {
+        guard draft == nil, let workspace else { return }
+        selection.applyWorkspaceDefault(NewTaskWorktreeDefaultStore.startsEnabled(workspaceID: workspace.id, in: defaults))
+    }
+
+    /// Sending or saving before the repository lookup finishes would take the
+    /// unchecked starting value and run the task in the checkout itself. A
+    /// fresh composer in a workspace that starts its tasks in a worktree
+    /// therefore waits for the lookup. One that finds no repository ends the
+    /// wait, and the task starts as it always has.
+    static func awaitsWorkspaceDefault(
+        _ selection: NewTaskWorktreeSelection, draft: AgentTask?, workspace: Workspace?,
+        defaults: UserDefaults = .standard
+    ) -> Bool {
+        guard draft == nil, let workspace, selection.awaitsWorkspaceDefault, selection.isLoading else { return false }
+        return NewTaskWorktreeDefaultStore.startsEnabled(workspaceID: workspace.id, in: defaults)
+    }
+
+    /// Saving a draft records its choice, and from then on the draft keeps
+    /// it: a repository lookup that finishes later does not apply the
+    /// workspace's starting value to what was just saved.
+    @discardableResult
+    static func saveChoice(
+        _ selection: inout NewTaskWorktreeSelection, on draft: AgentTask, modelContext: ModelContext
+    ) -> Bool {
+        selection.awaitsWorkspaceDefault = false
+        return recordChoice(selection, on: draft, modelContext: modelContext)
+    }
+
     static func restoreChoice(_ selection: inout NewTaskWorktreeSelection, from draft: AgentTask) {
         guard let request = TaskWorktreeService.latestRequest(for: draft) else { return }
+        selection.awaitsWorkspaceDefault = false
         selection.isEnabled = request.enabled
         selection.base = request.base
         if let repository = request.repositoryPath, !repository.isEmpty {
