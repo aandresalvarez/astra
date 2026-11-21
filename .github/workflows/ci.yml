@@ -234,7 +234,10 @@ jobs:
     # restored again, so this job deletes them instead of leaving the choice
     # of what to evict to GitHub. main keeps one earlier build for runs that
     # are restoring it right now. This job checks out no code, so the token
-    # that may delete caches never reaches code from a pull request.
+    # that may delete caches is never in a job that builds or runs the
+    # repository's code. It guarantees no more than that: a pull request from
+    # this repository can edit this workflow, its permissions included, and a
+    # pull request from a fork gets a read-only token whatever is written here.
     needs: build-app-and-tests
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -252,8 +255,11 @@ jobs:
           [[ "$GITHUB_REF" == "refs/heads/main" ]] && keep_earlier=1
           listing="$(gh api "repos/$GITHUB_REPOSITORY/actions/caches?ref=$GITHUB_REF&key=$prefix&sort=created_at&direction=desc&per_page=100" \
             --jq '.actions_caches[] | "\(.id) \(.key)"' || true)"
-          if ! grep -qF " $KEEP_KEY" <<< "$listing"; then
-            echo "This run's build is not in the cache, so nothing is deleted."
+          # The listing is newest first. A re-run of an older run finds a newer
+          # build ahead of its own, and that build is the one to keep.
+          newest="$(head -n 1 <<< "$listing")"
+          if [[ "${newest#* }" != "$KEEP_KEY" ]]; then
+            echo "This run's build is not the newest of $GITHUB_REF, so nothing is deleted."
             exit 0
           fi
           echo "Keeping $KEEP_KEY"
