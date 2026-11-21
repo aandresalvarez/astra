@@ -49,7 +49,11 @@ enum RuntimeWorkspaceContinuationScope {
               originalOwner.workspace?.id == scope.workspaceID,
               let original = try TaskTurnRequestRepository.request(id: root.requestID, in: context),
               original.state == .completed else { return false }
-        let receiver = previous.map { RuntimeWorkspaceContinuationAuthorization.Source(taskOwnerID: task.persistentModelID, receipt: $0) }
+        // The receiving task's own receipt is acknowledged only while it still
+        // reserves something. Once its reservation ended there is nothing of
+        // its own left for the decision to cover.
+        let receiver = previous.flatMap { RuntimeResourceOwnership.retainsResources($0)
+            ? RuntimeWorkspaceContinuationAuthorization.Source(taskOwnerID: task.persistentModelID, receipt: $0) : nil }
         for source in authorization.sources + [receiver].compactMap({ $0 }) {
             let receipt = source.receipt
             // Exact acknowledged receipts remain valid, including legacy owners.

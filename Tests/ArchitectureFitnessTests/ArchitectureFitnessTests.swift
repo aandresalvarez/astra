@@ -1527,6 +1527,30 @@ struct ArchitectureFitnessTests {
         )
     }
 
+    @Test("One rule ends a saved reservation")
+    func reservationReleaseHasOneOwner() throws {
+        let root = try repositoryRoot()
+        // The rule itself, the same question asked at exit in `finish()`, and
+        // the two stop-proof upgrades the rule calls once it has released.
+        let allowed: Set<String> = [
+            "Astra/Services/Runtime/RuntimeReservationRelease.swift",
+            "Astra/Services/Runtime/RuntimeExecutionOwner.swift",
+            "Astra/Services/Runtime/RuntimeHostNoToolReceiptReconciliation.swift",
+            "Astra/Services/Runtime/RuntimeHostRestartRelease.swift"
+        ]
+        let violations = try swiftFiles(under: root.appendingPathComponent("Astra"))
+            .compactMap { file -> String? in
+                let relative = relativePath(for: file, root: root)
+                guard !allowed.contains(relative) else { return nil }
+                return try String(contentsOf: file, encoding: .utf8).contains("resourcesReleased = true") ? relative : nil
+            }
+
+        #expect(
+            violations.isEmpty,
+            "A reservation ends in RuntimeReservationRelease. A second place that decides it brings back per-case exits: \(violations)"
+        )
+    }
+
     @Test("Provider-bound launches stay behind the durable request queue")
     func providerLaunchesStayBehindDurableRequestQueue() throws {
         let root = try repositoryRoot()
