@@ -82,10 +82,11 @@ struct SwiftPMValidationArchitectureTests {
         #expect(ciWorkflow.contains(#"ASTRA_PREPUSH_SKIP_ROOT_TESTS: "1""#))
         #expect(ciWorkflow.contains("script/swift_test.sh --no-parallel\n"))
         #expect(ciWorkflow.contains(#"LIBDISPATCH_COOPERATIVE_POOL_STRICT: "1""#))
-        // The release gate keeps its root lanes even if the switch is set.
-        #expect(prePush.contains(
-            #""${ASTRA_PREPUSH_SKIP_ROOT_TESTS:-0}" == "1" && "${ASTRA_RELEASE_GATE:-0}" != "1""#
-        ))
+        // The switch works only inside GitHub Actions, never for the local
+        // hook, and the release gate keeps its root lanes even if it is set.
+        #expect(prePush.contains(#"if [[ "${GITHUB_ACTIONS:-}" == "true" && "${ASTRA_PREPUSH_SKIP_ROOT_TESTS:-0}" == "1" \"#))
+        #expect(prePush.contains(#"  && "${ASTRA_RELEASE_GATE:-0}" != "1" ]]; then"#))
+        #expect(prePush.components(separatedBy: "ASTRA_PREPUSH_SKIP_ROOT_TESTS:-").count == 2)
         // Pull requests reuse the build saved by main and never save their own.
         #expect(ciWorkflow.contains("if: github.event_name != 'pull_request'"))
         #expect(ciWorkflow.contains("python3 script/ci_source_mtimes.py sync .build/ci-source-mtimes.json"))

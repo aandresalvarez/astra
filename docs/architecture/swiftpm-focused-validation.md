@@ -70,7 +70,8 @@ Architecture fitness tests are independently runnable through
 - GitHub CI's `Focused Swift tests` job with `ASTRA_PREPUSH_SKIP_ROOT_TESTS=1`:
   the standalone checks only. The `Full Swift test suite` job of the same run
   executes every root-package test, so CI compiles the root package once. The
-  release gate ignores the switch.
+  switch has no effect outside GitHub Actions, so the local pre-push hook
+  always runs its root lanes, and the release gate ignores it.
 
 This boundary gives future typed Git publication domain logic a fast, testable
 home without copying unmerged publication code or creating test-only production

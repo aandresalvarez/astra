@@ -20,7 +20,7 @@ jobs:
     # not compile the root package. ASTRA_PREPUSH_SKIP_ROOT_TESTS turns off the
     # root-package lanes of script/prepush.sh because the full-suite job below
     # runs every root-package test, so one run compiles the app once, not twice.
-    # The local pre-push hook and the release gate leave the switch unset.
+    # The switch has no effect outside GitHub Actions or on the release gate.
     timeout-minutes: 15
     steps:
       - name: Checkout
