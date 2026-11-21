@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "shards": [
+    [
+      "NewTaskWorktreeCreationJournalTests",
+      "TaskDecisionOutcomeRefreshTests",
+      "RuntimeWorkspaceContinuationTests",
+      "PluginActivationMigrationTests",
+      "ProcessBinaryRunnerTests",
+      "NativeResumeEmptyTurnTests",
+      "NewTaskWorktreeLifecycleTests",
+      "RemoteWorkspaceJobTests",
+      "CodexFileChangeProgressTests",
+      "RuntimeInterruptedStreamTests",
+      "PermissionApprovalContinuationTests",
+      "TaskInputContinuityPromptTests",
+      "TaskArtifactBatchScalingTests",
+      "NewTaskWorktreeConsultationTests"
+    ],
+    [
+      "HeadlessChatScenarioTests",
+      "NewTaskWorktreeCleanupTests",
+      "NewTaskWorktreeBaseTests",
+      "TaskThreadLiveHistoryTests",
+      "NewTaskWorktreeIsolationTests",
+      "ArchitectureFitnessTests",
+      "NewTaskWorktreeOwnStateTests",
+      "PluginSourcesTests",
+      "TaskPublicationDecisionEvidenceWorkTests",
+      "AgentRuntimePipeCompletionTests",
+      "TaskLifecycleResumeTests",
+      "NewTaskWorktreeTests",
+      "SchemaVersionTests",
+      "TaskMainActorScalingGateTests",
+      "WorkspaceConsultationRuntimeTests"
+    ]
+  ]
+}

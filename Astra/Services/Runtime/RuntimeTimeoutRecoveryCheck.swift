@@ -18,7 +18,12 @@ enum RuntimeTimeoutRecoveryCheck {
         defer { withExtendedLifetime(admission) {} }
         let lease = try RuntimeTaskOwnerJournal.acquire(task: task, context: context)
         defer { withExtendedLifetime(lease) {} }
-        guard var record = try lease.read(), record.taskOwnerID == task.persistentModelID,
+        let saved = try lease.read()
+        // The reservation already ended, so there is nothing left to observe:
+        // the person's next message is admitted on that release.
+        if let saved, saved.runID == runID,
+           RuntimeCompletedUserTurnContinuation.hasEndedReservation(saved, task: task, context: context) { return }
+        guard var record = saved, record.taskOwnerID == task.persistentModelID,
               record.runID == runID, record.state == .unverified, record.resourcesReleased == false,
               record.cancellationRequested != true,
               var proof = record.stopProof, proof.executionID == record.executionID,
