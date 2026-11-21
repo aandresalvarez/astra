@@ -18,6 +18,7 @@ script/configure_branch_protection.sh @aandresalvarez
 script/precommit.sh @aandresalvarez
 script/prepush.sh @aandresalvarez
 script/swift_test.sh @aandresalvarez
+script/ci_*.py @aandresalvarez
 script/test_architecture.sh @aandresalvarez
 script/test_git_contracts.sh @aandresalvarez
 script/focused_*.sh @aandresalvarez
