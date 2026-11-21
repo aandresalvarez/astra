@@ -324,7 +324,7 @@ a cloud folder. Writes made by shell commands are not in that count.
 | --- | --- | --- |
 | Task folder | `WorkspaceFileLayout.taskFolder`: `<workspace>/.astra/tasks/<id8>` | yes |
 | Cloud-synced or not local | inside `~/Library/CloudStorage/` or `~/Library/Mobile Documents/`, `URLResourceValues.isUbiquitousItem`, or `statfs` without `MNT_LOCAL` | no; new, one function |
-| Git checkout | `GitCheckoutLayout.worktreeRoot(containing:)`; a `.git` file starting `gitdir:` is a linked worktree; shared metadata from `commonDirectory(for:)` | yes |
+| Git checkout | `GitCheckoutLayout.worktreeRoot(containing:)`; a linked worktree only where `GitCheckoutLayout.linkedWorktreeCommonDirectory(containing:)` finds a common directory other than the checkout's own Git directory (a `.git` file starting `gitdir:` is also how a submodule or a `--separate-git-dir` main checkout looks, and those keep a main checkout's claims); shared metadata from `commonDirectory(for:)` | yes |
 | Plain local folder | none of the above | yes |
 | Remote | not a local path: the workspace's SSH connections | yes |
 
@@ -333,10 +333,12 @@ and when a launch is planned; it is not stored.
 
 **Rules.**
 
-1. **Task folder: parallel, no claim.** It belongs to one task. In a workspace whose code root is
-   the workspace folder itself and not a repository, a task's policy is its task folder plus the
-   extra folders it was given. The workspace folder stays its launch directory and readable, is
-   not in its policy, and is not claimed. Today that folder is the first exclusive claim of every
+1. **Task folder: parallel, claimed by its own task.** It belongs to one task, which claims it
+   exclusively, so two tasks never conflict on it, while an older request that still claims the
+   whole workspace folder, and a fork that shares its parent's folder, still do (increment 2).
+   In a workspace whose code root is the workspace folder itself and not a repository, a task's
+   policy is its task folder plus the extra folders it was given. The workspace folder stays its
+   launch directory and readable, is not in its policy, and is not claimed. Today that folder is the first exclusive claim of every
    task there, which is what serializes the analysis workspaces. The files ASTRA itself keeps in
    a workspace (`.astra-workspace.json`, `.astra/`, memory, SSH connections) are written by
    ASTRA's services, one at a time, as today. With enforcement Off this is a rule the agent is
