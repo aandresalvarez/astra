@@ -8,6 +8,10 @@ import ASTRAModels
 /// the Repository card shows; only the checkbox and base are local.
 struct NewTaskWorktreeSelection {
     var isEnabled = false
+    /// True while nobody has decided `isEnabled` for this composer: not the
+    /// person, not a draft's recorded choice, not the workspace's setting.
+    /// Only then may that setting pre-check it (`applyWorkspaceDefault`).
+    var awaitsWorkspaceDefault = true
     var repositoryPath: String?
     /// The checkout of the repository the task would otherwise run in: its
     /// root or one of its worktrees. "Current branch" starts from its HEAD.
@@ -66,6 +70,17 @@ struct NewTaskWorktreeSelection {
     mutating func resetTaskChoice() {
         isEnabled = false
         base = .defaultBranch
+        awaitsWorkspaceDefault = true
+    }
+
+    /// Takes the workspace's "start new tasks in a new worktree" setting as
+    /// the starting value, once, and only when there is a repository to start
+    /// from. Until then the composer keeps waiting for it, so a scan that
+    /// finishes later still applies it.
+    mutating func applyWorkspaceDefault(_ startsEnabled: Bool) {
+        guard awaitsWorkspaceDefault, !isLoading, selectedRepository != nil else { return }
+        awaitsWorkspaceDefault = false
+        if startsEnabled { isEnabled = true }
     }
 
     /// Selects `selectedPath` with `checkoutPath`, or else the first
@@ -154,6 +169,17 @@ struct NewTaskWorktreeDockPresentation: Equatable {
 
     static let toggleTitle = "Start in a new worktree"
     static let toggleHelp = "Give this task its own branch and folder, started from the default branch. The original checkout is not changed."
+    static let workspaceDefaultTitle = "Always in this workspace"
+    static let workspaceDefaultHelp = "Check \"Start in a new worktree\" for every new task in this workspace, so tasks there can run side by side. You can still clear it for one task."
+
+    /// The workspace's default sits beside the task's own choice, the one
+    /// place a person is looking when they would want it. It is offered once
+    /// they pick a worktree, and stays in view while it is on so that it can
+    /// be turned off again.
+    static func showsWorkspaceDefault(showsToggle: Bool, isEnabled: Bool, workspaceDefault: Bool) -> Bool {
+        showsToggle && (isEnabled || workspaceDefault)
+    }
+
     static let chooseRepositoryTitle = "Choose repository"
     static let repositorySectionTitle = "Repository"
     static let baseSectionTitle = "Start from"

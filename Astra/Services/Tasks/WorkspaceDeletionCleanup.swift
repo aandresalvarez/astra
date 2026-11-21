@@ -697,7 +697,7 @@ enum WorkspaceDeletionCleanupService {
         }
     }
 
-    private static func isMissingFile(_ error: any Error) -> Bool { WorkspaceFileLayout.isMissingFile(error) }
+    private nonisolated static func isMissingFile(_ error: any Error) -> Bool { WorkspaceFileLayout.isMissingFile(error) }
 
     enum PinnedFolder { case unchanged, replaced, unknown }
 
@@ -705,8 +705,9 @@ enum WorkspaceDeletionCleanupService {
     /// that folder: `.replaced` when it now resolves elsewhere, as after a
     /// part of it was replaced by a link, and `.unknown` when a part of it
     /// can't be read, so neither can be told. A missing part is unchanged,
-    /// as nothing beneath it is left to remove.
-    static func pinnedFolderState(_ folder: String) -> PinnedFolder {
+    /// as nothing beneath it is left to remove. Nonisolated so
+    /// `StartupCleanupPathPreflight` can run the same walk off the main actor.
+    nonisolated static func pinnedFolderState(_ folder: String) -> PinnedFolder {
         var current = folder
         while !current.isEmpty, current != "/" {
             do {

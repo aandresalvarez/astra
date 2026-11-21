@@ -324,8 +324,8 @@ struct TaskWorktreeResourceScopeTests {
         #expect(!AgentRuntimeProcessRunner.runtimeWritablePaths(for: task).contains(fixture.checkout.path))
     }
 
-    @Test("Without sandboxing, sibling worktrees still serialize on their source checkout")
-    func unenforcedSourceCheckoutIsClaimedWhenSandboxIsOff() throws {
+    @Test("Without sandboxing, sibling worktrees run together and hold their source checkout as readers")
+    func unenforcedSourceCheckoutIsHeldAsAReaderWhenSandboxIsOff() throws {
         let fixture = try WorktreeFixture(worktrees: ["wt-a", "wt-b"])
         defer { fixture.remove() }
         let workspace = fixture.workspace(additionalPaths: [fixture.checkout.path])
@@ -340,10 +340,76 @@ struct TaskWorktreeResourceScopeTests {
 
         // The sandbox keeps the replaced checkout read-only, so siblings run together.
         #expect(TaskExecutionResourceBroker.canAcquire(lease(second, .bestEffort), active: lease(first, .bestEffort)))
-        // With sandboxing Off nothing enforces that, so the checkout is claimed as a writer.
+        // With sandboxing Off nothing enforces that. The checkout and the Git
+        // directory are held as a reader and the checkout is watched
+        // (`TaskWorktreeSourceCheckoutWatch`), so siblings still run together.
         let unenforced = lease(first, .off)
-        #expect(unenforced.contains { $0.resourceKey == fixture.checkout.path && $0.accessMode == .write })
-        #expect(!TaskExecutionResourceBroker.canAcquire(lease(second, .off), active: unenforced))
+        #expect(unenforced.contains { $0.resourceKey == fixture.checkout.path && $0.accessMode == .readOnly })
+        #expect(unenforced.contains { $0.resourceKind == .gitCommonDirectory && $0.accessMode == .readOnly })
+        #expect(!unenforced.contains { $0.resourceKey != fixture.path("wt-a") && $0.accessMode == .write })
+        #expect(TaskExecutionResourceBroker.canAcquire(lease(second, .off), active: unenforced))
+        // A task that writes the checkout itself still waits for them, and they for it:
+        // what the watch finds changed there was not another ASTRA task's work.
+        let direct = AgentTask(title: "Edit main", goal: "Update the parser.",
+                               workspace: Workspace(name: "Main", primaryPath: fixture.checkout.path))
+        #expect(!TaskExecutionResourceBroker.canAcquire(lease(direct, .off), active: unenforced))
+        #expect(!TaskExecutionResourceBroker.canAcquire(unenforced, active: lease(direct, .off)))
+        #expect(TaskExecutionResourceAdmissionPolicy.watchedKeys(for: first, sandboxEnforcement: .bestEffort).isEmpty)
+        #expect(TaskExecutionResourceAdmissionPolicy.watchedKeys(for: direct, sandboxEnforcement: .off).isEmpty)
+    }
+
+    @Test("Without sandboxing, a checkout that keeps its Git directory elsewhere holds it as a writer, not as a linked worktree")
+    func separateGitDirectoryIsNotALinkedWorktree() throws {
+        let fixture = try WorktreeFixture(worktrees: ["wt-a"])
+        defer { fixture.remove() }
+        // The on-disk shape of a submodule's checkout: `.git` is a file, and
+        // the directory it names is the repository's own Git directory, not
+        // an admin directory inside another one.
+        let checkout = try fixture.makeDirectory("detached")
+        let gitDirectory = try fixture.makeDirectory("detached.git")
+        try "gitdir: \(gitDirectory)\n".write(toFile: checkout + "/.git", atomically: true, encoding: .utf8)
+        #expect(GitCheckoutLayout.commonDirectory(for: checkout) == gitDirectory)
+        #expect(GitCheckoutLayout.linkedWorktreeCommonDirectory(containing: checkout) == nil)
+        #expect(GitCheckoutLayout.linkedWorktreeCommonDirectory(containing: fixture.checkout.path) == nil)
+        #expect(GitCheckoutLayout.linkedWorktreeCommonDirectory(containing: fixture.path("wt-a")) == fixture.path("main/.git"))
+
+        let task = AgentTask(title: "Edit detached", goal: "Update the parser.",
+                             workspace: Workspace(name: "Detached", primaryPath: checkout))
+        let claims = TaskExecutionResourceAdmissionPolicy.lockClaims(
+            for: nil, task: task, runMode: "test", sandboxEnforcement: .off)
+        #expect(claims.contains {
+            $0.resourceKind == .gitCommonDirectory && $0.resourceKey == gitDirectory && $0.accessMode == .write
+        })
+    }
+
+    @Test("Without sandboxing, a worktree task that can also write a folder of the main checkout holds the Git directory as a writer")
+    func mainCheckoutFolderBesideAWorktreeHoldsTheGitDirectoryAsAWriter() throws {
+        let fixture = try WorktreeFixture(worktrees: ["wt-a", "wt-b"])
+        defer { fixture.remove() }
+        let subfolder = try fixture.makeDirectory("main/Sources")
+        let gitDirectory = fixture.path("main/.git")
+        // A sibling with nothing in the main checkout: its own worktree, and the Git directory as a reader.
+        let sibling = lease([
+            TaskExecutionResourceClaim(kind: .workspace, key: fixture.path("wt-b"), access: .exclusive),
+            TaskExecutionResourceClaim(kind: .gitCommonDirectory, key: gitDirectory, access: .shared)
+        ], taskID: UUID())
+        // The stronger need wins whichever root is listed first, and stays one
+        // claim when submission already claimed the directory for a Git command.
+        for (paths, goal) in [([fixture.checkout.path, subfolder], "Update the parser."),
+                              ([subfolder, fixture.checkout.path], "Update the parser."),
+                              ([fixture.checkout.path, subfolder], "Commit the parser update with git.")] {
+            let task = fixture.task("Ship feature A", pinnedTo: "wt-a", in: fixture.workspace(additionalPaths: paths))
+            task.goal = goal
+            let request = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 1,
+                                          resourceClaims: TaskExecutionResourceClaimResolver.claims(for: task))
+            let claims = TaskExecutionResourceAdmissionPolicy.lockClaims(
+                for: request, task: task, runMode: "test", sandboxEnforcement: .off)
+            #expect(claims.contains { $0.resourceKey == fixture.path("wt-a") && $0.accessMode == .write })
+            #expect(claims.contains { $0.resourceKey == subfolder && $0.accessMode == .write })
+            #expect(claims.filter { $0.resourceKind == .gitCommonDirectory }.map(\.accessMode) == [.write])
+            #expect(!TaskExecutionResourceBroker.canAcquire(sibling, active: claims))
+            #expect(!TaskExecutionResourceBroker.canAcquire(claims, active: sibling))
+        }
     }
 
     @Test("Every read-only workspace folder is labeled in the prompt")

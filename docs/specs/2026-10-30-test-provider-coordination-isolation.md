@@ -128,6 +128,24 @@ the journal ever tracked is not legacy and stays blocked without its receipt; a
 retry replays an instruction that may have run and stays excluded. The prompt
 now names this rule when it refuses, instead of three unrelated possibilities.
 
+The holder had a dead end of its own. The decision was offered only over a
+holder whose latest turn completed, so a task whose last turn failed kept its
+workspace from every other task: its receipt stays unverified, restart release
+needs a completed run, and nothing short of a later successful turn inside that
+task changed either. `RuntimeCompletedUserTurnContinuation.hasEndedTurn` now
+lets the person's decision name a holder whose latest turn failed, timed out or
+ran out of budget, on the evidence a completed holder needs: the original stop
+proof with a reaped, absent provider and an empty process group, both
+settlement barriers, a host run that is the task's latest and has ended, and
+nothing running. A later observation of a timed-out group still serves only the
+owner's own next message, and a cancelled turn stays fenced. The prompt says
+that the last run ended without completing instead of that the provider
+finished. A remembered decision covers the exact receipts the person
+acknowledged, failed ones included; a holder admitted through it that fails
+afterwards is new uncertainty and needs their decision again. The holder's
+journal, its own Retry and recovery proofs, restart release and the same-task
+follow-up rules are unchanged.
+
 ## Validation
 
 Regression coverage includes bootstrap registration, inherited UUIDs, malformed

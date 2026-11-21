@@ -1000,6 +1000,11 @@ public struct ASTRAApp: App {
                 credentialCleanupAfterLaunch = Task { @MainActor in
                     await WorkspacePersistenceWork.withCleanupJob {
                         guard !Task.isCancelled, WorkspaceRecoveryTrust.allowsCleanup else { return }
+                        // A privacy prompt or a stalled volume waits here, off
+                        // the main actor, instead of inside the passes below.
+                        await StartupCleanupPathPreflight.run(StartupCleanupPathPreflight.paths(
+                            modelContext: modelContext, movedMirrors: movedDeletionMirrors))
+                        guard !Task.isCancelled, WorkspaceRecoveryTrust.allowsCleanup else { return }
                         MainThreadPhase.tracking("startup_cleanup_workspace_deletions") {
                             WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext,
                                 movedMirrors: movedDeletionMirrors, dropsUnconfirmed: false)

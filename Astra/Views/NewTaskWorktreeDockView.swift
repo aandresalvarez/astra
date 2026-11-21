@@ -31,6 +31,8 @@ struct NewTaskWorktreeDockView: View {
     @Environment(\.newTaskWorktreeIntents) private var intents
     @State private var intentOwner = UUID()
     @State private var choiceProblem: String?
+    /// The workspace's own default, shown beside the task's choice.
+    @State private var workspaceDefault = false
 
     private struct ScanRequest: Hashable {
         let workspaceID: UUID
@@ -113,10 +115,16 @@ struct NewTaskWorktreeDockView: View {
         .task(id: scanRequest) {
             await scanRepositories()
         }
-        .onAppear { claimIntent() }
+        .onAppear { claimIntent(); readWorkspaceDefault() }
+        // Another window can change this workspace's default. Only what is
+        // shown follows; this task's own choice is not applied again.
+        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification).receive(on: RunLoop.main)) { _ in
+            readWorkspaceDefault()
+        }
         .onChange(of: workspace?.id) {
             choiceProblem = nil
             claimIntent()
+            readWorkspaceDefault()
         }
         .onChange(of: intentSnapshot) { publishIntent() }
         .onChange(of: workspace?.activeWorkingPath) { followWorkspaceLocation() }
@@ -149,6 +157,7 @@ struct NewTaskWorktreeDockView: View {
         }
         guard !Task.isCancelled, request == scanRequest else { return }
         Self.applyScan(scan, repositories: repositories, to: &selection)
+        NewTaskWorktreeComposerFlow.applyWorkspaceDefault(to: &selection, draft: draft, workspace: workspace)
         guard let repository = selection.selectedRepository else { return }
         let base = TaskWorktreeRequest(repositoryPath: repository.path, checkoutPath: selection.checkoutPath)
         var current = base
@@ -295,6 +304,20 @@ struct NewTaskWorktreeDockView: View {
         })
     }
 
+    private func readWorkspaceDefault() {
+        workspaceDefault = workspace.map { NewTaskWorktreeDefaultStore.startsEnabled(workspaceID: $0.id) } ?? false
+    }
+
+    /// Changes what the next new task here starts with. This task's own
+    /// choice is the checkbox beside it and is not touched.
+    private var workspaceDefaultBinding: Binding<Bool> {
+        Binding(get: { workspaceDefault }, set: { value in
+            guard let workspace else { return }
+            workspaceDefault = value
+            NewTaskWorktreeDefaultStore.setStartsEnabled(value, workspaceID: workspace.id)
+        })
+    }
+
     private var baseBinding: Binding<TaskWorktreeBaseChoice> {
         Binding(get: { selection.base }, set: { value in
             updateChoice { $0.base = value }
@@ -304,6 +327,8 @@ struct NewTaskWorktreeDockView: View {
     private func updateChoice(_ update: (inout NewTaskWorktreeSelection) -> Void) {
         let previous = selection
         update(&selection)
+        // The person decided; the workspace's starting value no longer applies.
+        selection.awaitsWorkspaceDefault = false
         guard allowsChoice,
               let draft = NewTaskWorktreeComposerFlow.liveDraft(draft, in: workspace) else { return }
         do {
@@ -425,7 +450,8 @@ struct NewTaskWorktreeDockView: View {
     }
 
     /// The checkbox stays rightmost so it does not move under the pointer
-    /// when checking it reveals the repository menu to its left. While a
+    /// when checking it reveals the repository menu and the workspace's
+    /// default to its left. While a
     /// worktree is being created the choice controls are disabled and a
     /// Cancel button, which stays enabled, leads them.
     @ViewBuilder
@@ -442,6 +468,15 @@ struct NewTaskWorktreeDockView: View {
                 HStack(alignment: .center, spacing: 10) {
                     if presentation.showsRepositoryMenu {
                         repositoryMenu
+                    }
+                    if workspace != nil, NewTaskWorktreeDockPresentation.showsWorkspaceDefault(
+                        showsToggle: presentation.showsToggle, isEnabled: selection.isEnabled, workspaceDefault: workspaceDefault) {
+                        Toggle(NewTaskWorktreeDockPresentation.workspaceDefaultTitle, isOn: workspaceDefaultBinding)
+                            .toggleStyle(.checkbox)
+                            .font(Stanford.caption(12))
+                            .foregroundStyle(.secondary)
+                            .help(NewTaskWorktreeDockPresentation.workspaceDefaultHelp)
+                            .accessibilityIdentifier("NewTaskWorktreeWorkspaceDefaultToggle")
                     }
                     Toggle(NewTaskWorktreeDockPresentation.toggleTitle, isOn: enabledBinding)
                         .toggleStyle(.checkbox)
