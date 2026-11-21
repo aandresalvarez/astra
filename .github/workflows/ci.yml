@@ -102,24 +102,13 @@ jobs:
         run: swift build --build-tests
 
       - name: Save the SwiftPM build
-        # TEMPORARY, removed before this pull request is final: lets this one
-        # branch save its own build so its runs can measure cold against warm.
-        if: github.event_name != 'pull_request' || github.head_ref == 'codex/ci-build-cache-reuse'
+        if: github.event_name != 'pull_request'
         uses: actions/cache/save@v5
         with:
           path: |
             .build
             ~/.swiftpm
           key: ${{ runner.os }}-ci-build-${{ steps.toolchain.outputs.id }}-${{ github.sha }}
-
-      # TEMPORARY, removed before this pull request is final: the measurement
-      # runs stop here, once the build time is known and the build is saved,
-      # instead of spending a runner on tests whose result would be discarded.
-      - name: Stop after the measured build
-        if: github.event_name == 'pull_request'
-        run: |
-          echo "Temporary measurement run: build measured and saved; the tests run on the final commit."
-          exit 1
 
       - name: Check whether this tree already passed on its pull request
         id: tested
