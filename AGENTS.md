@@ -85,7 +85,16 @@ script/swift_test.sh --filter <RelevantSuiteOrTestName>
 git diff --check
 ```
 
-For shared behavior, persistence, updater, or release changes, run full tests:
+Do not run the full suite locally as a routine check. GitHub runs it on every
+pull request as the required `Full Swift test suite` check, so a local run
+repeats that check, takes close to an hour, and loads the machine the owner is
+working on. For shared behavior, persistence, updater, or release changes,
+widen the focused filter to the suites that cover the change, then let CI run
+the full suite.
+
+Run the full suite locally only when the owner asks for it, when CI is
+unavailable, or to reproduce a failure that CI reported and a focused run does
+not show. Tell the owner before starting one, and never run two at once:
 
 ```bash
 script/swift_test.sh --no-parallel

@@ -1251,7 +1251,7 @@ final class AgentRuntimeProcessRunner {
                     remoteWorkExcluded: remoteWorkExcluded ||
                         (!plan.executionEnvironment.providerRunsInsideContainer && processEvidence.toolsStopped),
                     managedSSHOnly: processEvidence.managedSSHOnly,
-                    observingLocalSurvivors: remoteWorkExcluded && plan.executionEnvironment.isHost
+                    observingLocalSurvivors: plan.executionEnvironment.isHost
                         && processEvidence.localObservationCanSettle)
                 let stopProof = processResult.executionStopProof
                 let cleanupUncertainty = processEvidence.cleanupUncertainty
