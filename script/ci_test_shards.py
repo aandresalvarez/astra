@@ -196,9 +196,6 @@ def propose(log_paths, shards=3, root=ROOT):
     loads = [0.0] * (shards - 1)
     chosen = []
     for name, value in sorted(mean.items(), key=lambda item: (-item[1], item[0])):
-        # Every listed shard gets a suite before the listed share can end the list.
-        if sum(loads) + value > total * (shards - 1) / shards and all(listed):
-            break
         candidates = types.get(name, set())
         if len(candidates) != 1:
             continue  # Not found or ambiguous: it stays in the last shard.
@@ -207,6 +204,10 @@ def propose(log_paths, shards=3, root=ROOT):
             continue
         if any(type_name in target for target in targets):
             continue  # It would select every test of that target, not one suite.
+        # Only a suite that could be listed ends the list, and every listed
+        # shard gets a suite before the listed share can end it.
+        if sum(loads) + value > total * (shards - 1) / shards and all(listed):
+            break
         lighter = loads.index(min(loads))
         listed[lighter].append(type_name)
         loads[lighter] += value
