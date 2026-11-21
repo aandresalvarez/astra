@@ -1167,7 +1167,7 @@ struct TaskContextStateTests {
         let result = await TaskDeliverableVerificationService.evaluate(
             task: task,
             run: run,
-            environment: TaskDeliverableVerificationEnvironment(checkJavaScriptSyntax: { _, _ in .passed })
+            environment: TaskDeliverableVerificationEnvironment(checkJavaScriptSyntax: { _, _, _ in .passed })
         )
         context.insert(TaskEvent(
             task: task,

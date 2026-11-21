@@ -1,4 +1,5 @@
 import Foundation
+import JavaScriptCore
 import SwiftData
 import ASTRAModels
 import ASTRAPersistence
@@ -10,14 +11,28 @@ enum JavaScriptSyntaxCheckResult: Sendable, Equatable {
     case unavailable(String)
 }
 
+/// How a script is loaded, when the file that carries it says so.
+enum JavaScriptSourceKind: Sendable, Equatable {
+    /// An HTML script that is not `type="module"`. A browser rejects module
+    /// syntax here, so every syntax error is a real one.
+    case classicScript
+    /// An HTML `type="module"` script or an `.mjs` file.
+    case module
+    /// A standalone file that may be loaded as a module or as a script.
+    case unknown
+}
+
 struct TaskDeliverableVerificationEnvironment: Sendable {
-    var checkJavaScriptSyntax: @Sendable (_ source: String, _ sourceLabel: String) async -> JavaScriptSyntaxCheckResult
+    var checkJavaScriptSyntax: @Sendable (
+        _ source: String, _ sourceLabel: String, _ kind: JavaScriptSourceKind
+    ) async -> JavaScriptSyntaxCheckResult
 
     static let live = TaskDeliverableVerificationEnvironment(
-        checkJavaScriptSyntax: { source, sourceLabel in
-            await TaskDeliverableVerificationService.checkJavaScriptSyntaxWithNode(
+        checkJavaScriptSyntax: { source, sourceLabel, kind in
+            TaskDeliverableVerificationService.checkJavaScriptSyntaxInProcess(
                 source: source,
-                sourceLabel: sourceLabel
+                sourceLabel: sourceLabel,
+                kind: kind
             )
         }
     )
@@ -227,40 +242,89 @@ enum TaskDeliverableVerificationService {
         TaskDeliverableVerificationCodec.decodeResult(payload)
     }
 
-    static func checkJavaScriptSyntaxWithNode(
+    /// Parses `source` with JavaScriptCore without running it.
+    ///
+    /// Settlement runs this check. Any process it launched there would leave
+    /// the turn's tools unverified (`RuntimeSettlementExecutionScope`), which
+    /// keeps the workspace reserved with nothing able to continue it. `node`
+    /// can't be launched instead: it is found through `PATH`, so it could run
+    /// anything. A parse starts nothing and executes none of the delivered code.
+    ///
+    /// The public JavaScriptCore API parses classic scripts only, so a module
+    /// can't be checked. Whether a failure is a real error or just module
+    /// syntax is decided by the parser, never by searching the text:
+    /// a classic HTML script is always a real error; otherwise the parser's
+    /// own diagnostic names `import`, `export` or `import.meta`, or the source
+    /// parses once top-level `await` is allowed. Words inside strings and
+    /// comments can't match either test.
+    nonisolated static func checkJavaScriptSyntaxInProcess(
         source: String,
-        sourceLabel: String
-    ) async -> JavaScriptSyntaxCheckResult {
-        let directory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-            .appendingPathComponent("astra-js-syntax-\(UUID().uuidString)", isDirectory: true)
-        do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            defer { try? FileManager.default.removeItem(at: directory) }
-
-            let sourceURL = directory.appendingPathComponent("check.js")
-            try source.write(to: sourceURL, atomically: true, encoding: .utf8)
-
-            var env = ProcessInfo.processInfo.environment
-            env["PATH"] = (env["PATH"] ?? "") + ":\(RuntimePathResolver.shellPathSuffix)"
-            let output = await RuntimeValidationCommandRunner.run(path: "/usr/bin/env",
-                arguments: ["node", "--check", sourceURL.path], environment: env,
-                directory: directory.path, timeout: 5)
-            if output.exitCode == 0 {
-                return .passed
-            }
-            let detail = [output.stderr, output.stdout]
-                .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-                .joined(separator: "\n")
-            if output.exitCode == -1 {
-                return .unavailable(detail.isEmpty ? "Could not run JavaScript syntax check for \(sourceLabel)." : detail)
-            }
-            if output.exitCode == 127 || detail.lowercased().contains("no such file") {
-                return .unavailable("Node.js is not available to syntax-check \(sourceLabel).")
-            }
-            return .failed(detail.isEmpty ? "JavaScript syntax check failed for \(sourceLabel)." : detail)
-        } catch {
-            return .unavailable("Could not run JavaScript syntax check for \(sourceLabel): \(error.localizedDescription)")
+        sourceLabel: String,
+        kind: JavaScriptSourceKind
+    ) -> JavaScriptSyntaxCheckResult {
+        guard let context = JSContext() else {
+            return .unavailable("Could not start the JavaScript syntax checker for \(sourceLabel).")
         }
+        guard let error = classicScriptError(source, context: context) else { return .passed }
+        if kind != .classicScript, needsModuleParser(source, classicError: error.message, context: context) {
+            let subject = kind == .module
+                ? "is a JavaScript module"
+                : "uses syntax that only a JavaScript module or CommonJS file accepts"
+            return .unavailable("\(sourceLabel) \(subject), which ASTRA can't syntax-check without running another program. Review it.")
+        }
+        let line = error.line.map { " at line \($0)" } ?? ""
+        return .failed("JavaScript syntax check failed for \(sourceLabel)\(line): \(error.message)")
+    }
+
+    private nonisolated static func classicScriptError(
+        _ source: String,
+        context: JSContext
+    ) -> (message: String, line: Int32?)? {
+        let script = JSStringCreateWithCFString(source as CFString)
+        defer { JSStringRelease(script) }
+        var exception: JSValueRef?
+        if JSCheckScriptSyntax(context.jsGlobalContextRef, script, nil, 1, &exception) { return nil }
+        let error = exception.flatMap { JSValue(jsValueRef: $0, in: context) }
+        let line = error?.forProperty("line").flatMap { $0.isNumber ? $0.toInt32() : nil }
+        return (error?.toString() ?? "SyntaxError", line)
+    }
+
+    /// Whether the classic parse stopped only at something a module accepts.
+    /// The second parse covers top-level `await`, which has no diagnostic of
+    /// its own, and an `import` or `export` that follows one.
+    private nonisolated static func needsModuleParser(
+        _ source: String,
+        classicError: String,
+        context: JSContext
+    ) -> Bool {
+        if isModuleSyntaxDiagnostic(classicError) { return true }
+        guard let error = asyncFunctionBodyError(source, context: context) else { return true }
+        return isModuleSyntaxDiagnostic(error)
+    }
+
+    /// JavaScriptCore's wording for an `export` declaration, a static `import`
+    /// declaration and `import.meta` met in a classic script. The parser
+    /// reports the token it stopped at, so this is not a search of the source.
+    /// `InProcessJavaScriptSyntaxCheckTests` pins the wording against the
+    /// system framework. Known gap: a dynamic `import()` call with three or
+    /// more arguments shares the static-import wording.
+    nonisolated static func isModuleSyntaxDiagnostic(_ message: String) -> Bool {
+        message.contains("Unexpected keyword 'export'") || message.contains("import call expects")
+            || message.contains("only valid inside modules")
+    }
+
+    /// The error from parsing the source as the body of an async function,
+    /// where top-level `await`, `for await` and `return` are legal; nil when
+    /// it parses. JavaScriptCore's own constructor builds the function, so a
+    /// body can't close it early the way it could a text wrapper. Only
+    /// ASTRA's constant expression is evaluated; the function is never called.
+    private nonisolated static func asyncFunctionBodyError(_ source: String, context: JSContext) -> String? {
+        guard let constructor = context.evaluateScript("(async function () {}).constructor"),
+              constructor.isObject else { return "SyntaxError" }
+        context.exception = nil
+        defer { context.exception = nil }
+        _ = constructor.construct(withArguments: [source])
+        return context.exception?.toString()
     }
 
     private static func result(
@@ -522,6 +586,7 @@ enum TaskDeliverableVerificationService {
             checks.append(await syntaxCheck(
                 source: trimmed,
                 sourceLabel: "\(file.relativePath) inline script \(index + 1)",
+                kind: script.isModule ? .module : .classicScript,
                 path: file.path,
                 id: "javascript.syntax.inline.\(index + 1)",
                 environment: environment
@@ -547,6 +612,7 @@ enum TaskDeliverableVerificationService {
             await syntaxCheck(
                 source: source,
                 sourceLabel: file.relativePath,
+                kind: (file.path as NSString).pathExtension.lowercased() == "mjs" ? .module : .unknown,
                 path: file.path,
                 id: "javascript.syntax.file",
                 environment: environment
@@ -557,11 +623,12 @@ enum TaskDeliverableVerificationService {
     private static func syntaxCheck(
         source: String,
         sourceLabel: String,
+        kind: JavaScriptSourceKind,
         path: String,
         id: String,
         environment: TaskDeliverableVerificationEnvironment
     ) async -> TaskDeliverableCheck {
-        switch await environment.checkJavaScriptSyntax(source, sourceLabel) {
+        switch await environment.checkJavaScriptSyntax(source, sourceLabel, kind) {
         case .passed:
             return TaskDeliverableCheck(
                 id: id,
@@ -706,8 +773,10 @@ enum TaskDeliverableVerificationService {
         var isJavaScript: Bool {
             guard let type, !type.isEmpty else { return true }
             let mimeType = type.trimmingCharacters(in: Self.asciiWhitespace).lowercased()
-            return Self.javascriptMIMETypes.contains(mimeType) || type.lowercased() == "module"
+            return Self.javascriptMIMETypes.contains(mimeType) || isModule
         }
+
+        var isModule: Bool { type?.lowercased() == "module" }
 
         private static let asciiWhitespace = CharacterSet(charactersIn: "\t\n\u{0C}\r ")
 
