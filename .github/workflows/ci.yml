@@ -7,6 +7,11 @@ on:
     branches:
       - main
 
+# A job that names no permissions gets this read-only token, whatever the
+# repository's default is. No job of this workflow asks for one that can write.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true

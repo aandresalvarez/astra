@@ -225,6 +225,18 @@ class TestShardPlanTests(unittest.TestCase):
         self.assertEqual(listed, [['ATests'], ['BTests', 'CTests']])
         self.assertEqual(loads, [60.0, 75.0, 90.0])
 
+    def test_a_suite_a_listed_name_also_selects_counts_for_that_shard(self):
+        root, log_of = self.planner_fixture(['A', 'XA', 'B', 'C', 'D', 'E'])
+        # ATests as a filter also matches XATests, so XATests runs in the first shard
+        # and its time fills the listed share: nothing smaller is added after it.
+        listed, loads = ci_test_shards.propose(
+            [log_of({'A': 60, 'B': 55, 'XA': 50, 'C': 20, 'D': 20, 'E': 20})], shards=3, root=root)
+        self.assertEqual(listed, [['ATests'], ['BTests']])
+        self.assertEqual(loads, [110.0, 55.0, 60.0])
+        counts, shared = ci_test_shards.tests_per_shard(listed, [
+            'M.ATests/a()', 'M.XATests/b()', 'M.BTests/c()', 'M.CTests/d()'])
+        self.assertEqual((counts, shared), ([2, 1, 1], []))
+
     def test_proposed_plan_always_passes_the_plan_validator(self):
         root, log_of = self.planner_fixture('ABC')
         # The second suite alone already passes the listed share, and still fills its shard.

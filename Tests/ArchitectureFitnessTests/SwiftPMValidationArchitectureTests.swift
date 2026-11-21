@@ -126,9 +126,12 @@ struct SwiftPMValidationArchitectureTests {
         #expect(ciWorkflow.contains(
             #"[[ "$SHARDS_RESULT" == "skipped" && "$GITHUB_EVENT_NAME" == "push" && "$ALREADY_TESTED" == "true" ]]"#
         ))
-        // No job of this workflow gets a token that can write: superseded
-        // builds are left to GitHub's own cache eviction.
+        // No job of this workflow gets a token that can write: the workflow's
+        // own default is read-only, whatever the repository's is, and no job
+        // asks for more. Superseded builds are left to GitHub's cache eviction.
+        #expect(ciWorkflow.contains("\npermissions:\n  contents: read\n\nconcurrency:\n"))
         #expect(!ciWorkflow.contains(": write"))
+        #expect(!ciWorkflow.contains("write-all"))
     }
 
     private func repositoryRoot() throws -> URL {

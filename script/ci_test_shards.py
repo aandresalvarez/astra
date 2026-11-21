@@ -194,14 +194,19 @@ def propose(log_paths, shards=3, root=ROOT):
     targets = test_target_names(root)
     listed = [[] for _ in range(shards - 1)]
     loads = [0.0] * (shards - 1)
-    chosen = []
+    shard_of = {}
     for name, value in sorted(mean.items(), key=lambda item: (-item[1], item[0])):
         candidates = types.get(name, set())
         if len(candidates) != 1:
             continue  # Not found or ambiguous: it stays in the last shard.
         type_name = next(iter(candidates))
-        if any(type_name in other or other in type_name for other in chosen):
+        captor = next((other for other in shard_of if other in type_name), None)
+        if captor is not None:
+            # A listed name's filter selects this suite too, so it runs there.
+            loads[shard_of[captor]] += value
             continue
+        if any(type_name in other for other in shard_of):
+            continue  # Listing it would select the listed suite as well.
         if any(type_name in target for target in targets):
             continue  # It would select every test of that target, not one suite.
         # Only a suite that could be listed ends the list, and every listed
@@ -211,7 +216,7 @@ def propose(log_paths, shards=3, root=ROOT):
         lighter = loads.index(min(loads))
         listed[lighter].append(type_name)
         loads[lighter] += value
-        chosen.append(type_name)
+        shard_of[type_name] = lighter
     return validated(listed, 'proposed plan'), loads + [total - sum(loads)]
 
 
