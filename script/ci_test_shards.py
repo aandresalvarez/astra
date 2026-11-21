@@ -28,7 +28,8 @@ single job ran the whole suite, all the shards' logs otherwise. A suite it
 finds in no log counts as zero seconds. It reads only the first test run of a
 log, because the strict one-worker step that follows in shard 1 runs suites a
 second time. It never proposes a name that is part of a test target's name,
-which would select that whole target.
+which would select that whole target. Its estimate knows suite type names
+only: `check` and the measured shard times judge a plan.
 """
 import json
 import os
@@ -183,40 +184,41 @@ def test_target_names(root=ROOT):
 
 
 def propose(log_paths, shards=3, root=ROOT):
-    """Heaviest suites first into the lighter listed shard, until the rest is one share."""
+    """Heaviest names first into the lighter listed shard, until the rest is one share.
+
+    A name weighs what its filter selects among the measured suites: its own
+    suite and every suite whose type name contains it.
+    """
     totals = {}
     for log_path in log_paths:
         for name, value in suite_seconds(log_path).items():
             totals.setdefault(name, []).append(value)
     mean = {name: sum(values) / len(values) for name, values in totals.items()}
     total = sum(mean.values())
-    types = suite_type_names(root)
     targets = test_target_names(root)
+    # A suite can be named when exactly one top-level type declares its display
+    # name. Any other suite stays in the last shard.
+    type_of = {name: next(iter(found)) for name, found in suite_type_names(root).items()
+               if len(found) == 1 and name in mean}
+    selects = {type_name: {name for name, other in type_of.items() if type_name in other}
+               for type_name in type_of.values()}
+    weight = {type_name: sum(mean[name] for name in names) for type_name, names in selects.items()}
     listed = [[] for _ in range(shards - 1)]
     loads = [0.0] * (shards - 1)
-    shard_of = {}
-    for name, value in sorted(mean.items(), key=lambda item: (-item[1], item[0])):
-        candidates = types.get(name, set())
-        if len(candidates) != 1:
-            continue  # Not found or ambiguous: it stays in the last shard.
-        type_name = next(iter(candidates))
-        captor = next((other for other in shard_of if other in type_name), None)
-        if captor is not None:
-            # A listed name's filter selects this suite too, so it runs there.
-            loads[shard_of[captor]] += value
-            continue
-        if any(type_name in other for other in shard_of):
-            continue  # Listing it would select the listed suite as well.
+    taken = set()
+    for type_name in sorted(weight, key=lambda item: (-weight[item], item)):
         if any(type_name in target for target in targets):
             continue  # It would select every test of that target, not one suite.
-        # Only a suite that could be listed ends the list, and every listed
-        # shard gets a suite before the listed share can end it.
-        if sum(loads) + value > total * (shards - 1) / shards and all(listed):
+        if selects[type_name] & taken:
+            continue  # A listed name already runs a suite this one would select.
+        # Only a name that could be listed ends the list, and every listed
+        # shard gets one before the listed share can end it.
+        if sum(loads) + weight[type_name] > total * (shards - 1) / shards and all(listed):
             break
         lighter = loads.index(min(loads))
         listed[lighter].append(type_name)
-        loads[lighter] += value
-        shard_of[type_name] = lighter
+        loads[lighter] += weight[type_name]
+        taken |= selects[type_name]
     return validated(listed, 'proposed plan'), loads + [total - sum(loads)]
 
 
