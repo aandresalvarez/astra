@@ -723,11 +723,10 @@ struct TaskContextStateOffMainRefreshTests {
 
         #expect(saved)
         #expect(TaskOutputPathResolver.liveScanCountForTesting == 0, "finalization rescanned the output folder")
-        let events = TaskHistoryRead.events(
-            for: fixture.task,
-            ofTypes: [TaskHandoffEventTypes.created, TaskMissionEventTypes.checkpointCreated]
-        )
-        #expect(Set(events.map(\.type)) == [TaskHandoffEventTypes.created, TaskMissionEventTypes.checkpointCreated])
+        let expected: Set<String> = [TaskHandoffEventTypes.created, TaskMissionEventTypes.checkpointCreated]
+        let events: [TaskEvent] = TaskHistoryRead.events(for: fixture.task, ofTypes: expected)
+        let recorded: Set<String> = Set(events.map(\.type))
+        #expect(recorded == expected)
         let state = try #require(TaskContextStateManager.load(taskFolder: fixture.folder))
         #expect(state.artifacts.contains { $0.path.hasSuffix("nested/deep/data.csv") && !$0.isStale })
     }
