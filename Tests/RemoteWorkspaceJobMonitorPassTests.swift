@@ -239,5 +239,9 @@ struct RemoteWorkspaceJobMonitorPassTests {
         // and an unbound receipt's attribution is handed the fetched tasks.
         #expect(!source.contains("#Predicate { $0.id == taskID }"))
         #expect(source.contains("RuntimeExecutionOwner.existing(task: task, context: context, sharingID: sharingID)"))
+        // Unbound IDs go through the bounded lookup, never into one statement:
+        // a pass that throws there refreshes nothing and delivers nothing.
+        #expect(source.contains("TaskTurnRequestOwnership.candidates(taskIDs: unboundIDs, in: context)"))
+        #expect(!source.contains("unboundIDs.contains("))
     }
 }

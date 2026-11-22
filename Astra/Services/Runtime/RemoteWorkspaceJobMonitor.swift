@@ -350,7 +350,11 @@ final class RemoteWorkspaceJobMonitorSession {
         let unboundIDs = Array(Set(registered.filter { $0.taskOwnerID == nil }.map(\.taskID)))
         var unbound: [UUID: [AgentTask]] = [:]
         if !unboundIDs.isEmpty {
-            let rows = try context.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { unboundIDs.contains($0.id) }))
+            // The bounded lookup: a store migrated with many unbound receipts
+            // must not put more IDs into one statement than it accepts, or
+            // every pass would fail before refreshing anything. Rows deleted
+            // but not yet saved are left out, as a fetch leaves them out.
+            let rows = try TaskTurnRequestOwnership.candidates(taskIDs: unboundIDs, in: context).filter { !$0.isDeleted }
             unbound = Dictionary(grouping: rows, by: \.id)
         }
         var result: [AgentTask] = []
