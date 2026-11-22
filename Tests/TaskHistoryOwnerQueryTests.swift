@@ -108,6 +108,11 @@ struct TaskHistoryOwnerQueryTests {
         let run = TaskRun(task: task)
         let otherRun = TaskRun(task: task)
         let twinRun = TaskRun(task: twin)
+        // Runs whose output carries protocol events are the plan's recovery
+        // runs; `otherRun` has none.
+        run.setOutput("ASTRA_EVENT own")
+        twinRun.setOutput("ASTRA_EVENT twin")
+        #expect(run.hasProtocolEvents == true && otherRun.hasProtocolEvents == false)
         context.insert(run)
         context.insert(otherRun)
         context.insert(twinRun)
@@ -150,22 +155,60 @@ struct TaskHistoryOwnerQueryTests {
             $0.type == "tool.use" && $0.run?.id == otherRunID
         }
 
-        // The plan reader with an owner reads only the task's plan events;
-        // without one it also returns the twin's, which its caller rejects.
+        // The plan reader with an owner returns only the task's plan events
+        // and recovery runs, whichever predicates ran. A twin's runs applied
+        // to this task's plan could complete or block steps that are not
+        // theirs. Without an owner the UUID is all it can match on.
         let planKinds: Set<String> = [planned, stepped]
         let owner: PersistentIdentifier = task.persistentModelID
         let withOwner = try TaskPlanStateReader.read(taskID: task.id, owner: owner, modelContext: context)
         let withoutOwner = try TaskPlanStateReader.read(taskID: task.id, modelContext: context)
+        check("plan", withOwner.events) { planKinds.contains($0.type) }
         let ownedPlanEvents: [TaskEvent] = withoutOwner.events.filter { $0.task?.persistentModelID == owner }
-        check("plan", ownedPlanEvents) { planKinds.contains($0.type) }
         let withOwnerIDs: [UUID] = withOwner.events.map(\.id)
-        if TaskOwnerPredicate.usesRelationshipIndex(for: owner, in: context) {
-            let ownedIDs: [UUID] = ownedPlanEvents.map(\.id)
-            #expect(withOwnerIDs == ownedIDs, "the indexed plan read returns the task's events, in the same order")
-        } else {
-            let portableIDs: [UUID] = withoutOwner.events.map(\.id)
-            #expect(withOwnerIDs == portableIDs)
-        }
+        let ownedIDs: [UUID] = ownedPlanEvents.map(\.id)
+        #expect(withOwnerIDs == ownedIDs, "the same events, in the same order, as the portable read keeps for this task")
+        let ownRunIDs: Set<UUID> = [run.id]
+        let recoveredRunIDs: Set<UUID> = Set(withOwner.recoveryRuns.map(\.id))
+        #expect(recoveredRunIDs == ownRunIDs)
+        let unscopedRunIDs: Set<UUID> = Set(withoutOwner.recoveryRuns.map(\.id))
+        #expect(unscopedRunIDs.contains(twinRun.id), "without an owner the twin's run comes back too")
+        let unscopedEventCount: Int = withoutOwner.events.count
+        #expect(unscopedEventCount == withOwner.events.count * 2, "and so do the twin's plan events")
+    }
+
+    /// The plan snapshot refresh rebuilds the plan from the reader's rows
+    /// directly, with no ownership check of its own.
+    @Test("A plan snapshot refresh ignores a twin task's plan events and runs")
+    func snapshotRefreshIgnoresATwin() throws {
+        let container = try inMemoryContainer()
+        defer { withExtendedLifetime(container) {} }
+        let context = container.mainContext
+        let workspace = Workspace(name: "Twin plan", primaryPath: NSTemporaryDirectory())
+        context.insert(workspace)
+        let task = AgentTask(title: "task", goal: "g", workspace: workspace)
+        let twin = AgentTask(title: "twin", goal: "g", workspace: workspace)
+        twin.id = task.id
+        context.insert(task)
+        context.insert(twin)
+        context.insert(TaskRun(task: task))
+        try context.save()
+        let first: TaskPlanStateSnapshot? = try TaskPlanStateSnapshot.refreshed(
+            for: task, modelContext: context, cached: .empty)
+        let alone: TaskPlanStateSnapshot = first ?? .empty
+
+        // History on the twin only: a plan event and a run that could carry
+        // protocol output.
+        context.insert(TaskEvent(task: twin, type: TaskPlanEventTypes.cancelled, payload: "twin"))
+        let twinRun = TaskRun(task: twin)
+        twinRun.setOutput("ASTRA_EVENT twin")
+        #expect(twinRun.hasProtocolEvents == true)
+        context.insert(twinRun)
+        try context.save()
+
+        let refreshed: TaskPlanStateSnapshot? = try TaskPlanStateSnapshot.refreshed(
+            for: task, modelContext: context, cached: alone)
+        #expect(refreshed == nil, "the twin's rows changed this task's plan signature")
     }
 
     @Test("A task that was never saved still reads its own unsaved history")

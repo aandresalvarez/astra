@@ -18,6 +18,10 @@ enum TaskPlanStateReader {
     /// relationship's index where SwiftData can run that; see
     /// `TaskOwnerPredicate`. Without it, and on older systems, they come from
     /// the three portable reads, each of which scans the event table.
+    ///
+    /// With `owner` the result holds only that task's events and runs. Without
+    /// it, it holds those of every task sharing `taskID`, and the caller has
+    /// to tell them apart.
     nonisolated static func read(
         taskID: UUID,
         owner: PersistentIdentifier? = nil,
@@ -52,7 +56,16 @@ enum TaskPlanStateReader {
         )
         let recoveryRuns = try modelContext.fetch(runDescriptor)
 
-        return TaskPlanStateReadInput(events: events, recoveryRuns: recoveryRuns)
+        guard let owner else { return TaskPlanStateReadInput(events: events, recoveryRuns: recoveryRuns) }
+        // A workspace imported as a duplicate restores task UUIDs, so two live
+        // tasks can share one, and the UUID is all the run read and the
+        // portable event reads match on. With an owner the answer is only its
+        // rows, whichever predicates ran: a twin's runs applied to this task's
+        // plan could complete or block steps that are not theirs.
+        return TaskPlanStateReadInput(
+            events: events.filter { $0.task?.persistentModelID == owner },
+            recoveryRuns: recoveryRuns.filter { $0.task?.persistentModelID == owner }
+        )
     }
 
     /// Every type the portable reads below ask for, in one list.
