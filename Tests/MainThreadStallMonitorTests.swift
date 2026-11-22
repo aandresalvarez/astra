@@ -21,6 +21,67 @@ struct MainThreadStallMonitorTests {
         // heartbeat land, which is the case that must *not* report.
         Thread.sleep(forTimeInterval: 1.0)
         #expect(monitor.reportedStallCountForTesting >= 1)
+        // The report names where the thread was: here, asleep in this test,
+        // which the main actor runs as an async job. A walk that stopped at
+        // Swift's async frame marker would end five frames in; a whole stack
+        // reaches the run loop under it.
+        let stacks = Self.reportedStacks(of: monitor)
+        #expect(stacks.contains { $0.count > 6 })
+    }
+
+    @MainActor
+    @Test("A stall inside async work reports the functions that awaited it")
+    func asyncCallersAreReported() async {
+        let monitor = MainThreadStallMonitor(stallThreshold: 0.2, pollInterval: 0.05)
+        monitor.start()
+        defer { monitor.stop() }
+
+        #expect(await AsyncStall.outer() == 3)
+
+        let stacks = Self.reportedStacks(of: monitor)
+        let appFrames = stacks.map { stack in
+            MainThreadStackSampler.frames(for: stack).filter(\.isApp).count
+        }
+        // `block` and `inner` are on the stack. `middle`, `outer` and this
+        // test are not: they are async contexts waiting on it. A walk of the
+        // frame-pointer chain alone finds three frames from this binary here;
+        // one that follows the contexts finds nine.
+        #expect((appFrames.max() ?? 0) >= 6, "frames from this binary per report: \(appFrames)")
+    }
+
+    /// The stacks reported so far, waiting for the first one. The watchdog
+    /// counts a stall before it samples it, so a report's stack lands a moment
+    /// after the count moves. Counted in short blocking steps rather than
+    /// timed: the main thread stays stalled, which keeps the watchdog
+    /// reporting.
+    @MainActor
+    private static func reportedStacks(of monitor: MainThreadStallMonitor) -> [[UInt]] {
+        for _ in 0..<200 {
+            let stacks = monitor.reportedStacksForTesting
+            if !stacks.isEmpty { return stacks }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        return []
+    }
+
+    /// Three async functions, each awaiting the next, with the innermost
+    /// blocking the main thread. Each uses what it awaited, so none of them
+    /// can hand its frame over to the next.
+    private enum AsyncStall {
+        @MainActor @inline(never)
+        static func outer() async -> Int { await middle() + 1 }
+
+        @MainActor @inline(never)
+        static func middle() async -> Int { await inner() + 1 }
+
+        @MainActor @inline(never)
+        static func inner() async -> Int {
+            block()
+            return 1
+        }
+
+        @inline(never)
+        static func block() { Thread.sleep(forTimeInterval: 1.0) }
     }
 
     @MainActor
