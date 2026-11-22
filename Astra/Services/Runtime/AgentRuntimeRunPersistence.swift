@@ -59,11 +59,26 @@ enum AgentRuntimeRunPersistence {
     static func prepareOutputs(for task: AgentTask, run: TaskRun) async -> TaskOutputDiscovery.Preparation {
         let access = TaskWorkspaceAccess(task: task)
         let traceID = traceID(for: run)
-        let prepared = await TaskOutputDiscovery.prepareAsync(
-            in: access.taskFolder,
+        // Recording the turn moves a legacy `tasks/<id>` folder to its current
+        // place. Moved here first, so the scan reads the folder where every
+        // step after it will look for the files.
+        WorkspaceFileLayout.migrateLegacyTaskFolderIfNeeded(
+            workspacePath: access.effectiveWorkspacePath, taskID: task.id)
+        let folder = access.taskFolder
+        let stateStamp = TaskContextStateManager.StateFileStamp(taskFolder: folder)
+        var prepared = await TaskOutputDiscovery.prepareAsync(
+            in: folder,
             workspacePath: access.effectiveWorkspacePath,
             candidatePaths: TaskOutputObservation.candidatePaths(for: task)
         )
+        #if DEBUG
+        afterOutputScanForTesting?(folder)
+        #endif
+        // A state file saved while the scan was away may come from a newer
+        // view of the folder than this one. Deriving from the older view would
+        // put it back, so the context is derived live instead, as it was
+        // before there was an observation.
+        if !stateStamp.isCurrent { prepared.observation = nil }
         let resumedAt = DispatchTime.now().uptimeNanoseconds
         for (phase, milliseconds) in prepared.phaseMilliseconds(resumedAt: resumedAt) {
             PerformanceTelemetry.log("run_finalize_phase", durationMilliseconds: milliseconds,
@@ -71,6 +86,13 @@ enum AgentRuntimeRunPersistence {
         }
         return prepared
     }
+
+    #if DEBUG
+    /// Test seam for `prepareOutputs`, on the main actor after the scan
+    /// returns and before its state stamp is checked. Handed the scanned
+    /// folder, so a test can ignore other tests' settlements.
+    static var afterOutputScanForTesting: ((String) -> Void)?
+    #endif
 
     @discardableResult
     static func recordSessionTurn(
@@ -150,7 +172,10 @@ enum AgentRuntimeRunPersistence {
             discoveredFiles = handoffDiscoveredFiles
         } else {
             let prepared: TaskOutputDiscovery.Preparation
-            if let preparedOutputs {
+            // A prepared scan holds absolute paths. If the task's folder is no
+            // longer the one scanned, they name files that are not there.
+            let currentFolder = TaskWorkspaceAccess(task: task).taskFolder
+            if let preparedOutputs, preparedOutputs.taskFolder == nil || preparedOutputs.taskFolder == currentFolder {
                 prepared = preparedOutputs
             } else {
                 prepared = await prepareOutputs(for: task, run: run)

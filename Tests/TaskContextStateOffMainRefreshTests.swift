@@ -661,10 +661,14 @@ struct TaskContextStateOffMainRefreshTests {
         defer { fixture.cleanup() }
         try populateOutputs(fixture)
         let run = try latestRun(of: fixture)
+        let folder: String = fixture.folder
 
-        TaskOutputPathResolver.liveScanCountForTesting = 0
+        // Counted where the folder is walked, not in the resolver: a scan
+        // that goes around the resolver is exactly what this guards against.
+        TaskOutputDiscovery.countWalksForTesting(in: folder)
+        defer { TaskOutputDiscovery.stopCountingWalksForTesting(in: folder) }
         #expect(TaskContextStateManager.recordTurn(task: fixture.task, run: run, message: "Write the reports"))
-        #expect(TaskOutputPathResolver.liveScanCountForTesting == 1)
+        #expect(TaskOutputDiscovery.walkCountForTesting(in: folder) == 1)
     }
 
     /// A settlement scans the folder once off the actor and records the turn
@@ -685,18 +689,127 @@ struct TaskContextStateOffMainRefreshTests {
         try seededBytes.write(to: path)
         let prepared = await AgentRuntimeRunPersistence.prepareOutputs(for: fixture.task, run: run)
         let observation = try #require(prepared.observation)
-        TaskOutputPathResolver.liveScanCountForTesting = 0
+        let folder: String = fixture.folder
+        TaskOutputDiscovery.countWalksForTesting(in: folder)
+        defer { TaskOutputDiscovery.stopCountingWalksForTesting(in: folder) }
         TaskOutputPathResolver.liveLookupCountForTesting = 0
         #expect(TaskContextStateManager.recordTurn(
             task: fixture.task, run: run, message: "Write the reports", outputObservation: observation))
 
-        #expect(TaskOutputPathResolver.liveScanCountForTesting == 0, "the turn record rescanned the output folder")
+        #expect(TaskOutputDiscovery.walkCountForTesting(in: folder) == 0, "the turn record rescanned the output folder")
         #expect(TaskOutputPathResolver.liveLookupCountForTesting == 0, "the turn record checked a path on the actor")
         var actual = try #require(TaskContextStateManager.load(taskFolder: fixture.folder))
         actual.updatedAt = expected.updatedAt
         #expect(actual == expected)
         #expect(actual.turns.last?.filesChanged.contains { $0.hasSuffix("reports/report_19.md") } == true)
         #expect(prepared.files.contains { $0.relativePath == "nested/deep/data.csv" })
+    }
+
+    /// The state file can remember a file that no run, artifact or scan still
+    /// names, such as an output deleted since. The derive filters those too,
+    /// so the observation has to cover them or each is a lookup on the actor.
+    @Test("A prepared observation covers the paths the state file remembers")
+    func preparedObservationCoversRememberedPaths() async throws {
+        let fixture = try makeFixture("record-remembered")
+        defer { fixture.cleanup() }
+        try populateOutputs(fixture)
+        let run = try latestRun(of: fixture)
+        let deleted: String = URL(fileURLWithPath: fixture.folder).appendingPathComponent("reports/deleted.md").path
+        var seeded = try #require(TaskContextStateManager.load(taskFolder: fixture.folder))
+        seeded.filesChanged = [deleted, "docs/gone.md"]
+        #expect(TaskContextStateManager.saveState(seeded, taskFolder: fixture.folder).didSave)
+
+        let prepared = await AgentRuntimeRunPersistence.prepareOutputs(for: fixture.task, run: run)
+        let observation = try #require(prepared.observation)
+        TaskOutputPathResolver.liveScanCountForTesting = 0
+        TaskOutputPathResolver.liveLookupCountForTesting = 0
+        #expect(TaskContextStateManager.recordTurn(
+            task: fixture.task, run: run, message: "Write the reports", outputObservation: observation))
+
+        #expect(TaskOutputPathResolver.liveScanCountForTesting == 0, "the turn record rescanned the output folder")
+        #expect(TaskOutputPathResolver.liveLookupCountForTesting == 0, "a remembered path was checked on the actor")
+        let state = try #require(TaskContextStateManager.load(taskFolder: fixture.folder))
+        #expect(state.filesChanged.contains(deleted))
+    }
+
+    /// Recording the turn moves a legacy `tasks/<id>` folder to its current
+    /// place. Scanned before that move, the files would be named where they
+    /// no longer are by the time finalization persists them.
+    @Test("A legacy task folder is moved before it is scanned")
+    func preparationMovesALegacyFolderFirst() async throws {
+        let fixture = try makeFixture("prepare-legacy")
+        defer { fixture.cleanup() }
+        try populateOutputs(fixture)
+        let run = try latestRun(of: fixture)
+        let canonical: String = fixture.folder
+        let legacy: String = WorkspaceFileLayout.legacyTaskFolder(
+            workspacePath: fixture.root.path, taskID: fixture.task.id)
+        let legacyRoot: String = (legacy as NSString).deletingLastPathComponent
+        try FileManager.default.createDirectory(atPath: legacyRoot, withIntermediateDirectories: true)
+        try FileManager.default.moveItem(atPath: canonical, toPath: legacy)
+        #expect(fixture.folder == legacy)
+
+        let prepared = await AgentRuntimeRunPersistence.prepareOutputs(for: fixture.task, run: run)
+
+        #expect(fixture.folder == canonical)
+        #expect(prepared.taskFolder == canonical)
+        #expect(prepared.files.contains { $0.relativePath == "nested/deep/data.csv" })
+        #expect(prepared.files.allSatisfy { FileManager.default.fileExists(atPath: $0.path) })
+    }
+
+    /// A prepared scan holds absolute paths, so it describes the task only
+    /// while the task's folder is the one that was scanned.
+    @Test("Finalization rescans when its prepared scan is of another folder")
+    func finalizationDiscardsAPreparationOfAnotherFolder() async throws {
+        let fixture = try makeFixture("finalize-moved")
+        defer { fixture.cleanup() }
+        try populateOutputs(fixture)
+        let run = try latestRun(of: fixture)
+        fixture.task.status = .completed
+        var prepared = await AgentRuntimeRunPersistence.prepareOutputs(for: fixture.task, run: run)
+        prepared.taskFolder = fixture.root.appendingPathComponent("elsewhere").path
+        let folder: String = fixture.folder
+
+        TaskOutputDiscovery.countWalksForTesting(in: folder)
+        defer { TaskOutputDiscovery.stopCountingWalksForTesting(in: folder) }
+        let saved = await AgentRuntimeRunPersistence.finalizeAndPersist(
+            task: fixture.task,
+            run: run,
+            modelContext: fixture.container.mainContext,
+            phase: "run",
+            preparedOutputs: prepared,
+            autoExport: false
+        )
+
+        #expect(saved)
+        #expect(TaskOutputDiscovery.walkCountForTesting(in: folder) == 1, "finalization kept a scan of another folder")
+    }
+
+    /// Another refresh can save the state while the scan is away, from a
+    /// newer view of the folder. Deriving from the scan would put the older
+    /// view back over it, so the observation is dropped and the derive is
+    /// live, as it was before there was one.
+    @Test("A state file saved during the scan drops the observation")
+    func preparationDropsItsObservationWhenTheStateFileMoved() async throws {
+        let fixture = try makeFixture("prepare-superseded")
+        defer { fixture.cleanup() }
+        try populateOutputs(fixture)
+        let run = try latestRun(of: fixture)
+        let folder: String = fixture.folder
+        AgentRuntimeRunPersistence.afterOutputScanForTesting = { scanned in
+            guard scanned == folder, var state = TaskContextStateManager.load(taskFolder: folder) else { return }
+            state.filesChanged.append("saved-by-another-refresh.md")
+            _ = TaskContextStateManager.saveState(state, taskFolder: folder)
+        }
+        defer { AgentRuntimeRunPersistence.afterOutputScanForTesting = nil }
+
+        let superseded = await AgentRuntimeRunPersistence.prepareOutputs(for: fixture.task, run: run)
+        #expect(superseded.observation == nil)
+        #expect(superseded.files.contains { $0.relativePath == "nested/deep/data.csv" })
+
+        AgentRuntimeRunPersistence.afterOutputScanForTesting = nil
+        let undisturbed = await AgentRuntimeRunPersistence.prepareOutputs(for: fixture.task, run: run)
+        #expect(undisturbed.observation != nil)
     }
 
     /// The handoff and the checkpoint each refresh the context while a run is

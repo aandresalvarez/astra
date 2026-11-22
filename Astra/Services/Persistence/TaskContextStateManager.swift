@@ -474,7 +474,7 @@ public enum TaskContextStateManager {
             message: message,
             run: run,
             task: task,
-            discoveredFiles: outputs.discoveredFiles
+            outputs: outputs
         )
         TaskContextTurnRecording.upsert(turn, state: &state, limit: maxTurns)
         state.updatedAt = timestamp(Date())
@@ -1114,20 +1114,19 @@ public enum TaskContextStateManager {
         message: String,
         run: TaskRun,
         task: AgentTask,
-        discoveredFiles: [TaskOutputDiscoveredFile]
+        outputs: TaskOutputPathResolver
     ) -> TaskContextState.Turn {
         let runBlockers = TaskHistoryRead.events(for: task, ofTypes: ["error", "permission.denied", "permission.approval.requested", "budget.exceeded"])
             .filter { $0.run?.id == run.id }
             .map { boundedInline($0.payload, maxCharacters: 220) }
-        let discoveredRunFiles = TaskOutputDiscovery.filesChanged(during: run, from: discoveredFiles).map(\.path)
-        let visibility = TaskOutputVisibilityScope(access: TaskWorkspaceAccess(task: task))
+        let discoveredRunFiles = TaskOutputDiscovery.filesChanged(during: run, from: outputs.discoveredFiles).map(\.path)
         return TaskContextState.Turn(
             turn: number,
             ask: boundedInline(message, maxCharacters: 400),
             summary: summarizeOutput(run.output, fallback: run.stopReason),
             filesChanged: dedupeKeepingOrder(
                 (run.fileChanges.map(\.path) + discoveredRunFiles)
-                    .filter { isUserFacingOutputPath($0, task: task, scope: visibility) },
+                    .filter(outputs.isUserFacing),
                 limit: 20
             ),
             blockers: dedupeKeepingOrder(runBlockers, limit: 8),
