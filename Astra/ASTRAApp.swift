@@ -735,6 +735,7 @@ public struct ASTRAApp: App {
     @StateObject private var feedbackRouter = FeedbackReportRouter()
     @StateObject private var feedbackCrashOfferService = FeedbackCrashOfferService()
     @State private var runtime = AppRuntimeController()
+    @State private var folderAccess = StartupFolderAccessGate()
     private let startupBlocker: PersistentStoreRecoveryBlocker?
 
     public init() {
@@ -1325,22 +1326,30 @@ public struct ASTRAApp: App {
                     )
                 }
             case .main:
-                ContentView(
-                    appUpdateController: appUpdateController,
-                    runtime: runtime
-                )
+                // ContentView's startup work reads the workspace folders on
+                // the main actor, so it is built only once they have answered
+                // (`StartupFolderAccessGate`). A link that opens the app is
+                // kept for it meanwhile.
+                StartupFolderAccessRoot(gate: folderAccess, folders: {
+                    StartupFolderAccessGate.workspaceFolders(in: modelContainer.mainContext)
+                }) {
+                    ContentView(
+                        appUpdateController: appUpdateController,
+                        runtime: runtime
+                    )
+                        .environmentObject(appSettings)
+                        .environmentObject(feedbackRouter)
+                        .environmentObject(feedbackCrashOfferService)
+                        .onAppear {
+                            appDelegate.runtimeController = runtime
+                            // Gives the delegate the main context it needs to drain
+                            // debounced workspace mirror exports on quit.
+                            appDelegate.modelContainer = modelContainer
+                        }
+                }
                     .frame(minWidth: AppWindowLayout.mainMinimumWidth, minHeight: AppWindowLayout.mainMinimumHeight)
-                    .environmentObject(appSettings)
-                    .environmentObject(feedbackRouter)
-                    .environmentObject(feedbackCrashOfferService)
                     .tint(Stanford.interactive)
                     .preferredColorScheme(resolvedAppearance.colorScheme)
-                    .onAppear {
-                        appDelegate.runtimeController = runtime
-                        // Gives the delegate the main context it needs to drain
-                        // debounced workspace mirror exports on quit.
-                        appDelegate.modelContainer = modelContainer
-                    }
                     .onOpenURL { url in
                         guard let route = AstraExternalRouteCodec.route(from: url) else { return }
                         AstraExternalRouteStore.shared.submit(route)
