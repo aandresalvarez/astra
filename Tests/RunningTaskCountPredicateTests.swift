@@ -91,6 +91,72 @@ struct RunningTaskCountPredicateTests {
         #expect(AppUpdateSafety.runningTaskCount(in: container.mainContext) == 0)
     }
 
+    @Test("A context that holds the rows counts them without fetching the open set")
+    func registeredRowsAreCountedWithoutAFetch() throws {
+        let (container, root) = try onDiskContainer()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = container.mainContext
+        try seed(context)
+        // A context registers a row only while something holds it, which is
+        // what the sidebar's snapshot does for every task in the window.
+        let held = try context.fetch(FetchDescriptor<AgentTask>())
+        #expect(try AppUpdateSafety.registeredRunningTaskCount(in: context) == 2)
+        #expect(try AppUpdateSafety.fetchedRunningTaskCount(in: context) == 2)
+        withExtendedLifetime(held) {}
+    }
+
+    @Test("Rows nothing holds any more are fetched, not assumed")
+    func releasedRowsFallBackToTheFetch() throws {
+        let (container, root) = try onDiskContainer()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = container.mainContext
+        try seed(context)
+        #expect(AppUpdateSafety.runningTaskCount(in: context) == 2)
+    }
+
+    @Test("A context that has not loaded the rows falls back to fetching them")
+    func unloadedContextFallsBackToTheFetch() throws {
+        let (container, root) = try onDiskContainer()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try seed(container.mainContext)
+        let fresh = ModelContext(container)
+        #expect(try AppUpdateSafety.registeredRunningTaskCount(in: fresh) == nil)
+        #expect(AppUpdateSafety.runningTaskCount(in: fresh) == 2)
+    }
+
+    @Test("Unsaved changes count the same way on both paths")
+    func unsavedChangesMatchTheFetch() throws {
+        let (container, root) = try onDiskContainer()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = container.mainContext
+        context.autosaveEnabled = false
+        try seed(context)
+        let tasks = try context.fetch(FetchDescriptor<AgentTask>())
+        let workspace = try #require(tasks.first?.workspace)
+
+        // Started but not saved yet.
+        let started = AgentTask(title: "started", goal: "g", workspace: workspace)
+        started.status = .running
+        context.insert(started)
+        // Reopened: the saved row still carries its completion date.
+        let reopened = try #require(tasks.first { $0.status == .completed })
+        reopened.completedAt = Date()
+        try context.save()
+        reopened.status = .running
+        reopened.completedAt = nil
+        // Finished but not saved yet.
+        let finished = try #require(tasks.first { $0.status == .running })
+        finished.status = .completed
+        finished.completedAt = Date()
+        // Deleted but not saved yet.
+        let deleted = try #require(tasks.first { $0.status == .running && $0 !== finished })
+        context.delete(deleted)
+
+        #expect(try AppUpdateSafety.registeredRunningTaskCount(in: context) == 2)
+        #expect(try AppUpdateSafety.fetchedRunningTaskCount(in: context) == 2)
+        #expect(AppUpdateSafety.runningTaskCount(in: context) == 2)
+    }
+
     @Test("ContentView delegates to the tested count instead of an enum predicate")
     func contentViewUsesTheCompanionCount() throws {
         let source = try String(
