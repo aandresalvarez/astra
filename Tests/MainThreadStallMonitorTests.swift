@@ -21,6 +21,11 @@ struct MainThreadStallMonitorTests {
         // heartbeat land, which is the case that must *not* report.
         Thread.sleep(forTimeInterval: 1.0)
         #expect(monitor.reportedStallCountForTesting >= 1)
+        // The report names where the thread was: here, asleep in this test,
+        // which the main actor runs as an async job. A walk that stopped at
+        // Swift's async frame marker would end five frames in; a whole stack
+        // reaches the run loop under it.
+        #expect(monitor.lastReportedStackDepthForTesting > 6)
     }
 
     @MainActor

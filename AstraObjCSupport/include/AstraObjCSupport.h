@@ -211,4 +211,17 @@ NS_ASSUME_NONNULL_BEGIN
 
 @end
 
+/// The Mach port of the calling thread, to hand to `AstraCaptureThreadStack`
+/// from another thread later.
+FOUNDATION_EXPORT uint32_t AstraCurrentThreadPort(void);
+
+/// Writes the return addresses of `threadPort`'s call stack into `frames`,
+/// innermost first, and returns how many it wrote (at most `capacity`).
+///
+/// The thread is suspended for the length of a frame-pointer walk and resumed
+/// before this returns. It is C because nothing may allocate or take a lock
+/// while the other thread is stopped; the caller allocates `frames` first.
+/// Returns 0 for the calling thread's own port, which cannot stop itself.
+FOUNDATION_EXPORT int32_t AstraCaptureThreadStack(uint32_t threadPort, uintptr_t *frames, int32_t capacity);
+
 NS_ASSUME_NONNULL_END

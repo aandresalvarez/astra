@@ -42,8 +42,16 @@ import ASTRACore
 /// carries `SystemPressureSnapshot` — load, memory pressure, swap, this
 /// process's page-ins — so that case can be read off the line.
 ///
-/// The monitor is diagnostic only. It never interrupts, kills, or unwinds
-/// anything — a watchdog that acts on its own reading is a second failure mode.
+/// **The stack, for the stalls no phase names.** `phase` can only name code
+/// somebody marked. Over eight days of production logs 1,834 of 1,884 reports
+/// carried `phase=none`, so 198 minutes of frozen window pointed at nothing.
+/// Each report is now followed by a `main_thread_stall_stack` line holding the
+/// main thread's call stack as `image+offset`; see `MainThreadStackSampler`.
+///
+/// The monitor is diagnostic only. It never kills or unwinds anything — a
+/// watchdog that acts on its own reading is a second failure mode. Reading the
+/// stack pauses the main thread for the length of a frame-pointer walk, which
+/// it only does once that thread has already been stalled for seconds.
 final class MainThreadStallMonitor: @unchecked Sendable {
     /// Long enough that a slow-but-finishing operation — a big fetch, a
     /// synchronous export — does not report, short enough to catch a stall
@@ -97,6 +105,9 @@ final class MainThreadStallMonitor: @unchecked Sendable {
     /// test can tell "detected and reported" from "never fired".
     private(set) var reportedStallCountForTesting = 0
 
+    /// Frames in the last stack a report carried, for the same reason.
+    private(set) var lastReportedStackDepthForTesting = 0
+
     init(
         stallThreshold: TimeInterval = MainThreadStallMonitor.defaultStallThreshold,
         pollInterval: TimeInterval = MainThreadStallMonitor.defaultPollInterval
@@ -115,6 +126,7 @@ final class MainThreadStallMonitor: @unchecked Sendable {
             return
         }
         lock.unlock()
+        MainThreadStackSampler.install()
 
         // Every activity, not just `.beforeWaiting`: the point is to know the
         // run loop is still turning at all, and a stall inside a source-0
@@ -202,7 +214,10 @@ final class MainThreadStallMonitor: @unchecked Sendable {
             phase: nil,
             // `beat` just stamped this, so it is by definition current: the
             // recovery line carries no phase to validate anyway.
-            heartbeatAtDetection: now
+            heartbeatAtDetection: now,
+            // No stack either, for the same reason as the phase: this runs on
+            // the main thread, after whatever wedged it has returned.
+            stack: []
         )
     }
 
@@ -255,6 +270,10 @@ final class MainThreadStallMonitor: @unchecked Sendable {
         let heartbeatAtDetection = lastHeartbeat
         lock.unlock()
 
+        // Outside the lock: `beat` takes it, and a main thread stopped while
+        // holding it would leave this thread waiting on a thread it stopped.
+        let stack = MainThreadStackSampler.captureMainThread()
+
         report(
             event: "main_thread_stall",
             seconds: elapsed,
@@ -264,7 +283,8 @@ final class MainThreadStallMonitor: @unchecked Sendable {
             level: isFirst ? .error : .warning,
             activity: activity,
             phase: phase,
-            heartbeatAtDetection: heartbeatAtDetection
+            heartbeatAtDetection: heartbeatAtDetection,
+            stack: stack
         )
     }
 
@@ -280,7 +300,8 @@ final class MainThreadStallMonitor: @unchecked Sendable {
         level: LogLevel,
         activity: CFRunLoopActivity,
         phase: MainThreadPhase.Reading?,
-        heartbeatAtDetection: UInt64
+        heartbeatAtDetection: UInt64,
+        stack: [UInt]
     ) {
         let memory = Self.memoryFootprint()
         let pressure = SystemPressureSnapshot.current()
@@ -324,6 +345,23 @@ final class MainThreadStallMonitor: @unchecked Sendable {
                 activity: activity,
                 phase: validated,
                 pressure: pressure
+            )
+        )
+
+        guard !stack.isEmpty else { return }
+        lock.lock()
+        lastReportedStackDepthForTesting = stack.count
+        lock.unlock()
+        // Its own line: a stall line is already near the logger's length
+        // limit. `current` carries the same doubt the phase does — a main
+        // thread that reached its run loop again before it was stopped was
+        // sampled doing something else.
+        PerformanceTelemetry.log(
+            "main_thread_stall_stack",
+            level: .warning,
+            fields: MainThreadStackSampler.telemetryFields(
+                for: MainThreadStackSampler.frames(for: stack),
+                isCurrent: !heartbeatMoved
             )
         )
     }
