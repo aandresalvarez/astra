@@ -175,7 +175,8 @@ would merge the moment the PR is marked ready.
    ```
 
    If no Copilot review arrives within 15 minutes, say so in a PR comment and
-   continue; do not wait indefinitely.
+   continue with the current `headRefOid` as `<reviewed-sha>` in step 4; do
+   not wait indefinitely.
 
 3. Fix every valid comment with a new commit. Reply on the thread with the
    reason for any comment you decline. Resolve every thread; unresolved threads
@@ -183,10 +184,18 @@ would merge the moment the PR is marked ready.
    until its latest review on the head commit has nothing left to address.
 
 4. Arm auto-merge on the commit Copilot reviewed, so a push that lands after
-   step 2 cannot be merged unreviewed:
+   step 2 cannot be armed unreviewed:
 
    ```bash
    gh pr merge <number> --auto --squash --match-head-commit <reviewed-sha>
+   ```
+
+   The match is checked only when arming. A later push with the owner's token
+   leaves auto-merge armed on the new head, so before pushing a further change
+   to an armed PR, disarm it and repeat steps 2 to 4:
+
+   ```bash
+   gh pr merge <number> --disable-auto
    ```
 
 GitHub then merges when all required checks are green and the branch is up to
