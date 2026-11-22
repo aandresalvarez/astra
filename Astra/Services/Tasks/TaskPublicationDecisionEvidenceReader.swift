@@ -207,20 +207,32 @@ enum TaskPublicationDecisionEvidenceReader {
         [SortDescriptor(\TaskEvent.timestamp, order: .reverse), SortDescriptor(\TaskEvent.id, order: .reverse)]
     }
 
-    private static func query(ownerID: PersistentIdentifier, runID: UUID?, type: String) -> FetchDescriptor<TaskEvent> {
+    /// Runs every time a task's thread is opened, so it goes through the
+    /// relationship's index where SwiftData can run that; see
+    /// `TaskOwnerPredicate`. The other reads here only run once a publication
+    /// failure exists.
+    private static func query(
+        ownerID: PersistentIdentifier, runID: UUID?, type: String, in context: ModelContext
+    ) -> FetchDescriptor<TaskEvent> {
         if let runID {
-            return FetchDescriptor(predicate: #Predicate<TaskEvent> {
-                $0.task?.persistentModelID == ownerID && $0.run?.id == runID && $0.type == type
-            }, sortBy: ordering)
+            return FetchDescriptor(predicate: TaskOwnerPredicate.pick(
+                for: ownerID, in: context,
+                indexed: TaskOwnerPredicate.events(ownedBy: ownerID, type: type, runID: runID),
+                portable: #Predicate<TaskEvent> {
+                    $0.task?.persistentModelID == ownerID && $0.run?.id == runID && $0.type == type
+                }), sortBy: ordering)
         }
-        return FetchDescriptor(predicate: #Predicate<TaskEvent> {
-            $0.task?.persistentModelID == ownerID && $0.type == type
-        }, sortBy: ordering)
+        return FetchDescriptor(predicate: TaskOwnerPredicate.pick(
+            for: ownerID, in: context,
+            indexed: TaskOwnerPredicate.events(ownedBy: ownerID, type: type),
+            portable: #Predicate<TaskEvent> {
+                $0.task?.persistentModelID == ownerID && $0.type == type
+            }), sortBy: ordering)
     }
 
     private static func newest(ownerID: PersistentIdentifier, runID: UUID?, type: String,
                                in context: ModelContext) throws -> TaskEvent? {
-        var descriptor = query(ownerID: ownerID, runID: runID, type: type)
+        var descriptor = query(ownerID: ownerID, runID: runID, type: type, in: context)
         descriptor.fetchLimit = 1
         return try context.fetch(descriptor).first
     }
@@ -232,7 +244,7 @@ enum TaskPublicationDecisionEvidenceReader {
         ownerID: PersistentIdentifier, runID: UUID, type: String, after cutoff: Date? = nil, cache: Cache? = nil, in context: ModelContext,
         match: (TaskEvent) throws -> [TaskEventSnapshot]?
     ) throws -> [TaskEventSnapshot] {
-        var descriptor = query(ownerID: ownerID, runID: runID, type: type)
+        var descriptor = query(ownerID: ownerID, runID: runID, type: type, in: context)
         if let cutoff {
             descriptor = FetchDescriptor(predicate: #Predicate<TaskEvent> {
                 $0.task?.persistentModelID == ownerID && $0.run?.id == runID

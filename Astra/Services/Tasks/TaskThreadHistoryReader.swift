@@ -121,9 +121,10 @@ enum TaskThreadHistoryReader {
         let publicationRevision = publicationCache?.mutations.revision
         guard cursor.ownerID == nil || cursor.ownerID == ownerID else { throw TaskHistoryScope.Failure.ambiguousOwner }
         let startedAt = DispatchTime.now().uptimeNanoseconds
-        let events = try modelContext.fetch(FetchDescriptor<TaskEvent>(predicate: #Predicate {
-            $0.task?.persistentModelID == ownerID && eventIDs.contains($0.id)
-        }))
+        let events = try modelContext.fetch(FetchDescriptor<TaskEvent>(predicate: TaskOwnerPredicate.pick(
+            for: ownerID, in: modelContext,
+            indexed: TaskOwnerPredicate.events(ownedBy: ownerID, ids: eventIDs),
+            portable: #Predicate<TaskEvent> { $0.task?.persistentModelID == ownerID && eventIDs.contains($0.id) })))
         let retainedRuns = try modelContext.fetch(FetchDescriptor<TaskRun>(predicate: #Predicate {
             $0.task?.persistentModelID == ownerID && runIDs.contains($0.id)
         }))
@@ -299,11 +300,17 @@ enum TaskThreadHistoryReader {
     private static func budgetedRunSnapshots(_ runs: [TaskRun], ownerID: PersistentIdentifier, modelContext: ModelContext) throws -> [TaskRunSnapshotInput] {
         let owner = TaskEventTypes.System.runtimeExecutionOwnership.rawValue
         let captured = TaskEventTypes.System.runtimeResultCaptured.rawValue
-        let events = try modelContext.fetch(FetchDescriptor<TaskEvent>(predicate: #Predicate<TaskEvent> {
+        let portable = #Predicate<TaskEvent> {
             $0.task?.persistentModelID == ownerID && ($0.type == owner || $0.type == captured || $0.type == "astra.claude_session_usage_unconfirmed"
                 || $0.type == "astra.claude_session_usage"
                 || ($0.type == "task.stats" && $0.payload.starts(with: "estimated tokens:")))
-        }))
+        }
+        let indexed = TaskOwnerPredicate.events(
+            ownedBy: ownerID,
+            types: [owner, captured, "astra.claude_session_usage_unconfirmed", "astra.claude_session_usage"],
+            orType: "task.stats", withPayloadPrefix: "estimated tokens:")
+        let events = try modelContext.fetch(FetchDescriptor<TaskEvent>(predicate: TaskOwnerPredicate.pick(
+            for: ownerID, in: modelContext, indexed: indexed, portable: portable)))
         let allRuns = try modelContext.fetch(FetchDescriptor<TaskRun>(predicate: #Predicate<TaskRun> { $0.task?.persistentModelID == ownerID }))
         let budgets = TaskRequestBudget.Index(events: events, runs: allRuns)
         return runs.map { run in
@@ -321,9 +328,20 @@ enum TaskThreadHistoryReader {
             predicate: #Predicate<TaskRun> { $0.task?.persistentModelID == ownerID }
         ))
         let eventCount = try modelContext.fetchCount(FetchDescriptor<TaskEvent>(
-            predicate: #Predicate<TaskEvent> { $0.task?.persistentModelID == ownerID }
+            predicate: ownedEvents(ownerID, modelContext: modelContext)
         ))
         return (runCount, eventCount)
+    }
+
+    /// Every event of the task: through the relationship's index where
+    /// SwiftData can run that, otherwise the portable scan. The page readers
+    /// below that still write the optional chain are the cold ones (paging
+    /// back through older history); see `TaskOwnerPredicate`.
+    private static func ownedEvents(_ ownerID: PersistentIdentifier, modelContext: ModelContext) -> Predicate<TaskEvent> {
+        TaskOwnerPredicate.pick(
+            for: ownerID, in: modelContext,
+            indexed: TaskOwnerPredicate.events(ownedBy: ownerID),
+            portable: #Predicate<TaskEvent> { $0.task?.persistentModelID == ownerID })
     }
 
     private static func latestRuns(
@@ -349,7 +367,7 @@ enum TaskThreadHistoryReader {
         modelContext: ModelContext
     ) throws -> PageResult<TaskEvent> {
         var descriptor = FetchDescriptor<TaskEvent>(
-            predicate: #Predicate<TaskEvent> { $0.task?.persistentModelID == ownerID },
+            predicate: ownedEvents(ownerID, modelContext: modelContext),
             sortBy: [
                 SortDescriptor(\TaskEvent.timestamp, order: .reverse),
                 SortDescriptor(\TaskEvent.id, order: .reverse)
@@ -373,9 +391,12 @@ enum TaskThreadHistoryReader {
     ) throws -> PageResult<TaskEvent> {
         let boundaryDate = cursor.timestamp
         var descriptor = FetchDescriptor<TaskEvent>(
-            predicate: #Predicate<TaskEvent> {
-                $0.task?.persistentModelID == ownerID && $0.timestamp >= boundaryDate
-            },
+            predicate: TaskOwnerPredicate.pick(
+                for: ownerID, in: modelContext,
+                indexed: TaskOwnerPredicate.events(ownedBy: ownerID, since: boundaryDate),
+                portable: #Predicate<TaskEvent> {
+                    $0.task?.persistentModelID == ownerID && $0.timestamp >= boundaryDate
+                }),
             sortBy: [
                 SortDescriptor(\TaskEvent.timestamp, order: .reverse),
                 SortDescriptor(\TaskEvent.id, order: .reverse)
@@ -490,9 +511,12 @@ enum TaskThreadHistoryReader {
         guard !runs.isEmpty || includeRunless else { return [] }
         let stateEventTypes = TaskThreadStateEventPolicy.eventTypes
         var descriptor = FetchDescriptor<TaskEvent>(
-            predicate: #Predicate<TaskEvent> {
-                $0.task?.persistentModelID == ownerID && stateEventTypes.contains($0.type)
-            }
+            predicate: TaskOwnerPredicate.pick(
+                for: ownerID, in: modelContext,
+                indexed: TaskOwnerPredicate.events(ownedBy: ownerID, types: stateEventTypes),
+                portable: #Predicate<TaskEvent> {
+                    $0.task?.persistentModelID == ownerID && stateEventTypes.contains($0.type)
+                })
         )
         // `TaskEventSnapshot` reads `event.run?.id` for every row, so prefetch the
         // relationship rather than faulting it one row at a time.

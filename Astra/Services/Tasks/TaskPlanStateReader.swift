@@ -13,7 +13,77 @@ struct TaskPlanStateReadInput {
 enum TaskPlanStateReader {
     /// Nonisolated because `TaskPlanService.reconstruct(for:)` is: it runs on
     /// the caller's context exactly as the relationship read it replaces did.
-    nonisolated static func read(taskID: UUID, modelContext: ModelContext) throws -> TaskPlanStateReadInput {
+    ///
+    /// With `owner`, the plan events come from one read through the
+    /// relationship's index where SwiftData can run that; see
+    /// `TaskOwnerPredicate`. Without it, and on older systems, they come from
+    /// the three portable reads, each of which scans the event table.
+    ///
+    /// With `owner` the result holds only that task's events and runs. Without
+    /// it, it holds those of every task sharing `taskID`, and the caller has
+    /// to tell them apart.
+    nonisolated static func read(
+        taskID: UUID,
+        owner: PersistentIdentifier? = nil,
+        modelContext: ModelContext
+    ) throws -> TaskPlanStateReadInput {
+        let unsorted: [TaskEvent]
+        if let owner, TaskOwnerPredicate.usesRelationshipIndex(for: owner, in: modelContext) {
+            let predicate = TaskOwnerPredicate.events(ownedBy: owner, types: planEventTypes)
+            unsorted = try modelContext.fetch(FetchDescriptor<TaskEvent>(predicate: predicate))
+        } else {
+            unsorted = try portableEvents(taskID: taskID, modelContext: modelContext)
+        }
+        let events = unsorted.sorted {
+            if $0.timestamp != $1.timestamp { return $0.timestamp < $1.timestamp }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+
+        // The nil branch is load-bearing and cannot be written as
+        // `hasProtocolEvents != false`: that translates to SQL `!= 0`, and
+        // three-valued logic drops NULL rows — silently losing recovered plan
+        // progress for every run written before schema V17 (verified by
+        // `v16StoreMigratesToUnknownProtocolMarkerFlag`).
+        let runDescriptor = FetchDescriptor<TaskRun>(
+            predicate: #Predicate<TaskRun> {
+                $0.task?.id == taskID
+                    && ($0.hasProtocolEvents == nil || $0.hasProtocolEvents == true)
+            },
+            sortBy: [
+                SortDescriptor(\TaskRun.startedAt),
+                SortDescriptor(\TaskRun.id)
+            ]
+        )
+        let recoveryRuns = try modelContext.fetch(runDescriptor)
+
+        guard let owner else { return TaskPlanStateReadInput(events: events, recoveryRuns: recoveryRuns) }
+        // A workspace imported as a duplicate restores task UUIDs, so two live
+        // tasks can share one, and the UUID is all the run read and the
+        // portable event reads match on. With an owner the answer is only its
+        // rows, whichever predicates ran: a twin's runs applied to this task's
+        // plan could complete or block steps that are not theirs.
+        return TaskPlanStateReadInput(
+            events: events.filter { $0.task?.persistentModelID == owner },
+            recoveryRuns: recoveryRuns.filter { $0.task?.persistentModelID == owner }
+        )
+    }
+
+    /// Every type the portable reads below ask for, in one list.
+    private nonisolated static let planEventTypes: [String] = [
+        TaskPlanEventTypes.created,
+        TaskPlanEventTypes.updated,
+        TaskPlanEventTypes.approved,
+        TaskPlanEventTypes.cancelled,
+        TaskPlanEventTypes.executionStarted,
+        TaskPlanEventTypes.executionCompleted,
+        TaskPlanEventTypes.executionFailed,
+        TaskPlanEventTypes.stepStarted,
+        TaskPlanEventTypes.stepCompleted,
+        TaskPlanEventTypes.stepBlocked,
+        TaskPlanEventTypes.stepSkipped
+    ]
+
+    private nonisolated static func portableEvents(taskID: UUID, modelContext: ModelContext) throws -> [TaskEvent] {
         let created = TaskPlanEventTypes.created
         let updated = TaskPlanEventTypes.updated
         let approved = TaskPlanEventTypes.approved
@@ -54,28 +124,6 @@ enum TaskPlanStateReader {
                 )
             }
         ))
-        let events = (planEvents + executionEvents + stepEvents).sorted {
-            if $0.timestamp != $1.timestamp { return $0.timestamp < $1.timestamp }
-            return $0.id.uuidString < $1.id.uuidString
-        }
-
-        // The nil branch is load-bearing and cannot be written as
-        // `hasProtocolEvents != false`: that translates to SQL `!= 0`, and
-        // three-valued logic drops NULL rows — silently losing recovered plan
-        // progress for every run written before schema V17 (verified by
-        // `v16StoreMigratesToUnknownProtocolMarkerFlag`).
-        let runDescriptor = FetchDescriptor<TaskRun>(
-            predicate: #Predicate<TaskRun> {
-                $0.task?.id == taskID
-                    && ($0.hasProtocolEvents == nil || $0.hasProtocolEvents == true)
-            },
-            sortBy: [
-                SortDescriptor(\TaskRun.startedAt),
-                SortDescriptor(\TaskRun.id)
-            ]
-        )
-        let recoveryRuns = try modelContext.fetch(runDescriptor)
-
-        return TaskPlanStateReadInput(events: events, recoveryRuns: recoveryRuns)
+        return planEvents + executionEvents + stepEvents
     }
 }

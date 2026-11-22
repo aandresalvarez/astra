@@ -219,7 +219,11 @@ public enum TaskArtifactPersistenceService {
     private static func prefetchedArtifacts(for task: AgentTask) -> [Artifact] {
         guard let context = task.modelContext else { return task.artifacts }
         let taskID = task.id
-        let descriptor = FetchDescriptor<Artifact>(predicate: #Predicate { $0.task?.id == taskID })
+        let owner = task.persistentModelID
+        let descriptor = FetchDescriptor<Artifact>(predicate: TaskOwnerPredicate.pick(
+            for: owner, in: context,
+            indexed: TaskOwnerPredicate.artifacts(ownedBy: owner),
+            portable: #Predicate<Artifact> { $0.task?.id == taskID }))
         guard let rows = try? context.fetch(descriptor) else { return task.artifacts }
         // Hydrate scalar fields in one fetch instead of faulting every row.
         // Imported tasks can share a UUID: the relationship, not the query,

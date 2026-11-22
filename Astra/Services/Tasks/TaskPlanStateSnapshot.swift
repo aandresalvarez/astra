@@ -66,7 +66,8 @@ struct TaskPlanStateSnapshot: Equatable {
         modelContext: ModelContext,
         cached: TaskPlanStateSnapshot
     ) throws -> TaskPlanStateSnapshot? {
-        let input = try TaskPlanStateReader.read(taskID: task.id, modelContext: modelContext)
+        let input = try TaskPlanStateReader.read(
+            taskID: task.id, owner: task.persistentModelID, modelContext: modelContext)
         let signature = TaskPlanStateCacheSignature(
             taskID: task.id,
             status: task.status,

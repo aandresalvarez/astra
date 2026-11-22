@@ -25,7 +25,8 @@ import ASTRAModels
 public enum TaskEventTypeLookup {
     public static func events(ofType type: String, task: AgentTask) -> [TaskEvent] {
         let taskID = task.id
-        return fetch(task: task, #Predicate<TaskEvent> { $0.task?.id == taskID && $0.type == type }) {
+        let indexed = TaskOwnerPredicate.events(ownedBy: task.persistentModelID, type: type)
+        return fetch(task: task, indexed: indexed, #Predicate<TaskEvent> { $0.task?.id == taskID && $0.type == type }) {
             $0.type == type
         }
     }
@@ -34,7 +35,8 @@ public enum TaskEventTypeLookup {
     public static func events(ofType type: String, task: AgentTask, run: TaskRun) -> [TaskEvent] {
         let taskID = task.id
         let runID = run.id
-        return fetch(task: task, #Predicate<TaskEvent> {
+        let indexed = TaskOwnerPredicate.events(ownedBy: task.persistentModelID, type: type, runID: runID)
+        return fetch(task: task, indexed: indexed, #Predicate<TaskEvent> {
             $0.task?.id == taskID && $0.type == type && $0.run?.id == runID
         }) {
             $0.type == type && $0.run?.id == runID
@@ -45,18 +47,23 @@ public enum TaskEventTypeLookup {
         events(ofType: type, task: task, run: run).first
     }
 
-    /// `scan` is the same condition as `predicate`, for the tasks no store can
-    /// answer for.
+    /// `scan` is the same condition as `portable`, for the tasks no store can
+    /// answer for. `indexed` selects the same rows through the relationship's
+    /// index, where SwiftData can run it; see `TaskOwnerPredicate`.
     private static func fetch(
         task: AgentTask,
-        _ predicate: Predicate<TaskEvent>,
+        indexed: Predicate<TaskEvent>,
+        _ portable: Predicate<TaskEvent>,
         scan: (TaskEvent) -> Bool
     ) -> [TaskEvent] {
-        guard let modelContext = task.modelContext,
-              let fetched = try? modelContext.fetch(FetchDescriptor<TaskEvent>(predicate: predicate)) else {
+        let owner = task.persistentModelID
+        guard let modelContext = task.modelContext else {
             return task.events.filter { !$0.isDeleted && scan($0) }
         }
-        let owner = task.persistentModelID
+        let predicate = TaskOwnerPredicate.pick(for: owner, in: modelContext, indexed: indexed, portable: portable)
+        guard let fetched = try? modelContext.fetch(FetchDescriptor<TaskEvent>(predicate: predicate)) else {
+            return task.events.filter { !$0.isDeleted && scan($0) }
+        }
         return fetched.filter { !$0.isDeleted && $0.task?.persistentModelID == owner }
     }
 }
