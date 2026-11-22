@@ -86,14 +86,17 @@ struct MainThreadStackSamplerTests {
     @Test("A stack line reaches the log intact")
     func stackFieldsSurviveSanitizing() {
         // The deepest stack the sampler reports, in the longest images.
-        let frames = (0..<MainThreadStackSampler.maximumFrames).map { index in
-            MainThreadStackSampler.Frame(
-                image: index % 3 == 0 ? "ASTRA" : "AttributeGraph",
-                offset: 0x1_2345_6789 + UInt(index),
-                isApp: index % 3 == 0
-            )
+        // Typed step by step: as one expression this took CI's compiler past
+        // its type-checking limit.
+        let firstOffset: UInt = 0x1_2345_6789
+        var frames: [MainThreadStackSampler.Frame] = []
+        for index in 0..<MainThreadStackSampler.maximumFrames {
+            let isApp: Bool = index % 3 == 0
+            let image: String = isApp ? "ASTRA" : "AttributeGraph"
+            let offset: UInt = firstOffset + UInt(index)
+            frames.append(MainThreadStackSampler.Frame(image: image, offset: offset, isApp: isApp))
         }
-        let fields = MainThreadStackSampler.telemetryFields(for: frames, isCurrent: true)
+        let fields: [String: String] = MainThreadStackSampler.telemetryFields(for: frames, isCurrent: true)
 
         #expect(fields["frames"] == String(MainThreadStackSampler.maximumFrames))
         #expect(fields["t0"]?.hasPrefix("ASTRA+0x123456789,AttributeGraph+0x12345678a") == true)
@@ -104,9 +107,11 @@ struct MainThreadStackSamplerTests {
             #expect(PerformanceTelemetryFields.safeValue(value) == value, "\(key) was cut or rewritten")
             #expect(LogSanitizer.sanitize(value) == value, "\(key) was redacted")
         }
-        let line = (["event=main_thread_stall_stack", "launch_age_ms=123456789.12"]
-            + fields.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" })
-            .joined(separator: " ")
+        var parts: [String] = ["event=main_thread_stall_stack", "launch_age_ms=123456789.12"]
+        for key in fields.keys.sorted() {
+            parts.append(key + "=" + (fields[key] ?? ""))
+        }
+        let line: String = parts.joined(separator: " ")
         #expect(line.count <= LogSanitizer.maxMessageLength)
         #expect(LogSanitizer.sanitize(line) == line)
     }
