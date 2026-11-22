@@ -10,7 +10,13 @@ import WorkspaceToolSupport
 @MainActor
 enum RemoteWorkspaceJobRegistration {
     static func directory(taskID: UUID, executionID: UUID, context: ModelContext) -> URL {
-        RuntimeExecutionOwner.store(in: context).root.deletingLastPathComponent()
+        directory(taskID: taskID, executionID: executionID, ownersRoot: RuntimeExecutionOwner.store(in: context).root)
+    }
+
+    /// The same directory from the journal's root, for a caller that reads
+    /// the journal off the main actor.
+    nonisolated static func directory(taskID: UUID, executionID: UUID, ownersRoot: URL) -> URL {
+        ownersRoot.deletingLastPathComponent()
             .appendingPathComponent("remote-jobs").appendingPathComponent(taskID.uuidString)
             .appendingPathComponent(executionID.uuidString)
     }
@@ -45,7 +51,9 @@ enum RemoteWorkspaceJobRegistration {
 
     static func load(task: AgentTask, context: ModelContext) throws -> RemoteWorkspaceJobConfiguration? {
         guard let owner = try RuntimeExecutionOwner.existing(task: task, context: context) else { return nil }
-        return try load(task: task, owner: owner, context: context)
+        return try load(task: task, owner: owner, context: context) {
+            task.workspace.map { SSHConnectionManager.loadForExport(workspacePath: $0.primaryPath) } ?? []
+        }
     }
 
     static func loadAll(task: AgentTask, context: ModelContext) throws -> [RemoteWorkspaceJobConfiguration] {
@@ -55,11 +63,22 @@ enum RemoteWorkspaceJobRegistration {
 
     static func loadAll(task: AgentTask, owner: RuntimeExecutionOwnerRecord, context: ModelContext) throws -> [RemoteWorkspaceJobConfiguration] {
         let executions = [owner] + (try RuntimeExecutionOwner.store(in: context).retainedExecutions(of: owner))
-        return try executions.compactMap { try load(task: task, owner: $0, context: context) }
+        // Every execution's registration is checked against the same saved
+        // connections, so the workspace's file is read once for all of them
+        // and only if one has a registration to check.
+        var connections: [SSHConnection]?
+        return try executions.compactMap {
+            try load(task: task, owner: $0, context: context) {
+                if let connections { return connections }
+                let current = task.workspace.map { SSHConnectionManager.loadForExport(workspacePath: $0.primaryPath) } ?? []
+                connections = current
+                return current
+            }
+        }
     }
 
-    private static func load(task: AgentTask, owner: RuntimeExecutionOwnerRecord,
-                             context: ModelContext) throws -> RemoteWorkspaceJobConfiguration? {
+    private static func load(task: AgentTask, owner: RuntimeExecutionOwnerRecord, context: ModelContext,
+                             savedConnections: () -> [SSHConnection]) throws -> RemoteWorkspaceJobConfiguration? {
         let root = directory(taskID: task.id, executionID: owner.executionID, context: context)
         let url = root.appendingPathComponent("configuration.json")
         // An execution with no registration has no directory. A missing
@@ -85,7 +104,7 @@ enum RemoteWorkspaceJobRegistration {
               configuration.observationSSHOptions == observationOptions(task: task) else {
             throw RemoteWorkspaceJobError.invalidArgument("Remote jobs belong to a different execution. The reservation is preserved.")
         }
-        guard matchesSavedConnections(configuration.connections, task: task) else {
+        guard matchesSavedConnections(configuration.connections, task: task, current: savedConnections) else {
             throw RemoteWorkspaceJobError.invalidArgument("The SSH connection changed. Restore the original connection to inspect its jobs safely.")
         }
         return configuration
@@ -93,9 +112,11 @@ enum RemoteWorkspaceJobRegistration {
     /// Older registrations always quoted shell words, including plain aliases.
     /// Compare the destination argv and stable identity before accepting either
     /// rendering; never rewrite the saved registration or migrate SSH settings.
-    private static func matchesSavedConnections(_ saved: [RemoteWorkspaceJobConnection], task: AgentTask) -> Bool {
-        guard let workspace = task.workspace else { return saved.isEmpty }
-        let current = SSHConnectionManager.loadForExport(workspacePath: workspace.primaryPath)
+    private static func matchesSavedConnections(
+        _ saved: [RemoteWorkspaceJobConnection], task: AgentTask, current: () -> [SSHConnection]
+    ) -> Bool {
+        guard task.workspace != nil else { return saved.isEmpty }
+        let current = current()
         var seen = Set<String>()
         return saved.allSatisfy { item in
             let matches = current.filter { $0.id.uuidString == item.id }
