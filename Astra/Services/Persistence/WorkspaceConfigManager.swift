@@ -927,7 +927,7 @@ public enum WorkspaceConfigManager {
         let templateConfigs = workspace.templates.map(templateConfig)
         let scheduleConfigs = workspace.schedules.map(scheduleConfig)
         let sshConnections = SSHConnectionManager.loadForExport(workspacePath: workspace.primaryPath)
-        guard let taskConfigs = try? workspace.tasks.map({ try taskConfig($0, modelContext: modelContext) }) else { return nil }
+        guard let taskConfigs = try? taskConfigs(for: workspace.tasks, modelContext: modelContext) else { return nil }
         let workspaceAppConfigs = workspaceAppsForExport(workspace: workspace).map(workspaceAppConfig)
         let workspaceAppRunSnapshot = workspaceAppRunMirrorSnapshotForExport(workspace: workspace)
         let workspaceAppRunConfigs = workspaceAppRunSnapshot.runs.map(workspaceAppRunConfig)
@@ -1762,14 +1762,23 @@ public enum WorkspaceConfigManager {
         )
     }
 
-    private static func taskConfig(_ task: AgentTask, modelContext: ModelContext) throws -> TaskConfig {
-        let recovery = try taskRecoveryMirror(task: task, modelContext: modelContext)
-        let sortedRuns = task.runs.sorted {
-            if $0.startedAt == $1.startedAt {
-                return $0.id.uuidString < $1.id.uuidString
-            }
-            return $0.startedAt < $1.startedAt
-        }
+    /// Every task's mirror, with one request-owner lookup for all of them. A
+    /// lookup per task walked the task table once for each, so an export's
+    /// cost grew with the square of the store.
+    private static func taskConfigs(for tasks: [AgentTask], modelContext: ModelContext) throws -> [TaskConfig] {
+        var owners = TaskTurnRequestOwnership.Resolver(
+            candidates: try TaskTurnRequestOwnership.candidates(taskIDs: tasks.map(\.id), in: modelContext))
+        return try tasks.map { try taskConfig($0, owners: &owners, modelContext: modelContext) }
+    }
+
+    private static func taskConfig(
+        _ task: AgentTask, owners: inout TaskTurnRequestOwnership.Resolver, modelContext: ModelContext
+    ) throws -> TaskConfig {
+        // The task's rows are read from the store once and ordered once.
+        let events = task.events
+        let sortedRuns = chronological(task.runs, time: \.startedAt, id: \.id)
+        let recovery = try taskRecoveryMirror(
+            task: task, events: events, sortedRuns: sortedRuns, owners: &owners, modelContext: modelContext)
         let retainedRunIDs = Set(sortedRuns.suffix(MirrorLimits.maxRunsPerTask).map(\.id)).union(recovery.pendingRunIDs)
         let mirroredRuns = sortedRuns.filter { retainedRunIDs.contains($0.id) }
         let runIDToIndex = Dictionary(
@@ -1799,13 +1808,12 @@ public enum WorkspaceConfigManager {
             )
         }
 
-        let presentationIDs = Set(task.events.sorted {
-            $0.timestamp == $1.timestamp ? $0.id.uuidString < $1.id.uuidString : $0.timestamp < $1.timestamp
-        }
-            .suffix(MirrorLimits.maxEventsPerTask).map(\.id))
-        let mirroredEvents = task.events.filter { !$0.isDeleted && (presentationIDs.contains($0.id)
+        // Ordering first and filtering after gives the order filtering first
+        // did: the order is total, since no two events share an ID.
+        let sortedEvents = chronological(events, time: \.timestamp, id: \.id)
+        let presentationIDs = Set(sortedEvents.suffix(MirrorLimits.maxEventsPerTask).map(\.id))
+        let mirroredEvents = sortedEvents.filter { !$0.isDeleted && (presentationIDs.contains($0.id)
             || recovery.sourceEventIDs.contains($0.id) || isTaskRecoveryEvent($0.type)) }
-            .sorted { $0.timestamp == $1.timestamp ? $0.id.uuidString < $1.id.uuidString : $0.timestamp < $1.timestamp }
         let eventConfigs = mirroredEvents.compactMap { event -> EventConfig? in
             guard let payload = isTaskRecoveryEvent(event.type) || recovery.sourceEventIDs.contains(event.id)
                 ? taskRecoveryPayload(event) : boundedMirrorString(event.payload, limit: MirrorLimits.maxEventPayloadCharacters) else { return nil }
