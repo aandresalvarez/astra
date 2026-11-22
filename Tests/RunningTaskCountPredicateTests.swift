@@ -111,7 +111,7 @@ struct RunningTaskCountPredicateTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let context = container.mainContext
         try seed(context)
-        #expect(AppUpdateSafety.runningTaskCount(in: context) == 2)
+        #expect(AppUpdateSafety.heldRunningTaskCount(in: context) == 2)
     }
 
     @Test("A context that has not loaded the rows falls back to fetching them")
@@ -121,7 +121,7 @@ struct RunningTaskCountPredicateTests {
         try seed(container.mainContext)
         let fresh = ModelContext(container)
         #expect(try AppUpdateSafety.registeredRunningTaskCount(in: fresh) == nil)
-        #expect(AppUpdateSafety.runningTaskCount(in: fresh) == 2)
+        #expect(AppUpdateSafety.heldRunningTaskCount(in: fresh) == 2)
     }
 
     @Test("Unsaved changes count the same way on both paths")
@@ -133,28 +133,64 @@ struct RunningTaskCountPredicateTests {
         try seed(context)
         let tasks = try context.fetch(FetchDescriptor<AgentTask>())
         let workspace = try #require(tasks.first?.workspace)
+        // The saved row of the task reopened below carries a completion date,
+        // so only the context's pending change can make it count.
+        let reopened = try #require(tasks.first { $0.status == .completed })
+        reopened.completedAt = Date()
+        try context.save()
 
         // Started but not saved yet.
         let started = AgentTask(title: "started", goal: "g", workspace: workspace)
         started.status = .running
         context.insert(started)
-        // Reopened: the saved row still carries its completion date.
-        let reopened = try #require(tasks.first { $0.status == .completed })
-        reopened.completedAt = Date()
-        try context.save()
+        #expect(context.insertedModelsArray.contains { $0.persistentModelID == started.persistentModelID })
+        // Reopened but not saved yet.
         reopened.status = .running
         reopened.completedAt = nil
         // Finished but not saved yet.
-        let finished = try #require(tasks.first { $0.status == .running })
+        let finished = try #require(tasks.first { $0.status == .running && $0 !== reopened })
         finished.status = .completed
         finished.completedAt = Date()
         // Deleted but not saved yet.
-        let deleted = try #require(tasks.first { $0.status == .running && $0 !== finished })
+        let deleted = try #require(tasks.first { $0.status == .running && $0 !== reopened && $0 !== finished })
         context.delete(deleted)
 
+        // The two seeded running tasks are finished and deleted; the two that
+        // count are the unsaved insert and the unsaved reopen.
         #expect(try AppUpdateSafety.registeredRunningTaskCount(in: context) == 2)
         #expect(try AppUpdateSafety.fetchedRunningTaskCount(in: context) == 2)
+        #expect(AppUpdateSafety.heldRunningTaskCount(in: context) == 2)
         #expect(AppUpdateSafety.runningTaskCount(in: context) == 2)
+    }
+
+    @Test("The install decision sees a task another context saved as running")
+    func installDecisionSeesAnotherContextsSave() throws {
+        let (container, root) = try onDiskContainer()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = container.mainContext
+        context.autosaveEnabled = false
+        try seed(context)
+        // The window holds every row, as the sidebar does.
+        let held = try context.fetch(FetchDescriptor<AgentTask>())
+        #expect(AppUpdateSafety.runningTaskCount(in: context) == 2)
+
+        // A worker's own context starts a task and saves.
+        let worker = ModelContext(container)
+        worker.autosaveEnabled = false
+        let draft = try #require(try worker.fetch(FetchDescriptor<AgentTask>()).first { $0.status == .draft })
+        draft.status = .running
+        try worker.save()
+
+        // The gate asks the store, so it cannot be answered from a held row
+        // that still says `.draft`.
+        #expect(AppUpdateSafety.runningTaskCount(in: context) == 3)
+        #expect(AppUpdateSafety.isInstallBlocked(
+            queueIsProcessing: false,
+            activeWorkerCount: 0,
+            activeTaskCount: 0,
+            runningTaskCount: AppUpdateSafety.runningTaskCount(in: context)
+        ))
+        withExtendedLifetime(held) {}
     }
 
     @Test("ContentView delegates to the tested count instead of an enum predicate")
@@ -165,5 +201,12 @@ struct RunningTaskCountPredicateTests {
         )
         #expect(source.contains("AppUpdateSafety.runningTaskCount(in: modelContext)"))
         #expect(!source.contains("task.status == runningStatus"))
+        // The install hooks ask the store; only the window's own bookkeeping
+        // may read held rows.
+        let gate = try #require(source.range(of: "private func isUpdateBlockedNow() -> Bool {"))
+        let gateBody = source[gate.upperBound...].prefix(400)
+        #expect(gateBody.contains("runningTaskCount: fetchRunningTaskCount()"))
+        let install = try #require(source.range(of: "private func prepareForAppUpdateInstall() -> Bool {"))
+        #expect(source[install.upperBound...].prefix(120).contains("runningTaskCount = fetchRunningTaskCount()"))
     }
 }
