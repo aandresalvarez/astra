@@ -332,6 +332,18 @@ struct StartupFolderAccessGateTests {
         #expect(probe.timesAsked == 1)
     }
 
+    @Test("Every refused folder can be read off the refusal screen: few are listed outright, many on request")
+    func everyRefusedFolderCanBeListed() {
+        let few = ["/a", "/b", "/c"]
+        #expect(StartupFolderAccessRefusedNotice.listed(few, showingAll: false) == few)
+
+        let many = (1...7).map { "/workspace-\($0)" }
+        #expect(StartupFolderAccessRefusedNotice.listed(many, showingAll: false) == Array(many.prefix(3)))
+        #expect(StartupFolderAccessRefusedNotice.listed(many, showingAll: true) == many)
+        #expect(StartupFolderAccessRefusedNotice.subject(1) == "this workspace folder")
+        #expect(StartupFolderAccessRefusedNotice.subject(7) == "7 workspace folders")
+    }
+
     @Test("The app builds its main view behind the gate and keeps links that arrive before it")
     func appRootIsGated() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()

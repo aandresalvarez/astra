@@ -247,6 +247,7 @@ struct StartupFolderAccessRefusedNotice: View {
     let openSettings: () -> Void
     let tryAgain: () -> Void
     let continueAnyway: () -> Void
+    @State private var showsAllFolders = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -257,14 +258,7 @@ struct StartupFolderAccessRefusedNotice: View {
                 .font(Stanford.body(14))
                 .foregroundStyle(Stanford.coolGrey)
                 .fixedSize(horizontal: false, vertical: true)
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(folders.prefix(Self.listedFolders), id: \.self) { StartupFolderAccessPath(folder: $0) }
-                if folders.count > Self.listedFolders {
-                    Text("and \(folders.count - Self.listedFolders) more")
-                        .font(Stanford.caption(12))
-                        .foregroundStyle(Stanford.coolGrey)
-                }
-            }
+            folderList
             Text("Open System Settings > Privacy & Security > Files & Folders, turn on the folder for \(appName), then try again. If macOS asks you to quit and reopen \(appName), do that instead.")
                 .font(Stanford.body(14))
                 .foregroundStyle(Stanford.coolGrey)
@@ -287,7 +281,39 @@ struct StartupFolderAccessRefusedNotice: View {
         .frame(maxWidth: 560, alignment: .leading)
     }
 
+    /// A few folders are listed outright. More than that start as the first
+    /// few with a way to show them all, in a list that scrolls, so every
+    /// folder that needs the setting can be read off this screen.
+    @ViewBuilder private var folderList: some View {
+        let listed = Self.listed(folders, showingAll: showsAllFolders)
+        VStack(alignment: .leading, spacing: 4) {
+            if showsAllFolders {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(listed, id: \.self) { StartupFolderAccessPath(folder: $0) }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 150)
+            } else {
+                ForEach(listed, id: \.self) { StartupFolderAccessPath(folder: $0) }
+            }
+            if listed.count < folders.count {
+                Button("Show all \(folders.count) folders") { showsAllFolders = true }
+                    .buttonStyle(.plain)
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(Stanford.interactive)
+            }
+        }
+    }
+
     static let listedFolders = 3
+
+    /// The folders on screen: all of them once asked for, or when they are
+    /// few enough to list outright.
+    static func listed(_ folders: [String], showingAll: Bool) -> [String] {
+        showingAll || folders.count <= listedFolders ? folders : Array(folders.prefix(listedFolders))
+    }
 
     static func subject(_ count: Int) -> String {
         count == 1 ? "this workspace folder" : "\(count) workspace folders"
