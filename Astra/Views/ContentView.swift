@@ -2287,7 +2287,7 @@ struct ContentView: View {
     }
 
     private func refreshRunningTaskCount() {
-        runningTaskCount = fetchRunningTaskCount()
+        runningTaskCount = AppUpdateSafety.heldRunningTaskCount(in: modelContext)
     }
 
     private func refreshUpdateSafetyHooks() {
@@ -2298,7 +2298,7 @@ struct ContentView: View {
     }
 
     private func prepareForAppUpdateInstall() -> Bool {
-        refreshRunningTaskCount()
+        runningTaskCount = fetchRunningTaskCount()
         guard !hasUpdateBlockingWork else {
             AppLogger.audit(.appUpdateBlocked, category: "Updater", fields: [
                 "reason": "active_work_preinstall"
