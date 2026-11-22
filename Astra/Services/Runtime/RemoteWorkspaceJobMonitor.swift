@@ -358,14 +358,20 @@ final class RemoteWorkspaceJobMonitorSession {
         for owner in registered {
             let taskID = owner.taskID
             let candidates: [AgentTask]
+            // An unbound receipt is attributed by going over every task with
+            // its ID. Those are the rows just fetched, so attribution reuses
+            // them instead of walking the table again for each candidate.
+            let sharingID: [AgentTask]?
             if let row = owner.taskOwnerID {
                 candidates = try context.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.persistentModelID == row }))
                     .filter { $0.id == taskID }
+                sharingID = nil
             } else {
                 candidates = unbound[taskID] ?? []
+                sharingID = candidates
             }
             for task in candidates where task.isLive {
-                guard let current = try RuntimeExecutionOwner.existing(task: task, context: context),
+                guard let current = try RuntimeExecutionOwner.existing(task: task, context: context, sharingID: sharingID),
                       current.ownerID == owner.ownerID, current.executionID == owner.executionID,
                       seen.insert(task.persistentModelID).inserted else { continue }
                 result.append(task)

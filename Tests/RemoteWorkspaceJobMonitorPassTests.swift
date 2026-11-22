@@ -116,6 +116,60 @@ struct RemoteWorkspaceJobMonitorPassTests {
         #expect(!found.contains { $0 === twin })
     }
 
+    @Test("An unbound receipt on disk is attributed from the tasks already fetched, by the same audit and one-owner rule")
+    func unboundReceiptOnDiskIsAttributedFromFetchedTasks() async throws {
+        let h = try HeadlessChatHarness(persistentStore: true)
+        defer { h.cleanup() }
+        let registered = try registeredTask(h, goal: "Receipt from an older build")
+        let task = registered.task
+        let twin = h.makeTask(runtime: .claudeCode, goal: "Imported copy", model: "test")
+        twin.id = task.id
+        let authority = RuntimeExecutionOwner.store(in: h.context)
+        var record = try #require(try authority.read(taskID: task.id, taskOwnerID: task.persistentModelID))
+        // The task's own audit of this execution, which attribution reads.
+        let audit = try #require(String(data: try JSONEncoder().encode(record), encoding: .utf8))
+        h.context.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.runtimeExecutionOwnership, payload: audit))
+        try h.context.save()
+
+        // Put the receipt where an older build kept it: under the task's ID
+        // alone, naming no row.
+        record.taskOwnerID = nil
+        do {
+            let lease = try authority.acquire(taskID: task.id)
+            try lease.save(record)
+        }
+        let bound = try FileManager.default.contentsOfDirectory(atPath: authority.root.path)
+            .filter { $0.hasPrefix(task.id.uuidString + "-") && $0.hasSuffix(".json") }
+        #expect(bound.count == 1)
+        for name in bound { try FileManager.default.removeItem(at: authority.root.appendingPathComponent(name)) }
+        #expect(try authority.read(taskID: task.id, taskOwnerID: task.persistentModelID) == nil)
+        let legacy = try #require(try authority.read(taskID: task.id))
+        #expect(legacy.taskOwnerID == nil)
+
+        // The pass reads it unbound, and still selects the task and not its copy.
+        let journal = try await RemoteWorkspaceJobMonitorSession.journal(context: h.context)
+        #expect(journal.owners.filter(\.isRegistered).map(\.record.taskOwnerID) == [nil])
+        let found = try RemoteWorkspaceJobMonitorSession.registeredTasks(journal: journal, context: h.context)
+        #expect(found.map(\.persistentModelID) == [task.persistentModelID])
+
+        // Attribution over supplied tasks is attribution over its own fetch.
+        let own = try RuntimeTaskOwnerJournal.legacyOwner(legacy, context: h.context)
+        #expect(own == task.persistentModelID)
+        #expect(try RuntimeTaskOwnerJournal.legacyOwner(legacy, context: h.context, sharingID: [twin, task]) == own)
+        #expect(try RuntimeExecutionOwner.existing(task: task, context: h.context, sharingID: [task, twin])?.executionID == legacy.executionID)
+        #expect(try RuntimeExecutionOwner.existing(task: twin, context: h.context, sharingID: [task, twin]) == nil)
+        // A row with another ID is not a candidate, and without the audited
+        // task there is no owner: the receipt stays unreadable, never guessed.
+        let other = h.makeTask(runtime: .claudeCode, goal: "Other", model: "test")
+        #expect(try RuntimeTaskOwnerJournal.legacyOwner(legacy, context: h.context, sharingID: [other, task]) == own)
+        #expect(throws: (any Error).self) {
+            try RuntimeTaskOwnerJournal.legacyOwner(legacy, context: h.context, sharingID: [twin])
+        }
+        #expect(throws: (any Error).self) {
+            try RuntimeTaskOwnerJournal.legacyOwner(legacy, context: h.context, sharingID: [other])
+        }
+    }
+
     @Test("A receipt whose row is gone, or whose execution is no longer the task's current one, selects nothing")
     func staleReceiptsSelectNothing() async throws {
         let h = try HeadlessChatHarness(persistentStore: true)
@@ -181,7 +235,9 @@ struct RemoteWorkspaceJobMonitorPassTests {
         #expect(!loop.contains("pending(context:"))
         // The journal is read through the worker, with the main actor as the fallback.
         #expect(source.contains("await BlockingWork.run(qos: .utility) { Result { try readJournal(ownersRoot: root) } }"))
-        // No lookup by a single task's portable ID is left in the monitor.
+        // No lookup by a single task's portable ID is left in the monitor,
+        // and an unbound receipt's attribution is handed the fetched tasks.
         #expect(!source.contains("#Predicate { $0.id == taskID }"))
+        #expect(source.contains("RuntimeExecutionOwner.existing(task: task, context: context, sharingID: sharingID)"))
     }
 }
