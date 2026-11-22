@@ -105,15 +105,18 @@ final class MainThreadStallMonitor: @unchecked Sendable {
     /// test can tell "detected and reported" from "never fired".
     private(set) var reportedStallCountForTesting = 0
 
-    /// Frames in the last stack a report carried, for the same reason. Read
-    /// under the lock: the watchdog writes it from its own queue while a test
-    /// reads it from the main thread.
-    var lastReportedStackDepthForTesting: Int {
+    /// The stacks the most recent reports carried, oldest first, for the same
+    /// reason. Read under the lock: the watchdog appends from its own queue
+    /// while a test reads from the main thread. A stack arrives a moment after
+    /// the count above moves, because the stall is counted before it is
+    /// sampled, so a test waits for this rather than inferring it from that.
+    var reportedStacksForTesting: [[UInt]] {
         lock.lock()
         defer { lock.unlock() }
-        return lastReportedStackDepth
+        return reportedStacks
     }
-    private var lastReportedStackDepth = 0
+    private var reportedStacks: [[UInt]] = []
+    private static let retainedStackCount = 8
 
     init(
         stallThreshold: TimeInterval = MainThreadStallMonitor.defaultStallThreshold,
@@ -357,7 +360,8 @@ final class MainThreadStallMonitor: @unchecked Sendable {
 
         guard !stack.isEmpty else { return }
         lock.lock()
-        lastReportedStackDepth = stack.count
+        reportedStacks.append(stack)
+        if reportedStacks.count > Self.retainedStackCount { reportedStacks.removeFirst() }
         lock.unlock()
         // Its own line: a stall line is already near the logger's length
         // limit. `current` carries the same doubt the phase does — a main

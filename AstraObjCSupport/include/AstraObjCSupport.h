@@ -217,6 +217,8 @@ FOUNDATION_EXPORT uint32_t AstraCurrentThreadPort(void);
 
 /// Writes the return addresses of `threadPort`'s call stack into `frames`,
 /// innermost first, and returns how many it wrote (at most `capacity`).
+/// Where the stack reaches a Swift async function, the resume addresses of the
+/// functions awaiting it come next, before the runtime frames that resumed it.
 ///
 /// The thread is suspended for the length of a frame-pointer walk and resumed
 /// before this returns. It is C because nothing may allocate or take a lock

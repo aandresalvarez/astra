@@ -26,12 +26,22 @@ static int astra_read_frame_record(uintptr_t address, uintptr_t record[2]) {
 }
 
 // The 47 bits a user-space address uses. What sits above them is not part of
-// the address: a pointer-authentication signature on a return address, and on
-// a saved frame pointer the bit Swift sets to mark an async function's frame.
-// A walk that kept that bit would stop at the first async frame.
+// the address: a pointer-authentication signature, and on a saved frame
+// pointer the bit Swift sets to mark an async function's frame. A walk that
+// kept that bit would stop at the first async frame.
 static uintptr_t astra_address(uintptr_t value) {
     return value & 0x00007FFFFFFFFFFFULL;
 }
+
+// Swift marks the frame of an async function by setting this bit in the frame
+// pointer it saves.
+static int astra_is_async_frame(uintptr_t savedFramePointer) {
+    return (savedFramePointer >> 60) & 1;
+}
+
+// Awaiting callers reported for one stack. A chain longer than this is a
+// corrupt one.
+enum { ASTRA_ASYNC_CALLER_LIMIT = 48 };
 
 int32_t AstraCaptureThreadStack(uint32_t threadPort, uintptr_t *frames, int32_t capacity) {
     thread_t thread = (thread_t)threadPort;
@@ -66,6 +76,7 @@ int32_t AstraCaptureThreadStack(uint32_t threadPort, uintptr_t *frames, int32_t 
     if (haveState) {
         frames[count++] = astra_address(programCounter);
         framePointer = astra_address(framePointer);
+        int followedAsyncCallers = 0;
         // Both ABIs keep a record of {caller's frame pointer, return address}
         // at the frame pointer. The stack grows down, so each record sits
         // above the one before it; anything else is a frame this walk cannot
@@ -73,6 +84,32 @@ int32_t AstraCaptureThreadStack(uint32_t threadPort, uintptr_t *frames, int32_t 
         while (count < capacity && framePointer != 0 && (framePointer & (sizeof(uintptr_t) - 1)) == 0) {
             uintptr_t record[2] = {0, 0};
             if (!astra_read_frame_record(framePointer, record)) break;
+            // An async function's physical caller is the runtime that resumed
+            // it. The functions that awaited it are not on the stack at all:
+            // they are a chain of async contexts, reached from the slot just
+            // below this frame record. Each context holds {its caller's
+            // context, where its caller resumes}. They are reported here,
+            // between the async function and the runtime frames under it,
+            // which is where a reader looks for callers.
+            if (!followedAsyncCallers && astra_is_async_frame(record[0])) {
+                followedAsyncCallers = 1;
+                uintptr_t below[2] = {0, 0};
+                uintptr_t context = 0;
+                if (astra_read_frame_record(framePointer - sizeof(uintptr_t) * 2, below)) {
+                    context = astra_address(below[1]);
+                }
+                for (int depth = 0; depth < ASTRA_ASYNC_CALLER_LIMIT && count < capacity && context != 0; depth++) {
+                    uintptr_t link[2] = {0, 0};
+                    if (!astra_read_frame_record(context, link)) break;
+                    uintptr_t resume = astra_address(link[1]);
+                    uintptr_t parent = astra_address(link[0]);
+                    if (resume == 0) break;
+                    frames[count++] = resume;
+                    if (parent == context) break;
+                    context = parent;
+                }
+                if (count >= capacity) break;
+            }
             uintptr_t returnAddress = astra_address(record[1]);
             if (returnAddress == 0) break;
             frames[count++] = returnAddress;
