@@ -43,8 +43,10 @@ static int astra_is_async_frame(uintptr_t savedFramePointer) {
 // corrupt one.
 enum { ASTRA_ASYNC_CALLER_LIMIT = 48 };
 
-int32_t AstraCaptureThreadStack(uint32_t threadPort, uintptr_t *frames, int32_t capacity) {
+int32_t AstraCaptureThreadStack(uint32_t threadPort, uintptr_t *frames, int32_t capacity,
+                                uintptr_t *leafReturnAddress) {
     thread_t thread = (thread_t)threadPort;
+    if (leafReturnAddress != NULL) *leafReturnAddress = 0;
     if (frames == NULL || capacity <= 0 || thread == MACH_PORT_NULL) return 0;
     // A thread cannot be walked by itself this way: it would stop the walker.
     if (thread == pthread_mach_thread_np(pthread_self())) return 0;
@@ -53,6 +55,11 @@ int32_t AstraCaptureThreadStack(uint32_t threadPort, uintptr_t *frames, int32_t 
     int32_t count = 0;
     uintptr_t programCounter = 0;
     uintptr_t framePointer = 0;
+    // Where the innermost function returns to if it never set up a frame of
+    // its own, as a system-call stub does not: the link register on arm64, the
+    // top of the stack on x86_64. The frame-pointer walk cannot see that
+    // caller, because the frame pointer still belongs to it.
+    uintptr_t leafReturn = 0;
     int haveState = 0;
 
 #if defined(__arm64__)
@@ -61,6 +68,7 @@ int32_t AstraCaptureThreadStack(uint32_t threadPort, uintptr_t *frames, int32_t 
     if (thread_get_state(thread, ARM_THREAD_STATE64, (thread_state_t)&state, &stateCount) == KERN_SUCCESS) {
         programCounter = (uintptr_t)arm_thread_state64_get_pc(state);
         framePointer = (uintptr_t)arm_thread_state64_get_fp(state);
+        leafReturn = astra_address((uintptr_t)arm_thread_state64_get_lr(state));
         haveState = 1;
     }
 #elif defined(__x86_64__)
@@ -69,6 +77,8 @@ int32_t AstraCaptureThreadStack(uint32_t threadPort, uintptr_t *frames, int32_t 
     if (thread_get_state(thread, x86_THREAD_STATE64, (thread_state_t)&state, &stateCount) == KERN_SUCCESS) {
         programCounter = (uintptr_t)state.__rip;
         framePointer = (uintptr_t)state.__rbp;
+        uintptr_t top[2] = {0, 0};
+        if (astra_read_frame_record((uintptr_t)state.__rsp, top)) leafReturn = astra_address(top[0]);
         haveState = 1;
     }
 #endif
@@ -120,5 +130,6 @@ int32_t AstraCaptureThreadStack(uint32_t threadPort, uintptr_t *frames, int32_t 
     }
 
     thread_resume(thread);
+    if (leafReturnAddress != NULL) *leafReturnAddress = leafReturn;
     return count;
 }

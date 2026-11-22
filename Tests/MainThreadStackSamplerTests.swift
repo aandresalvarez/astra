@@ -9,44 +9,72 @@ import AstraObjCSupport
 /// and that what it writes survives the log's own redaction.
 @Suite("Main-thread stack sampler")
 struct MainThreadStackSamplerTests {
-    /// A thread parked in a function this binary defines.
+    /// A thread blocked in `read(2)` on a pipe nobody has written to, called
+    /// straight from a function this binary defines. The system-call stub sets
+    /// up no frame, so the thread is stopped exactly where a stalled one
+    /// usually is.
     private final class ParkedThread: @unchecked Sendable {
         private let ready = DispatchSemaphore(value: 0)
-        private let gate = DispatchSemaphore(value: 0)
         private let finished = DispatchSemaphore(value: 0)
+        private var descriptors: [Int32] = [-1, -1]
         private(set) var port: UInt32 = 0
 
-        func start() {
+        func start() -> Bool {
+            guard pipe(&descriptors) == 0 else { return false }
             let thread = Thread { [self] in
                 port = AstraCurrentThreadPort()
                 ready.signal()
-                park()
+                parkInRead(descriptors[0])
                 finished.signal()
             }
             thread.start()
             ready.wait()
+            return true
         }
 
         @inline(never)
-        private func park() {
-            gate.wait()
+        private func parkInRead(_ descriptor: Int32) {
+            var byte: UInt8 = 0
+            _ = read(descriptor, &byte, 1)
         }
 
         /// Returns whether the thread ran to its end after being released.
         func release() -> Bool {
-            gate.signal()
-            return finished.wait(timeout: .now() + 5) == .success
+            var byte: UInt8 = 1
+            _ = write(descriptors[1], &byte, 1)
+            let ended = finished.wait(timeout: .now() + 5) == .success
+            close(descriptors[0])
+            close(descriptors[1])
+            return ended
         }
     }
 
-    @Test("A parked thread's stack is read from another thread, and the thread runs on")
-    func parkedThreadStackIsCaptured() {
-        let parked = ParkedThread()
-        parked.start()
-        // Let it reach the wait; the stack is the same either side of it.
-        Thread.sleep(forTimeInterval: 0.05)
+    /// The thread's stack once it is inside the system call: the innermost
+    /// frame is then in the kernel's stub library. Sampled again rather than
+    /// slept for, so a slow machine only costs more samples.
+    private func stackInsideSystemCall(of parked: ParkedThread) -> [UInt] {
+        for _ in 0..<500 {
+            let addresses = MainThreadStackSampler.capture(thread: parked.port)
+            if MainThreadStackSampler.frames(for: Array(addresses.prefix(1))).first?.image == "system_kernel" {
+                return addresses
+            }
+            usleep(2_000)
+        }
+        return []
+    }
 
-        let addresses = MainThreadStackSampler.capture(thread: parked.port)
+    private func functionName(at address: UInt) -> String {
+        var info = Dl_info()
+        guard dladdr(UnsafeRawPointer(bitPattern: address), &info) != 0, let name = info.dli_sname else { return "" }
+        return String(cString: name)
+    }
+
+    @Test("A parked thread's stack is read from another thread, and the thread runs on")
+    func parkedThreadStackIsCaptured() throws {
+        let parked = ParkedThread()
+        try #require(parked.start())
+
+        let addresses = stackInsideSystemCall(of: parked)
         let frames = MainThreadStackSampler.frames(for: addresses)
 
         #expect(addresses.count >= 3)
@@ -57,6 +85,43 @@ struct MainThreadStackSamplerTests {
         // Stopped, read, and let go: a sampler that left it suspended would
         // freeze the app it is diagnosing.
         #expect(parked.release())
+    }
+
+    /// The stub the thread is stopped in has no frame, so the frame pointer
+    /// still belongs to `parkInRead` and a walk of frame pointers alone goes
+    /// from the stub to `parkInRead`'s caller. The function that made the
+    /// blocking call is the one a stall report most needs.
+    @Test("The function that made the blocking call is in the stack")
+    func immediateCallerOfASystemCallIsKept() throws {
+        let parked = ParkedThread()
+        try #require(parked.start())
+
+        let addresses = stackInsideSystemCall(of: parked)
+        let names = addresses.prefix(3).map(functionName(at:))
+
+        #expect(names.count == 3)
+        #expect(names.dropFirst().first?.contains("parkInRead") == true, "innermost functions: \(names)")
+        #expect(parked.release())
+    }
+
+    @Test("A leftover return address is not mistaken for a missed caller")
+    func leafReturnIsOnlyUsedWhenItNamesAnotherFunction() throws {
+        let handle = UnsafeMutableRawPointer(bitPattern: -2)  // RTLD_DEFAULT
+        let first = UInt(bitPattern: try #require(dlsym(handle, "getpid")))
+        let second = UInt(bitPattern: try #require(dlsym(handle, "strlen")))
+        let third = UInt(bitPattern: try #require(dlsym(handle, "malloc")))
+
+        // Stopped in a leaf: the return address names the caller the walk skipped.
+        #expect(MainThreadStackSampler.missedLeafCaller(stack: [first, third], leafReturn: second + 4) == second + 4)
+        // The innermost function has a frame and has not called anything yet:
+        // the walk already holds its return address.
+        #expect(MainThreadStackSampler.missedLeafCaller(stack: [first, second + 4], leafReturn: second + 4) == nil)
+        // It has a frame and has made a call: the leftover points back into it.
+        #expect(MainThreadStackSampler.missedLeafCaller(stack: [first + 4, third], leafReturn: first + 8) == nil)
+        // Nothing captured, or nowhere the loader knows.
+        #expect(MainThreadStackSampler.missedLeafCaller(stack: [first, third], leafReturn: 0) == nil)
+        #expect(MainThreadStackSampler.missedLeafCaller(stack: [], leafReturn: second) == nil)
+        #expect(MainThreadStackSampler.missedLeafCaller(stack: [first, third], leafReturn: 16) == nil)
     }
 
     @Test("A thread is never asked to stop itself")

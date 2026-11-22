@@ -224,6 +224,12 @@ FOUNDATION_EXPORT uint32_t AstraCurrentThreadPort(void);
 /// before this returns. It is C because nothing may allocate or take a lock
 /// while the other thread is stopped; the caller allocates `frames` first.
 /// Returns 0 for the calling thread's own port, which cannot stop itself.
-FOUNDATION_EXPORT int32_t AstraCaptureThreadStack(uint32_t threadPort, uintptr_t *frames, int32_t capacity);
+///
+/// `leafReturnAddress` receives where the innermost function would return to
+/// if it has no frame of its own (the link register on arm64, the top of the
+/// stack on x86_64), or 0. It is only a candidate: whether it is a caller the
+/// walk missed is for the receiver to decide once the thread runs again.
+FOUNDATION_EXPORT int32_t AstraCaptureThreadStack(uint32_t threadPort, uintptr_t *frames, int32_t capacity,
+                                                  uintptr_t *_Nullable leafReturnAddress);
 
 NS_ASSUME_NONNULL_END
