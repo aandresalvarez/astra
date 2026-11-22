@@ -100,7 +100,12 @@ struct MainThreadStackSamplerTests {
         let names = addresses.prefix(3).map(functionName(at:))
 
         #expect(names.count == 3)
+        // Only arm64 has the caller in a register. On x86_64 the sampler adds
+        // nothing, on purpose, so the stack there is one frame short: the stub,
+        // then `parkInRead`'s caller.
+        #if arch(arm64)
         #expect(names.dropFirst().first?.contains("parkInRead") == true, "innermost functions: \(names)")
+        #endif
         #expect(parked.release())
     }
 
