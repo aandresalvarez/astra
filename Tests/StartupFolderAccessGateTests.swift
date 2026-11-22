@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import os
 import SwiftData
 import SwiftUI
 import ASTRAModels
@@ -47,6 +48,7 @@ struct StartupFolderAccessGateTests {
         let gate = StartupFolderAccessGate(startsOpen: false) { folder in
             probe.note(folder)
             if folder == "/blocked" { _ = release.wait(timeout: .now() + 30) }
+            return false
         }
         let opening = Task { await gate.open(folders: { ["/blocked", "/next"] }) }
         await waitUntil(gate, isOpening: "/blocked", probe)
@@ -71,6 +73,7 @@ struct StartupFolderAccessGateTests {
         let gate = StartupFolderAccessGate(startsOpen: false) { folder in
             probe.note(folder)
             _ = release.wait(timeout: .now() + 30)
+            return false
         }
         let folders: () -> [String] = {
             probe.noteAsked()
@@ -94,36 +97,89 @@ struct StartupFolderAccessGateTests {
         #expect(probe.timesAsked == 1)
     }
 
-    @Test("Choosing not to wait opens the gate at once and asks no further folder")
-    func skippingOpensWithoutTheAnswer() async {
+    @Test("A folder macOS refuses stops the gate at the refusal, with every refused folder named")
+    func refusedFoldersAreNamedAndNothingOpens() async {
+        let probe = FolderTouchProbe()
+        let gate = StartupFolderAccessGate(startsOpen: false) { folder in
+            probe.note(folder)
+            return folder.hasPrefix("/refused")
+        }
+        await gate.open(folders: { ["/allowed", "/refused-one", "/refused-two"] })
+
+        // Every folder is asked, so the person hears about all of them at once.
+        #expect(probe.folders == ["/allowed", "/refused-one", "/refused-two"])
+        #expect(gate.state == .refused(["/refused-one", "/refused-two"]))
+        #expect(!gate.isOpen)
+        #expect(gate.waitingOn == nil)
+
+        // A second window finds the refusal already known and asks nothing.
+        await gate.open(folders: { probe.noteAsked(); return ["/allowed"] })
+        #expect(probe.timesAsked == 0)
+        #expect(gate.state == .refused(["/refused-one", "/refused-two"]))
+    }
+
+    @Test("Trying again asks only the refused folders, and opens the gate once macOS allows them")
+    func tryingAgainAfterAllowingOpensTheGate() async {
+        let probe = FolderTouchProbe()
+        let allowed = OSAllocatedUnfairLock(initialState: false)
+        let gate = StartupFolderAccessGate(startsOpen: false) { folder in
+            probe.note(folder)
+            return folder == "/documents" && !allowed.withLock { $0 }
+        }
+        await gate.open(folders: { ["/elsewhere", "/documents"] })
+        #expect(gate.state == .refused(["/documents"]))
+
+        // Still refused: the same screen comes back.
+        await gate.tryAgain()
+        #expect(gate.state == .refused(["/documents"]))
+
+        allowed.withLock { $0 = true }
+        await gate.tryAgain()
+        #expect(gate.isOpen)
+        #expect(probe.folders == ["/elsewhere", "/documents", "/documents", "/documents"])
+        #expect(probe.ranOnMain.allSatisfy { !$0 })
+
+        // Nothing is left to try once the gate is open.
+        await gate.tryAgain()
+        #expect(probe.folders.count == 4)
+    }
+
+    @Test("Continuing anyway opens the gate over a refusal, and is not a way past a wait")
+    func continuingAnywayIsOnlyForARefusal() async {
         let release = DispatchSemaphore(value: 0)
         let probe = FolderTouchProbe()
         let gate = StartupFolderAccessGate(startsOpen: false) { folder in
             probe.note(folder)
             _ = release.wait(timeout: .now() + 30)
+            return true
         }
-        let opening = Task { await gate.open(folders: { ["/blocked", "/never-asked"] }) }
+        let opening = Task { await gate.open(folders: { ["/blocked"] }) }
         await waitUntil(gate, isOpening: "/blocked", probe)
 
-        gate.skip()
-        #expect(gate.isOpen)
+        // While a folder has not answered, nothing opens the gate early:
+        // that would put the wait back on the main actor.
+        gate.continueAnyway()
+        await gate.tryAgain()
+        #expect(gate.state == .waiting)
+        #expect(probe.folders == ["/blocked"])
 
         release.signal()
         await opening.value
+        #expect(gate.state == .refused(["/blocked"]))
+
+        gate.continueAnyway()
         #expect(gate.isOpen)
-        #expect(gate.waitingOn == nil)
-        #expect(probe.folders == ["/blocked"])
     }
 
     @Test("No folders opens the gate without touching anything; repeats and empty paths are dropped")
     func emptyAndRepeatedFolders() async {
         let probe = FolderTouchProbe()
-        let empty = StartupFolderAccessGate(startsOpen: false) { probe.note($0) }
+        let empty = StartupFolderAccessGate(startsOpen: false) { probe.note($0); return false }
         await empty.open(folders: { [] })
         #expect(empty.isOpen)
         #expect(probe.folders.isEmpty)
 
-        let repeated = StartupFolderAccessGate(startsOpen: false) { probe.note($0) }
+        let repeated = StartupFolderAccessGate(startsOpen: false) { probe.note($0); return false }
         await repeated.open(folders: { ["/a", "", "/b", "/a"] })
         #expect(repeated.isOpen)
         #expect(probe.folders == ["/a", "/b"])
@@ -136,27 +192,36 @@ struct StartupFolderAccessGateTests {
         #expect(!StartupFolderAccessGate.isSkipped(arguments: ["ASTRA", "--skip-workspace-recovery"]))
 
         let probe = FolderTouchProbe()
-        let gate = StartupFolderAccessGate(startsOpen: true) { probe.note($0) }
+        let gate = StartupFolderAccessGate(startsOpen: true) { probe.note($0); return false }
         await gate.open(folders: { probe.noteAsked(); return ["/a"] })
         #expect(gate.isOpen)
         #expect(probe.timesAsked == 0)
         #expect(probe.folders.isEmpty)
     }
 
-    @Test("The real touch returns for a folder, a missing path and a file")
-    func realTouchAnswersWhateverIsThere() throws {
+    @Test("The real check answers for a folder, a missing path, a file and a folder closed by file permissions, and none is a privacy refusal")
+    func realCheckAnswersWhateverIsThere() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("astra-folder-access-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: root) }
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.appendingPathComponent("closed").path)
+            try? FileManager.default.removeItem(at: root)
+        }
         let file = root.appendingPathComponent("file.txt")
         try Data("x".utf8).write(to: file)
+        let closed = root.appendingPathComponent("closed")
+        try FileManager.default.createDirectory(at: closed, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: closed.path)
 
-        StartupFolderAccessGate.touch(root.path)
-        StartupFolderAccessGate.touch(root.appendingPathComponent("missing").path)
-        StartupFolderAccessGate.touch(file.path)
+        #expect(!StartupFolderAccessGate.isRefused(root.path))
+        #expect(!StartupFolderAccessGate.isRefused(root.appendingPathComponent("missing").path))
+        #expect(!StartupFolderAccessGate.isRefused(file.path))
+        // File permissions are not the privacy setting: sending the person to
+        // System Settings would not help, so this is not reported as refused.
+        #expect(!StartupFolderAccessGate.isRefused(closed.path))
         // Nothing is created, changed or left open by asking.
-        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["file.txt"])
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).sorted() == ["closed", "file.txt"])
     }
 
     @Test("The folders waited on are every stored workspace's")
@@ -177,7 +242,7 @@ struct StartupFolderAccessGateTests {
     @Test("The main window's content is not built while the gate is closed")
     func contentIsBuiltOnlyBehindAnOpenGate() async {
         var built = 0
-        let gate = StartupFolderAccessGate(startsOpen: false) { _ in }
+        let gate = StartupFolderAccessGate(startsOpen: false) { _ in false }
         let root = StartupFolderAccessRoot(gate: gate, folders: { [] }) { () -> Text in
             built += 1
             return Text("main")
@@ -211,7 +276,7 @@ struct StartupFolderAccessGateTests {
     @Test("On screen, the root opens the gate by itself and then builds the content")
     func hostedRootOpensTheGate() async {
         let probe = FolderTouchProbe()
-        let gate = StartupFolderAccessGate(startsOpen: false) { probe.note($0) }
+        let gate = StartupFolderAccessGate(startsOpen: false) { probe.note($0); return false }
         let root = StartupFolderAccessRoot(gate: gate, folders: { ["/hosted"] }) {
             Color.clear.onAppear { probe.noteAsked() }
         }
@@ -230,6 +295,40 @@ struct StartupFolderAccessGateTests {
         #expect(gate.isOpen)
         #expect(probe.folders == ["/hosted"])
         // The content appeared, once, after the gate opened.
+        #expect(probe.timesAsked == 1)
+    }
+
+    @Test("On screen, a refusal keeps the content unbuilt until trying again finds the folder allowed")
+    func hostedRootHoldsARefusalUntilItIsAllowed() async {
+        let probe = FolderTouchProbe()
+        let allowed = OSAllocatedUnfairLock(initialState: false)
+        let gate = StartupFolderAccessGate(startsOpen: false) { folder in
+            probe.note(folder)
+            return !allowed.withLock { $0 }
+        }
+        let root = StartupFolderAccessRoot(gate: gate, folders: { ["/hosted-refused"] }) {
+            Color.clear.onAppear { probe.noteAsked() }
+        }
+        let host = NSHostingView(rootView: root.frame(width: 640, height: 420))
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 420),
+            styleMask: [.borderless], backing: .buffered, defer: false
+        )
+        window.contentView = host
+        window.orderFront(nil)
+        HostLifetime.retained.append(contentsOf: [host, window])
+        defer { window.orderOut(nil) }
+        host.layoutSubtreeIfNeeded()
+
+        await settle(until: { gate.state == .refused(["/hosted-refused"]) })
+        #expect(gate.state == .refused(["/hosted-refused"]))
+        await settle(until: { false }, turns: 5)
+        #expect(probe.timesAsked == 0)
+
+        allowed.withLock { $0 = true }
+        await gate.tryAgain()
+        await settle(until: { probe.timesAsked == 1 })
+        #expect(gate.isOpen)
         #expect(probe.timesAsked == 1)
     }
 
