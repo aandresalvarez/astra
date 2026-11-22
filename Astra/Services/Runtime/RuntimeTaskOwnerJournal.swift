@@ -6,11 +6,15 @@ import ASTRAModels
 /// imported audit text cannot authorize borrowing another copy's execution.
 @MainActor
 enum RuntimeTaskOwnerJournal {
-    static func read(task: AgentTask, context: ModelContext) throws -> RuntimeExecutionOwnerRecord? {
+    /// - Parameter sharingID: Every task with `task`'s portable ID, from a
+    ///   caller that has already fetched them all. See `legacyOwner`.
+    static func read(
+        task: AgentTask, context: ModelContext, sharingID: [AgentTask]? = nil
+    ) throws -> RuntimeExecutionOwnerRecord? {
         let store = RuntimeExecutionOwner.store(in: context)
         let scoped = try store.read(taskID: task.id, taskOwnerID: task.persistentModelID)
         guard let legacy = try store.read(taskID: task.id) else { return scoped }
-        let owner = try legacyOwner(legacy, context: context)
+        let owner = try legacyOwner(legacy, context: context, sharingID: sharingID)
         guard owner == task.persistentModelID else { return scoped }
         guard scoped == nil else { throw RuntimeExecutionOwnerStore.Failure.unreadable }
         return legacy
@@ -29,10 +33,26 @@ enum RuntimeTaskOwnerJournal {
         return lease
     }
 
-    static func legacyOwner(_ record: RuntimeExecutionOwnerRecord, context: ModelContext) throws -> PersistentIdentifier {
+    /// Attributes an unbound receipt to the one task whose own audit names it.
+    ///
+    /// The candidates are every task with the receipt's portable ID. No index
+    /// serves that lookup, so it walks the task table. A caller that goes
+    /// over several such receipts and has already fetched all the tasks
+    /// sharing each ID passes them as `sharingID`; the audit and the
+    /// one-owner rule are the same either way. Rows with another ID are
+    /// ignored, so a supplied list can narrow nothing but what the caller
+    /// left out: it must be complete.
+    static func legacyOwner(
+        _ record: RuntimeExecutionOwnerRecord, context: ModelContext, sharingID: [AgentTask]? = nil
+    ) throws -> PersistentIdentifier {
         if let owner = record.taskOwnerID { return owner }
         let taskID = record.taskID
-        let tasks = try context.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID }))
+        let tasks: [AgentTask]
+        if let sharingID {
+            tasks = sharingID.filter { $0.id == taskID }
+        } else {
+            tasks = try context.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID }))
+        }
         let owners = tasks.filter { task in
             TaskHistoryRead.events(for: task, ofTypes: [TaskEventTypes.System.runtimeExecutionOwnership.rawValue]).contains { event in
                 guard event.type == TaskEventTypes.System.runtimeExecutionOwnership.rawValue,

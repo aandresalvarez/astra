@@ -46,8 +46,12 @@ final class RuntimeExecutionOwner {
         return .init(root: root)
     }
 
-    static func existing(task: AgentTask, context: ModelContext) throws -> RuntimeExecutionOwnerRecord? {
-        let record = try RuntimeTaskOwnerJournal.read(task: task, context: context)
+    /// - Parameter sharingID: Every task with `task`'s portable ID, when the
+    ///   caller has already fetched them all (`RuntimeTaskOwnerJournal.legacyOwner`).
+    static func existing(
+        task: AgentTask, context: ModelContext, sharingID: [AgentTask]? = nil
+    ) throws -> RuntimeExecutionOwnerRecord? {
+        let record = try RuntimeTaskOwnerJournal.read(task: task, context: context, sharingID: sharingID)
         guard record == nil || record?.taskID == task.id else { throw RuntimeExecutionOwnerStore.Failure.unreadable }
         return record.map { reconciledCompletion($0, task: task) }
     }

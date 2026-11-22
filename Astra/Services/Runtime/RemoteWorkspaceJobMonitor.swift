@@ -93,9 +93,11 @@ final class RemoteWorkspaceJobMonitor {
                 let store = RemoteWorkspaceJobStore(rootPath: config.recordRootPath)
                 var current = try store.records().sorted { $0.createdAt < $1.createdAt }
                 for job in current { try RemoteWorkspaceJobEventReconciler.reconcile(job, task: task, context: context, store: store) }
-                let cancellation = try RuntimeExecutionOwner.existing(task: task, context: context)?.cancellationRequested == true
                 let uncancelled = current.filter { !$0.status.isTerminal && $0.cancellationRequestedAt == nil }
-                if cancellation && !uncancelled.isEmpty {
+                // The owner's cancellation only matters to a job still to be
+                // cancelled, so the receipt is read only when there is one.
+                if !uncancelled.isEmpty,
+                   try RuntimeExecutionOwner.existing(task: task, context: context)?.cancellationRequested == true {
                     for job in uncancelled {
                         try store.update(jobID: job.jobID) { $0.requestCancellation(at: Date()) }
                     }
@@ -238,7 +240,7 @@ final class RemoteWorkspaceJobMonitorSession {
         loop = Task { @MainActor in
             while !Task.isCancelled {
                 do {
-                    let tasks = try Self.registeredTasks(context: context)
+                    let tasks = try Self.registeredTasks(journal: try await Self.journal(context: context), context: context)
                     let awaited = try Self.awaitedTaskIDs(context: context)
                     await withTaskGroup(of: Void.self) { group in
                         for task in tasks {
@@ -251,7 +253,10 @@ final class RemoteWorkspaceJobMonitorSession {
                     // After the refreshes: a live task's refresh delivers its own
                     // saved cancellations, so the outbox finds those jobs just
                     // checked and contacts only hosts no refresh reached.
-                    let deliveries = try RemoteWorkspaceJobCancellationDelivery.pending(context: context)
+                    // Read again: the refreshes above awaited, and a cancellation
+                    // saved meanwhile belongs to this pass.
+                    let executions = try await Self.journal(context: context).owners.flatMap(\.executions)
+                    let deliveries = try RemoteWorkspaceJobCancellationDelivery.pending(executions: executions, context: context)
                     await withTaskGroup(of: Void.self) { group in
                         for delivery in deliveries {
                             group.addTask { await RemoteWorkspaceJobCancellationDelivery.deliver(delivery) }
@@ -284,26 +289,93 @@ final class RemoteWorkspaceJobMonitorSession {
         return awaited
     }
 
+    /// One read of the protected journal: every owner, its retained
+    /// executions, and whether any of them registered remote jobs.
+    struct Journal: Sendable {
+        struct Owner: Sendable {
+            let record: RuntimeExecutionOwnerRecord
+            /// The owner's own execution first, then the ones it retains.
+            let executions: [RuntimeExecutionOwnerRecord]
+            let isRegistered: Bool
+        }
+        let owners: [Owner]
+    }
+
+    /// Reads the journal as `registeredTasks` always has, from wherever it is
+    /// called. It is file reading and decoding only, which is why a pass can
+    /// do it off the main actor: every 15 seconds it opens each owner's
+    /// receipt and each execution it retains, and that grows with every run.
+    nonisolated static func readJournal(ownersRoot: URL) throws -> Journal {
+        let authority = RuntimeExecutionOwnerStore(root: ownersRoot)
+        return Journal(owners: try authority.records().map { owner in
+            let executions = [owner] + (try authority.retainedExecutions(of: owner))
+            let isRegistered = executions.contains {
+                let root = RemoteWorkspaceJobRegistration.directory(
+                    taskID: $0.taskID, executionID: $0.executionID, ownersRoot: ownersRoot)
+                return FileManager.default.fileExists(atPath: root.appendingPathComponent("configuration.json").path)
+            }
+            return Journal.Owner(record: owner, executions: executions, isRegistered: isRegistered)
+        })
+    }
+
+    /// `readJournal` on a worker thread, for the pass. A fresh projection of
+    /// the journal each time, never a cached owner: what a refresh acts on is
+    /// read again by that refresh.
+    static func journal(context: ModelContext) async throws -> Journal {
+        let root = RuntimeExecutionOwner.store(in: context).root
+        let offMain = await BlockingWork.run(qos: .utility) { Result { try readJournal(ownersRoot: root) } }
+        if case .success(let journal) = offMain { return journal }
+        // A writer on the main actor can replace or retire a receipt between
+        // the worker's listing and its read. No writer can interleave here,
+        // so an error from this read is the journal's own.
+        return try readJournal(ownersRoot: root)
+    }
+
     /// Only tasks with a registration in their retained execution lineage can have
     /// remote jobs to observe. Fetching every task every 15 seconds faults all
     /// workspace relationships and retains thousands of unrelated models.
     /// This is a fresh projection of the protected journal, not a cached owner.
     static func registeredTasks(context: ModelContext) throws -> [AgentTask] {
-        let authority = RuntimeExecutionOwner.store(in: context)
-        let owners = try authority.records()
+        try registeredTasks(
+            journal: readJournal(ownersRoot: RuntimeExecutionOwner.store(in: context).root), context: context)
+    }
+
+    static func registeredTasks(journal: Journal, context: ModelContext) throws -> [AgentTask] {
+        let registered = journal.owners.filter(\.isRegistered).map(\.record)
+        guard !registered.isEmpty else { return [] }
+        // A receipt bound to a row names it, and a row is found by identity.
+        // Only an unbound receipt has to be matched by the task's portable
+        // ID, which no index serves: those share one walk of the task table
+        // instead of one walk each.
+        let unboundIDs = Array(Set(registered.filter { $0.taskOwnerID == nil }.map(\.taskID)))
+        var unbound: [UUID: [AgentTask]] = [:]
+        if !unboundIDs.isEmpty {
+            // The bounded lookup: a store migrated with many unbound receipts
+            // must not put more IDs into one statement than it accepts, or
+            // every pass would fail before refreshing anything. Rows deleted
+            // but not yet saved are left out, as a fetch leaves them out.
+            let rows = try TaskTurnRequestOwnership.candidates(taskIDs: unboundIDs, in: context).filter { !$0.isDeleted }
+            unbound = Dictionary(grouping: rows, by: \.id)
+        }
         var result: [AgentTask] = []
         var seen: Set<PersistentIdentifier> = []
-        for owner in owners {
-            let executions = [owner] + (try authority.retainedExecutions(of: owner))
-            guard executions.contains(where: {
-                let root = RemoteWorkspaceJobRegistration.directory(taskID: $0.taskID,
-                    executionID: $0.executionID, context: context)
-                return FileManager.default.fileExists(atPath: root.appendingPathComponent("configuration.json").path)
-            }) else { continue }
+        for owner in registered {
             let taskID = owner.taskID
-            let candidates = try context.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID }))
+            let candidates: [AgentTask]
+            // An unbound receipt is attributed by going over every task with
+            // its ID. Those are the rows just fetched, so attribution reuses
+            // them instead of walking the table again for each candidate.
+            let sharingID: [AgentTask]?
+            if let row = owner.taskOwnerID {
+                candidates = try context.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.persistentModelID == row }))
+                    .filter { $0.id == taskID }
+                sharingID = nil
+            } else {
+                candidates = unbound[taskID] ?? []
+                sharingID = candidates
+            }
             for task in candidates where task.isLive {
-                guard let current = try RuntimeExecutionOwner.existing(task: task, context: context),
+                guard let current = try RuntimeExecutionOwner.existing(task: task, context: context, sharingID: sharingID),
                       current.ownerID == owner.ownerID, current.executionID == owner.executionID,
                       seen.insert(task.persistentModelID).inserted else { continue }
                 result.append(task)

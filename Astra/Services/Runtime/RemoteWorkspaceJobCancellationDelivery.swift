@@ -59,9 +59,18 @@ enum RemoteWorkspaceJobCancellationDelivery {
     }
 
     static func pending(context: ModelContext) throws -> [RemoteWorkspaceJobConfiguration] {
-        var result: [RemoteWorkspaceJobConfiguration] = []
         let authority = RuntimeExecutionOwner.store(in: context)
-        let executions = try authority.records().flatMap { [$0] + (try authority.retainedExecutions(of: $0)) }
+        return try pending(
+            executions: try authority.records().flatMap { [$0] + (try authority.retainedExecutions(of: $0)) },
+            context: context)
+    }
+
+    /// `pending(context:)` over executions the caller has just read from the
+    /// journal (`RemoteWorkspaceJobMonitorSession.journal`).
+    static func pending(
+        executions: [RuntimeExecutionOwnerRecord], context: ModelContext
+    ) throws -> [RemoteWorkspaceJobConfiguration] {
+        var result: [RemoteWorkspaceJobConfiguration] = []
         for owner in executions {
             let root = RemoteWorkspaceJobRegistration.directory(taskID: owner.taskID, executionID: owner.executionID, context: context)
             let url = root.appendingPathComponent("cancellation.json")
