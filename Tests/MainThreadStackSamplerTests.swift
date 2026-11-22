@@ -105,23 +105,36 @@ struct MainThreadStackSamplerTests {
     }
 
     @Test("A leftover return address is not mistaken for a missed caller")
-    func leafReturnIsOnlyUsedWhenItNamesAnotherFunction() throws {
+    func linkRegisterIsOnlyUsedWhenItNamesAMissedCaller() throws {
         let handle = UnsafeMutableRawPointer(bitPattern: -2)  // RTLD_DEFAULT
         let first = UInt(bitPattern: try #require(dlsym(handle, "getpid")))
         let second = UInt(bitPattern: try #require(dlsym(handle, "strlen")))
         let third = UInt(bitPattern: try #require(dlsym(handle, "malloc")))
 
-        // Stopped in a leaf: the return address names the caller the walk skipped.
-        #expect(MainThreadStackSampler.missedLeafCaller(stack: [first, third], leafReturn: second + 4) == second + 4)
+        // Stopped in a leaf: the link register names the caller the walk skipped.
+        #expect(MainThreadStackSampler.missedLeafCaller(
+            stack: [first, third], linkRegister: second + 4, firstFrameReturn: third) == second + 4)
         // The innermost function has a frame and has not called anything yet:
-        // the walk already holds its return address.
-        #expect(MainThreadStackSampler.missedLeafCaller(stack: [first, second + 4], leafReturn: second + 4) == nil)
+        // the link register still holds its own return address.
+        #expect(MainThreadStackSampler.missedLeafCaller(
+            stack: [first, second + 4], linkRegister: second + 4, firstFrameReturn: second + 4) == nil)
+        // The same, in an async function: the functions awaiting it come
+        // before its return address in the stack, so the second address is not
+        // the one to compare with. Inserting here would repeat a runtime frame
+        // ahead of the awaiting callers.
+        #expect(MainThreadStackSampler.missedLeafCaller(
+            stack: [first, third + 4, third + 8, second + 4],
+            linkRegister: second + 4, firstFrameReturn: second + 4) == nil)
         // It has a frame and has made a call: the leftover points back into it.
-        #expect(MainThreadStackSampler.missedLeafCaller(stack: [first + 4, third], leafReturn: first + 8) == nil)
-        // Nothing captured, or nowhere the loader knows.
-        #expect(MainThreadStackSampler.missedLeafCaller(stack: [first, third], leafReturn: 0) == nil)
-        #expect(MainThreadStackSampler.missedLeafCaller(stack: [], leafReturn: second) == nil)
-        #expect(MainThreadStackSampler.missedLeafCaller(stack: [first, third], leafReturn: 16) == nil)
+        #expect(MainThreadStackSampler.missedLeafCaller(
+            stack: [first + 4, third], linkRegister: first + 8, firstFrameReturn: third) == nil)
+        // No register to read, nothing captured, or nowhere the loader knows.
+        #expect(MainThreadStackSampler.missedLeafCaller(
+            stack: [first, third], linkRegister: 0, firstFrameReturn: third) == nil)
+        #expect(MainThreadStackSampler.missedLeafCaller(
+            stack: [], linkRegister: second, firstFrameReturn: 0) == nil)
+        #expect(MainThreadStackSampler.missedLeafCaller(
+            stack: [first, third], linkRegister: 16, firstFrameReturn: third) == nil)
     }
 
     @Test("A thread is never asked to stop itself")

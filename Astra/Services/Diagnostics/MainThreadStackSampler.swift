@@ -53,13 +53,15 @@ enum MainThreadStackSampler {
         guard thread != 0 else { return [] }
         // Allocated before the thread is stopped: the walk must not.
         var frames = [UInt](repeating: 0, count: maximumFrames)
-        var leafReturn: UInt = 0
+        var top = AstraThreadStackTop()
         let count = frames.withUnsafeMutableBufferPointer { buffer -> Int in
             guard let base = buffer.baseAddress else { return 0 }
-            return Int(AstraCaptureThreadStack(thread, base, Int32(buffer.count), &leafReturn))
+            return Int(AstraCaptureThreadStack(thread, base, Int32(buffer.count), &top))
         }
         var stack = Array(frames.prefix(max(0, min(count, maximumFrames))))
-        if let caller = missedLeafCaller(stack: stack, leafReturn: leafReturn) {
+        if let caller = missedLeafCaller(
+            stack: stack, linkRegister: top.linkRegister, firstFrameReturn: top.firstFrameReturnAddress
+        ) {
             stack.insert(caller, at: 1)
         }
         return Array(stack.prefix(maximumFrames))
@@ -70,21 +72,24 @@ enum MainThreadStackSampler {
     /// is: a system-call stub. The frame pointer then still belongs to the
     /// caller, so the walk's second address is the caller's caller.
     ///
-    /// `leafReturn` is that caller when the innermost function is such a leaf,
-    /// and a leftover otherwise: the function's own return address, which the
-    /// walk already has, or the return point of the last call it made, which
-    /// lies inside the function itself. So it is a missed caller only when it
-    /// is not the next address in the stack and belongs to a different function
-    /// than the innermost one. Where the loader cannot name either function,
-    /// nothing is added: a stack one frame short is better than one with a
-    /// frame that was never there.
-    static func missedLeafCaller(stack: [UInt], leafReturn: UInt) -> UInt? {
-        guard leafReturn != 0, let innermost = stack.first else { return nil }
-        if stack.count > 1, stack[1] == leafReturn { return nil }
+    /// The link register is that caller when the innermost function is such
+    /// a leaf, and a leftover otherwise: the function's own return address,
+    /// which the walk already has, or the return point of the last call it
+    /// made, which lies inside the function itself. So it is a missed caller
+    /// only when it is not the return address of the first frame record and
+    /// belongs to a different function than the innermost one.
+    ///
+    /// It is compared with the first frame record, not with the stack's second
+    /// address: when the innermost function is async, the functions awaiting
+    /// it sit between the two, and its own return address would look missed.
+    /// Where the loader cannot name either function, nothing is added: a stack
+    /// one frame short is better than one with a frame that was never there.
+    static func missedLeafCaller(stack: [UInt], linkRegister: UInt, firstFrameReturn: UInt) -> UInt? {
+        guard linkRegister != 0, linkRegister != firstFrameReturn, let innermost = stack.first else { return nil }
         guard let innermostFunction = functionStart(of: innermost),
-              let returnFunction = functionStart(of: leafReturn),
+              let returnFunction = functionStart(of: linkRegister),
               innermostFunction != returnFunction else { return nil }
-        return leafReturn
+        return linkRegister
     }
 
     private static func functionStart(of address: UInt) -> UnsafeMutableRawPointer? {

@@ -215,6 +215,17 @@ NS_ASSUME_NONNULL_BEGIN
 /// from another thread later.
 FOUNDATION_EXPORT uint32_t AstraCurrentThreadPort(void);
 
+/// What the innermost frame looked like when a thread was sampled, for
+/// deciding whether the frame-pointer walk skipped its caller.
+typedef struct {
+    /// The link register: where the innermost function returns to if it set up
+    /// no frame of its own. 0 where there is no such register (x86_64).
+    uintptr_t linkRegister;
+    /// The return address in the first frame record: the innermost function's
+    /// own return address if it did set up a frame. 0 if no record was read.
+    uintptr_t firstFrameReturnAddress;
+} AstraThreadStackTop;
+
 /// Writes the return addresses of `threadPort`'s call stack into `frames`,
 /// innermost first, and returns how many it wrote (at most `capacity`).
 /// Where the stack reaches a Swift async function, the resume addresses of the
@@ -225,11 +236,10 @@ FOUNDATION_EXPORT uint32_t AstraCurrentThreadPort(void);
 /// while the other thread is stopped; the caller allocates `frames` first.
 /// Returns 0 for the calling thread's own port, which cannot stop itself.
 ///
-/// `leafReturnAddress` receives where the innermost function would return to
-/// if it has no frame of its own (the link register on arm64, the top of the
-/// stack on x86_64), or 0. It is only a candidate: whether it is a caller the
-/// walk missed is for the receiver to decide once the thread runs again.
+/// `top` receives the facts about the innermost frame. Whether the link
+/// register names a caller the walk missed is for the receiver to decide once
+/// the thread runs again.
 FOUNDATION_EXPORT int32_t AstraCaptureThreadStack(uint32_t threadPort, uintptr_t *frames, int32_t capacity,
-                                                  uintptr_t *_Nullable leafReturnAddress);
+                                                  AstraThreadStackTop *_Nullable top);
 
 NS_ASSUME_NONNULL_END
