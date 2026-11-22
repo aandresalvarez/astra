@@ -68,10 +68,17 @@ enum TaskPlanStateReader {
         // three-valued logic drops NULL rows — silently losing recovered plan
         // progress for every run written before schema V17 (verified by
         // `v16StoreMigratesToUnknownProtocolMarkerFlag`).
+        //
+        // The two values are typed constants, not `nil` and `true` literals.
+        // With the literals and the task check together, CI's compiler gave up
+        // on the predicate ("unable to type-check this expression in
+        // reasonable time"); the store is asked the same question either way.
+        let unknown: Bool? = nil
+        let marked: Bool? = true
         let runDescriptor = FetchDescriptor<TaskRun>(
             predicate: #Predicate<TaskRun> {
                 $0.task != nil && $0.task!.persistentModelID == owner
-                    && ($0.hasProtocolEvents == nil || $0.hasProtocolEvents == true)
+                    && ($0.hasProtocolEvents == unknown || $0.hasProtocolEvents == marked)
             },
             sortBy: [
                 SortDescriptor(\TaskRun.startedAt),
