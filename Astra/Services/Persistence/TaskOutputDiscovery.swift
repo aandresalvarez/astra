@@ -1,4 +1,5 @@
 import Foundation
+import os
 import ASTRAModels
 import ASTRACore
 
@@ -103,6 +104,13 @@ public enum TaskOutputDiscovery {
 
     public struct Preparation: Sendable {
         public let files: [TaskOutputDiscoveredFile]
+        /// The same scan with every per-path answer the context derive asks
+        /// for, when the caller named the workspace and the paths to settle.
+        /// Nil from the plain `prepareAsync(in:)`.
+        public var observation: TaskOutputObservation? = nil
+        /// The folder that was scanned. `files` are absolute paths inside it,
+        /// so they describe the task only while this is still its folder.
+        public var taskFolder: String? = nil
         public let requestedAt: UInt64
         public let startedAt: UInt64
         public let finishedAt: UInt64
@@ -119,8 +127,42 @@ public enum TaskOutputDiscovery {
         return await Task.detached(priority: .utility) {
             let startedAt = DispatchTime.now().uptimeNanoseconds
             let files = files(in: taskFolder)
-            return Preparation(files: files, requestedAt: requestedAt, startedAt: startedAt,
+            var preparation = Preparation(files: files, requestedAt: requestedAt, startedAt: startedAt,
                 finishedAt: DispatchTime.now().uptimeNanoseconds)
+            preparation.taskFolder = taskFolder
+            return preparation
+        }.value
+    }
+
+    /// `prepareAsync(in:)` that also settles what the context derive asks
+    /// about `candidatePaths` and about the files it finds, so the main actor
+    /// can refresh the task's context without touching the folder again.
+    public static func prepareAsync(
+        in taskFolder: String,
+        workspacePath: String,
+        candidatePaths: [String]
+    ) async -> Preparation {
+        let requestedAt = DispatchTime.now().uptimeNanoseconds
+        return await Task.detached(priority: .utility) {
+            let startedAt = DispatchTime.now().uptimeNanoseconds
+            // The derive also filters the paths `current_state.json` already
+            // remembers, and those can name a file that neither the model nor
+            // the folder still does. Read here, as the off-actor refresh does,
+            // or each one is a lookup back on the main actor.
+            let remembered: [String] = taskFolder.isEmpty
+                ? []
+                : TaskContextStateManager.loadResult(taskFolder: taskFolder).state?.filesChanged ?? []
+            let observation = TaskOutputObservation.observe(
+                taskFolder: taskFolder,
+                workspacePath: workspacePath,
+                paths: candidatePaths + remembered
+            )
+            let discovered = observation?.discoveredFiles ?? files(in: taskFolder)
+            var preparation = Preparation(files: discovered, requestedAt: requestedAt, startedAt: startedAt,
+                finishedAt: DispatchTime.now().uptimeNanoseconds)
+            preparation.observation = observation
+            preparation.taskFolder = taskFolder
+            return preparation
         }.value
     }
 
@@ -141,6 +183,11 @@ public enum TaskOutputDiscovery {
         let resolvedFolderPath = folderURL.resolvingSymlinksInPath().standardizedFileURL.path
         guard fileManager.fileExists(atPath: folderPath) else { return [] }
 
+        #if DEBUG
+        walkCountsForTesting.withLock { counts in
+            if let count = counts[folderPath] { counts[folderPath] = count + 1 }
+        }
+        #endif
         guard let paths = TaskGeneratedFileQuerySeam.required.files(
             in: folderPath,
             fileManager: fileManager,
@@ -161,6 +208,33 @@ public enum TaskOutputDiscovery {
             lhs.relativePath.localizedStandardCompare(rhs.relativePath) == .orderedAscending
         }
     }
+
+    #if DEBUG
+    /// Walks of a folder, whoever asked for them and on whichever thread, for
+    /// the folders a test is counting. Per folder, so suites that run in
+    /// parallel never see each other's walks.
+    private static let walkCountsForTesting = OSAllocatedUnfairLock<[String: Int]>(initialState: [:])
+
+    private static func walkCountKey(_ taskFolder: String) -> String {
+        URL(fileURLWithPath: taskFolder).standardizedFileURL.path
+    }
+
+    /// Starts, or restarts, the count for `taskFolder` at zero.
+    static func countWalksForTesting(in taskFolder: String) {
+        let key = walkCountKey(taskFolder)
+        walkCountsForTesting.withLock { $0[key] = 0 }
+    }
+
+    static func walkCountForTesting(in taskFolder: String) -> Int {
+        let key = walkCountKey(taskFolder)
+        return walkCountsForTesting.withLock { $0[key] ?? 0 }
+    }
+
+    static func stopCountingWalksForTesting(in taskFolder: String) {
+        let key = walkCountKey(taskFolder)
+        walkCountsForTesting.withLock { $0[key] = nil }
+    }
+    #endif
 
     public static func filesChanged(during run: TaskRun, from files: [TaskOutputDiscoveredFile]) -> [TaskOutputDiscoveredFile] {
         let lowerBound = run.startedAt.addingTimeInterval(-2)

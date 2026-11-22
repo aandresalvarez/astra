@@ -10,7 +10,8 @@ enum TaskWorkerHandoffService {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        discoveredFiles: [TaskOutputDiscoveredFile]? = nil
+        discoveredFiles: [TaskOutputDiscoveredFile]? = nil,
+        outputObservation: TaskOutputObservation? = nil
     ) -> TaskEvent? {
         let runEvents = TaskHistoryRead.events(for: task, runID: run.id)
             .sorted { $0.timestamp == $1.timestamp ? $0.id.uuidString < $1.id.uuidString : $0.timestamp < $1.timestamp }
@@ -31,7 +32,7 @@ enum TaskWorkerHandoffService {
             "file_count": String(payload.filesChanged.count),
             "blocker_count": String(payload.blockers.count)
         ])
-        TaskContextStateManager.refresh(task: task)
+        TaskContextStateManager.refresh(task: task, outputObservation: outputObservation)
         return event
     }
 

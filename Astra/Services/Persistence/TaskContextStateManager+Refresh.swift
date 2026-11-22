@@ -82,6 +82,23 @@ extension TaskContextStateManager {
         URL(fileURLWithPath: folder).appendingPathComponent(jsonFileName).path
     }
 
+    /// A stamp of `current_state.json` for a caller that observes the task
+    /// folder off the actor outside `refreshLoadingOffMainActor`. Once it is
+    /// no longer current someone has saved the state since, possibly from a
+    /// newer view of the folder than the caller's, and deriving from the
+    /// older view would put it back over theirs.
+    public struct StateFileStamp: Sendable {
+        private let path: String
+        private let identity: StateFileIdentity
+
+        public init(taskFolder: String) {
+            path = TaskContextStateManager.statePath(inFolder: taskFolder)
+            identity = StateFileIdentity(atPath: path)
+        }
+
+        public var isCurrent: Bool { identity.matches(StateFileIdentity(atPath: path)) }
+    }
+
     /// `refresh(task:)` with its state-file work moved off the main actor.
     ///
     /// `refresh` resolves the task folder — which runs a legacy-layout

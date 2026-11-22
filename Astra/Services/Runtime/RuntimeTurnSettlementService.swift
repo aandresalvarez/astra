@@ -189,7 +189,12 @@ enum RuntimeTurnSettlementService {
             }
             let request = try checkpoint.requestID.flatMap { try TaskTurnRequestRepository.request(id: $0, in: modelContext) }
             let message = checkpoint.sessionMessage ?? request?.executionPolicySnapshot?.turnIntentSnapshot?.acceptedTurn ?? task.goal
-            guard sessionProjection?() ?? AgentRuntimeRunPersistence.recordSessionTurn(task: task, run: run, message: message) else {
+            // One scan of the task folder, off the main actor, for the turn
+            // record here and the handoff and checkpoint in finalization. This
+            // is the hop finalization made anyway, taken one step earlier.
+            let outputs = await AgentRuntimeRunPersistence.prepareOutputs(for: task, run: run)
+            guard sessionProjection?() ?? AgentRuntimeRunPersistence.recordSessionTurn(task: task, run: run,
+                message: message, outputObservation: outputs.observation) else {
                 throw Failure.recoverySubmissionFailed
             }
             if alreadyPrepared {
@@ -197,7 +202,7 @@ enum RuntimeTurnSettlementService {
                     persist: verdictPersistence, autoExport: autoExport)
             }
             guard await AgentRuntimeRunPersistence.finalizeAndPersist(task: task, run: run,
-                modelContext: modelContext, phase: checkpoint.phase, autoExport: autoExport,
+                modelContext: modelContext, phase: checkpoint.phase, preparedOutputs: outputs, autoExport: autoExport,
                 persist: {
                     RuntimeSettlementCancellation.applyIfNeeded(task: task, run: run, context: modelContext)
                     RuntimeSettlementProgress.stagePrepared(task: task, run: run, modelContext: modelContext)
