@@ -103,6 +103,10 @@ public enum TaskOutputDiscovery {
 
     public struct Preparation: Sendable {
         public let files: [TaskOutputDiscoveredFile]
+        /// The same scan with every per-path answer the context derive asks
+        /// for, when the caller named the workspace and the paths to settle.
+        /// Nil from the plain `prepareAsync(in:)`.
+        public var observation: TaskOutputObservation? = nil
         public let requestedAt: UInt64
         public let startedAt: UInt64
         public let finishedAt: UInt64
@@ -121,6 +125,30 @@ public enum TaskOutputDiscovery {
             let files = files(in: taskFolder)
             return Preparation(files: files, requestedAt: requestedAt, startedAt: startedAt,
                 finishedAt: DispatchTime.now().uptimeNanoseconds)
+        }.value
+    }
+
+    /// `prepareAsync(in:)` that also settles what the context derive asks
+    /// about `candidatePaths` and about the files it finds, so the main actor
+    /// can refresh the task's context without touching the folder again.
+    public static func prepareAsync(
+        in taskFolder: String,
+        workspacePath: String,
+        candidatePaths: [String]
+    ) async -> Preparation {
+        let requestedAt = DispatchTime.now().uptimeNanoseconds
+        return await Task.detached(priority: .utility) {
+            let startedAt = DispatchTime.now().uptimeNanoseconds
+            let observation = TaskOutputObservation.observe(
+                taskFolder: taskFolder,
+                workspacePath: workspacePath,
+                paths: candidatePaths
+            )
+            let discovered = observation?.discoveredFiles ?? files(in: taskFolder)
+            var preparation = Preparation(files: discovered, requestedAt: requestedAt, startedAt: startedAt,
+                finishedAt: DispatchTime.now().uptimeNanoseconds)
+            preparation.observation = observation
+            return preparation
         }.value
     }
 

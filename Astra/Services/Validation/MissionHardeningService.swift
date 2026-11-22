@@ -9,9 +9,10 @@ enum MissionHardeningService {
     static func recordCheckpoint(
         task: AgentTask,
         run: TaskRun?,
-        modelContext: ModelContext
+        modelContext: ModelContext,
+        outputObservation: TaskOutputObservation? = nil
     ) -> TaskMissionCheckpointPayload {
-        TaskContextStateManager.refresh(task: task)
+        TaskContextStateManager.refresh(task: task, outputObservation: outputObservation)
         let state = currentState(for: task)
         let checkpoint = TaskMissionCheckpointPayload(
             checkpointID: UUID(),

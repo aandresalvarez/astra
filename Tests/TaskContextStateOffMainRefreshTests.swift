@@ -651,6 +651,113 @@ struct TaskContextStateOffMainRefreshTests {
     /// ones, a generated-dependency tree, recorded changes inside the task
     /// folder, relative to the workspace and outside both, and artifacts that
     /// exist and that do not.
+    // MARK: - Settlement
+
+    /// Recording a turn derives the state and then builds the turn, and each
+    /// used to scan the output folder for itself under the actor.
+    @Test("Recording a turn scans the output folder once")
+    func recordTurnScansOnce() throws {
+        let fixture = try makeFixture("record-once")
+        defer { fixture.cleanup() }
+        try populateOutputs(fixture)
+        let run = try latestRun(of: fixture)
+
+        TaskOutputPathResolver.liveScanCountForTesting = 0
+        #expect(TaskContextStateManager.recordTurn(task: fixture.task, run: run, message: "Write the reports"))
+        #expect(TaskOutputPathResolver.liveScanCountForTesting == 1)
+    }
+
+    /// A settlement scans the folder once off the actor and records the turn
+    /// from that. Counted, not timed, for the same reason as the apply above.
+    @Test("Recording a turn from a prepared observation reads no folder under the actor")
+    func recordTurnAnswersFromThePreparedObservation() async throws {
+        let fixture = try makeFixture("record-observed")
+        defer { fixture.cleanup() }
+        let path = URL(fileURLWithPath: fixture.folder)
+            .appendingPathComponent(TaskContextStateManager.jsonFileName)
+        let seededBytes = try Data(contentsOf: path)
+        try populateOutputs(fixture)
+        let run = try latestRun(of: fixture)
+
+        #expect(TaskContextStateManager.recordTurn(task: fixture.task, run: run, message: "Write the reports"))
+        let expected = try #require(TaskContextStateManager.load(taskFolder: fixture.folder))
+
+        try seededBytes.write(to: path)
+        let prepared = await AgentRuntimeRunPersistence.prepareOutputs(for: fixture.task, run: run)
+        let observation = try #require(prepared.observation)
+        TaskOutputPathResolver.liveScanCountForTesting = 0
+        TaskOutputPathResolver.liveLookupCountForTesting = 0
+        #expect(TaskContextStateManager.recordTurn(
+            task: fixture.task, run: run, message: "Write the reports", outputObservation: observation))
+
+        #expect(TaskOutputPathResolver.liveScanCountForTesting == 0, "the turn record rescanned the output folder")
+        #expect(TaskOutputPathResolver.liveLookupCountForTesting == 0, "the turn record checked a path on the actor")
+        var actual = try #require(TaskContextStateManager.load(taskFolder: fixture.folder))
+        actual.updatedAt = expected.updatedAt
+        #expect(actual == expected)
+        #expect(actual.turns.last?.filesChanged.contains { $0.hasSuffix("reports/report_19.md") } == true)
+        #expect(prepared.files.contains { $0.relativePath == "nested/deep/data.csv" })
+    }
+
+    /// The handoff and the checkpoint each refresh the context while a run is
+    /// finalized. Handed the settlement's observation, neither goes back to
+    /// the folder.
+    @Test("Finalization refreshes the context without scanning under the actor")
+    func finalizationAnswersFromThePreparedObservation() async throws {
+        let fixture = try makeFixture("finalize-observed")
+        defer { fixture.cleanup() }
+        try populateOutputs(fixture)
+        let run = try latestRun(of: fixture)
+        fixture.task.status = .completed
+
+        let prepared = await AgentRuntimeRunPersistence.prepareOutputs(for: fixture.task, run: run)
+        TaskOutputPathResolver.liveScanCountForTesting = 0
+        let saved = await AgentRuntimeRunPersistence.finalizeAndPersist(
+            task: fixture.task,
+            run: run,
+            modelContext: fixture.container.mainContext,
+            phase: "run",
+            preparedOutputs: prepared,
+            autoExport: false
+        )
+
+        #expect(saved)
+        #expect(TaskOutputPathResolver.liveScanCountForTesting == 0, "finalization rescanned the output folder")
+        let events = TaskHistoryRead.events(
+            for: fixture.task,
+            ofTypes: [TaskHandoffEventTypes.created, TaskMissionEventTypes.checkpointCreated]
+        )
+        #expect(Set(events.map(\.type)) == [TaskHandoffEventTypes.created, TaskMissionEventTypes.checkpointCreated])
+        let state = try #require(TaskContextStateManager.load(taskFolder: fixture.folder))
+        #expect(state.artifacts.contains { $0.path.hasSuffix("nested/deep/data.csv") && !$0.isStale })
+    }
+
+    /// Without a prepared observation finalization takes its own, as before.
+    @Test("Finalization on its own still observes the folder off the actor")
+    func finalizationPreparesItsOwnObservation() async throws {
+        let fixture = try makeFixture("finalize-alone")
+        defer { fixture.cleanup() }
+        try populateOutputs(fixture)
+        let run = try latestRun(of: fixture)
+        fixture.task.status = .completed
+
+        TaskOutputPathResolver.liveScanCountForTesting = 0
+        let saved = await AgentRuntimeRunPersistence.finalizeAndPersist(
+            task: fixture.task,
+            run: run,
+            modelContext: fixture.container.mainContext,
+            phase: "run",
+            autoExport: false
+        )
+
+        #expect(saved)
+        #expect(TaskOutputPathResolver.liveScanCountForTesting == 0)
+    }
+
+    private func latestRun(of fixture: Fixture) throws -> TaskRun {
+        try #require(fixture.task.runs.max { $0.startedAt < $1.startedAt })
+    }
+
     private func populateOutputs(_ fixture: Fixture) throws {
         let folder = URL(fileURLWithPath: fixture.folder)
         let files = (0..<20).map { "reports/report_\($0).md" } + ["nested/deep/data.csv", ".venv/lib/site.py"]

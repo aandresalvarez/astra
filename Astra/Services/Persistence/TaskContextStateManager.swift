@@ -457,11 +457,16 @@ public enum TaskContextStateManager {
 
     @MainActor
     @discardableResult
-    public static func recordTurn(task: AgentTask, run: TaskRun, message: String) -> Bool {
+    public static func recordTurn(
+        task: AgentTask, run: TaskRun, message: String, outputObservation: TaskOutputObservation? = nil
+    ) -> Bool {
         guard let folder = ensureTaskFolder(for: task) else { return false }
         var state = TaskContextStateRecovery.recoverState(taskFolder: folder, taskID: task.id) ?? initialState(for: task)
         TaskObjectiveAssessmentEventStore.reconcileProjection(&state, task: task)
-        updateDerivedFields(&state, task: task, latestRun: run)
+        // One resolver for the derive and the turn: each used to scan the
+        // output folder on its own, twice per turn on the main actor.
+        let outputs = TaskOutputPathResolver(task: task, observation: outputObservation)
+        updateDerivedFields(&state, task: task, latestRun: run, outputs: outputs)
         reconcileObjectiveAssessmentProjection(&state, task: task, followUpMessage: message)
 
         let turn = makeTurn(
@@ -469,7 +474,7 @@ public enum TaskContextStateManager {
             message: message,
             run: run,
             task: task,
-            taskFolder: folder
+            discoveredFiles: outputs.discoveredFiles
         )
         TaskContextTurnRecording.upsert(turn, state: &state, limit: maxTurns)
         state.updatedAt = timestamp(Date())
@@ -478,10 +483,13 @@ public enum TaskContextStateManager {
 
     /// Returns whether it rewrote `current_state.json`, and so announced it.
     @MainActor @discardableResult
-    public static func refresh(task: AgentTask, followUpMessage: String = "") -> Bool {
+    public static func refresh(
+        task: AgentTask, followUpMessage: String = "", outputObservation: TaskOutputObservation? = nil
+    ) -> Bool {
         guard let folder = ensureTaskFolder(for: task) else { return false }
         let existing = TaskContextStateRecovery.recoverState(taskFolder: folder, taskID: task.id)
-        return applyRefresh(existing: existing, folder: folder, task: task, followUpMessage: followUpMessage)
+        return applyRefresh(existing: existing, folder: folder, task: task, followUpMessage: followUpMessage,
+            outputObservation: outputObservation)
     }
 
     /// The model-reading half of `refresh`. See `refreshLoadingOffMainActor`.
@@ -831,13 +839,14 @@ public enum TaskContextStateManager {
     @MainActor
     private static func updateDerivedFields(
         _ state: inout TaskContextState, task: AgentTask, latestRun: TaskRun?,
-        outputObservation: TaskOutputObservation? = nil, events suppliedEvents: TaskContextEventIndex? = nil
+        outputObservation: TaskOutputObservation? = nil, events suppliedEvents: TaskContextEventIndex? = nil,
+        outputs suppliedOutputs: TaskOutputPathResolver? = nil
     ) {
         let events = suppliedEvents ?? TaskContextEventIndex(task: task)
         let planState = TaskPlanReconstructionSeam.required.reconstruct(for: task)
         // Every filesystem question below goes through here. See
         // `TaskOutputObservation` for when it is answered off the actor.
-        let outputs = TaskOutputPathResolver(task: task, observation: outputObservation)
+        let outputs = suppliedOutputs ?? TaskOutputPathResolver(task: task, observation: outputObservation)
         let discoveredTaskOutputFiles = outputs.discoveredFiles
         state.mode = inferredMode(task: task, planState: planState, latestRun: latestRun)
         state.startingRequest = firstNonEmpty(
@@ -1105,15 +1114,12 @@ public enum TaskContextStateManager {
         message: String,
         run: TaskRun,
         task: AgentTask,
-        taskFolder: String
+        discoveredFiles: [TaskOutputDiscoveredFile]
     ) -> TaskContextState.Turn {
         let runBlockers = TaskHistoryRead.events(for: task, ofTypes: ["error", "permission.denied", "permission.approval.requested", "budget.exceeded"])
             .filter { $0.run?.id == run.id }
             .map { boundedInline($0.payload, maxCharacters: 220) }
-        let discoveredRunFiles = TaskOutputDiscovery.filesChanged(
-            during: run,
-            from: TaskOutputDiscovery.files(in: taskFolder)
-        ).map(\.path)
+        let discoveredRunFiles = TaskOutputDiscovery.filesChanged(during: run, from: discoveredFiles).map(\.path)
         let visibility = TaskOutputVisibilityScope(access: TaskWorkspaceAccess(task: task))
         return TaskContextState.Turn(
             turn: number,

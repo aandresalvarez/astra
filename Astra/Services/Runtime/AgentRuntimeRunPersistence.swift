@@ -51,11 +51,33 @@ enum AgentRuntimeRunPersistence {
     // a full UUID produced a 40+ character token that log redaction removed.
     static func traceID(for run: TaskRun) -> String { "run-finalize-" + run.id.uuidString.prefix(8).lowercased() }
 
+    /// The task folder as one settlement sees it: scanned once, off the main
+    /// actor, with the answers the context derive would otherwise ask the
+    /// filesystem for under the actor. A settlement used to scan the folder
+    /// five times, four of them on the main actor (twice recording the turn,
+    /// once each for the handoff and the checkpoint).
+    static func prepareOutputs(for task: AgentTask, run: TaskRun) async -> TaskOutputDiscovery.Preparation {
+        let access = TaskWorkspaceAccess(task: task)
+        let traceID = traceID(for: run)
+        let prepared = await TaskOutputDiscovery.prepareAsync(
+            in: access.taskFolder,
+            workspacePath: access.effectiveWorkspacePath,
+            candidatePaths: TaskOutputObservation.candidatePaths(for: task)
+        )
+        let resumedAt = DispatchTime.now().uptimeNanoseconds
+        for (phase, milliseconds) in prepared.phaseMilliseconds(resumedAt: resumedAt) {
+            PerformanceTelemetry.log("run_finalize_phase", durationMilliseconds: milliseconds,
+                fields: finalizationPhaseFields(phase: phase, task: task, run: run, traceID: traceID))
+        }
+        return prepared
+    }
+
     @discardableResult
     static func recordSessionTurn(
         task: AgentTask,
         run: TaskRun,
-        message: String
+        message: String,
+        outputObservation: TaskOutputObservation? = nil
     ) -> Bool {
         let start = DispatchTime.now().uptimeNanoseconds
         defer {
@@ -78,7 +100,8 @@ enum AgentRuntimeRunPersistence {
             durationMs: run.completedAt.map { Int($0.timeIntervalSince(run.startedAt) * 1000) },
             runID: run.id
         )
-        let contextSaved = TaskContextStateManager.recordTurn(task: task, run: run, message: message)
+        let contextSaved = TaskContextStateManager.recordTurn(
+            task: task, run: run, message: message, outputObservation: outputObservation)
         guard historySaved && contextSaved else { return false }
 
         // Tier 2 objective re-assessment: opt-in, background-only, and gated by
@@ -109,6 +132,7 @@ enum AgentRuntimeRunPersistence {
         modelContext: ModelContext,
         phase: RunPhase,
         handoffDiscoveredFiles: [TaskOutputDiscoveredFile]? = nil,
+        preparedOutputs: TaskOutputDiscovery.Preparation? = nil,
         autoExport: Bool = true,
         persist: (() -> Bool)? = nil
     ) async -> Bool {
@@ -117,18 +141,22 @@ enum AgentRuntimeRunPersistence {
         // File discovery is independent of SwiftData. Prepare it asynchronously
         // before the ordered model commit so directory traversal does not
         // monopolize the main actor. No SwiftData model crosses actors.
-        let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
         let discoveredFiles: [TaskOutputDiscoveredFile]
+        // The handoff and the checkpoint below each refresh the task's
+        // context. With the observation they answer from memory; without one
+        // each scans the folder again under the actor.
+        var outputObservation: TaskOutputObservation?
         if let handoffDiscoveredFiles {
             discoveredFiles = handoffDiscoveredFiles
         } else {
-            let prepared = await TaskOutputDiscovery.prepareAsync(in: taskFolder)
-            let resumedAt = DispatchTime.now().uptimeNanoseconds
-            discoveredFiles = prepared.files
-            for (phase, milliseconds) in prepared.phaseMilliseconds(resumedAt: resumedAt) {
-                PerformanceTelemetry.log("run_finalize_phase", durationMilliseconds: milliseconds,
-                    fields: finalizationPhaseFields(phase: phase, task: task, run: run, traceID: traceID))
+            let prepared: TaskOutputDiscovery.Preparation
+            if let preparedOutputs {
+                prepared = preparedOutputs
+            } else {
+                prepared = await prepareOutputs(for: task, run: run)
             }
+            discoveredFiles = prepared.files
+            outputObservation = prepared.observation
         }
         // Bound the inline output blob now that the run is finalized. Session
         // history already captured the full output via recordSessionTurn before
@@ -156,11 +184,13 @@ enum AgentRuntimeRunPersistence {
                 task: task,
                 run: run,
                 modelContext: modelContext,
-                discoveredFiles: discoveredFiles
+                discoveredFiles: discoveredFiles,
+                outputObservation: outputObservation
             )
         }
         _ = measureFinalizationPhase("mission_checkpoint", task: task, run: run, traceID: traceID) {
-            MissionHardeningService.recordCheckpoint(task: task, run: run, modelContext: modelContext)
+            MissionHardeningService.recordCheckpoint(task: task, run: run, modelContext: modelContext,
+                outputObservation: outputObservation)
         }
 
         let finishedAt = Date()
