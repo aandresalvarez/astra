@@ -101,7 +101,7 @@ extension TaskPublicationDecisionEvidenceReader {
             let timestamp = event.timestamp
             let types = ["tool.result.failed", "git.publish.failed"]
             var query = FetchDescriptor<TaskEvent>(predicate: #Predicate {
-                $0.task != nil && $0.task!.persistentModelID == ownerID && $0.run?.id == runID
+                $0.task?.persistentModelID == ownerID && $0.run?.id == runID
                     && types.contains($0.type) && $0.timestamp >= timestamp
             })
             query.fetchLimit = 1

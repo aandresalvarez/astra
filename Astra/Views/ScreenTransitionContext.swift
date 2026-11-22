@@ -31,7 +31,7 @@ enum ScreenTransitionTaskFacts {
         guard let task else { return [:] }
         var fields = ["input_count": PerformanceTelemetryFields.count(task.inputs.count)]
         let ownerID = task.persistentModelID
-        let runs = FetchDescriptor<TaskRun>(predicate: #Predicate { $0.task != nil && $0.task!.persistentModelID == ownerID })
+        let runs = FetchDescriptor<TaskRun>(predicate: #Predicate { $0.task?.persistentModelID == ownerID })
         if let count = try? context.fetchCount(runs) {
             fields["run_count"] = PerformanceTelemetryFields.count(count)
         }

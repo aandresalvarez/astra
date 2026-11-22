@@ -17,26 +17,27 @@ import ASTRAModels
 /// detached launch view, or one never inserted) has no store to ask, so it is
 /// scanned as before.
 ///
-/// Rows are matched by the task's own persistent identity, which is what the
-/// relationship scan answered. `task.id` cannot decide ownership: importing a
+/// `task.id` narrows the query but does not decide ownership: importing a
 /// workspace as a duplicate restores the exported task and run UUIDs, so two
-/// live tasks can share one. Each predicate unwraps the relationship behind
-/// a nil check so the store can use its index; see `TaskHistoryRead`.
+/// live tasks can share one. Each row is kept only if its owner is this task's
+/// own persistent identity, which is what the relationship scan answered.
 @MainActor
 public enum TaskEventTypeLookup {
     public static func events(ofType type: String, task: AgentTask) -> [TaskEvent] {
-        let owner = task.persistentModelID
-        return fetch(task: task, #Predicate<TaskEvent> { $0.task != nil && $0.task!.persistentModelID == owner && $0.type == type }) {
+        let taskID = task.id
+        let indexed = TaskOwnerPredicate.events(ownedBy: task.persistentModelID, type: type)
+        return fetch(task: task, indexed: indexed, #Predicate<TaskEvent> { $0.task?.id == taskID && $0.type == type }) {
             $0.type == type
         }
     }
 
     /// The events of `type` recorded against `run`.
     public static func events(ofType type: String, task: AgentTask, run: TaskRun) -> [TaskEvent] {
-        let owner = task.persistentModelID
+        let taskID = task.id
         let runID = run.id
-        return fetch(task: task, #Predicate<TaskEvent> {
-            $0.task != nil && $0.task!.persistentModelID == owner && $0.type == type && $0.run?.id == runID
+        let indexed = TaskOwnerPredicate.events(ownedBy: task.persistentModelID, type: type, runID: runID)
+        return fetch(task: task, indexed: indexed, #Predicate<TaskEvent> {
+            $0.task?.id == taskID && $0.type == type && $0.run?.id == runID
         }) {
             $0.type == type && $0.run?.id == runID
         }
@@ -46,18 +47,23 @@ public enum TaskEventTypeLookup {
         events(ofType: type, task: task, run: run).first
     }
 
-    /// `scan` is the same condition as `predicate`, for the tasks no store can
-    /// answer for.
+    /// `scan` is the same condition as `portable`, for the tasks no store can
+    /// answer for. `indexed` selects the same rows through the relationship's
+    /// index, where SwiftData can run it; see `TaskOwnerPredicate`.
     private static func fetch(
         task: AgentTask,
-        _ predicate: Predicate<TaskEvent>,
+        indexed: Predicate<TaskEvent>,
+        _ portable: Predicate<TaskEvent>,
         scan: (TaskEvent) -> Bool
     ) -> [TaskEvent] {
-        guard let modelContext = task.modelContext,
-              let fetched = try? modelContext.fetch(FetchDescriptor<TaskEvent>(predicate: predicate)) else {
+        let owner = task.persistentModelID
+        guard let modelContext = task.modelContext else {
             return task.events.filter { !$0.isDeleted && scan($0) }
         }
-        let owner = task.persistentModelID
+        let predicate = TaskOwnerPredicate.pick(for: owner, in: modelContext, indexed: indexed, portable: portable)
+        guard let fetched = try? modelContext.fetch(FetchDescriptor<TaskEvent>(predicate: predicate)) else {
+            return task.events.filter { !$0.isDeleted && scan($0) }
+        }
         return fetched.filter { !$0.isDeleted && $0.task?.persistentModelID == owner }
     }
 }

@@ -33,14 +33,13 @@ enum TaskAttachmentFilesReader {
     }
 
     static func paths(scope: TaskAttachmentHistoryScope, modelContext: ModelContext) throws -> [String] {
-        let ownerID = scope.ownerID
+        let taskID = scope.taskID
         let messageType = TaskEventTypes.Conversation.userMessage.rawValue
         let planningType = TaskPlanConversationEventTypes.userMessage
         let recordType = TaskEventTypes.Conversation.attachments.rawValue
         let descriptor = FetchDescriptor<TaskEvent>(
             predicate: #Predicate {
-                $0.task != nil && $0.task!.persistentModelID == ownerID
-                    && ($0.type == messageType || $0.type == planningType || $0.type == recordType)
+                $0.task?.id == taskID && ($0.type == messageType || $0.type == planningType || $0.type == recordType)
             },
             sortBy: [SortDescriptor(\TaskEvent.timestamp)]
         )

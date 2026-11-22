@@ -141,7 +141,7 @@ enum ConnectorMutationRequirementResolver {
     /// transcript refresh.
     @MainActor
     static func pendingMutations(
-        owner: PersistentIdentifier,
+        taskID: UUID,
         in modelContext: ModelContext
     ) throws -> [TaskStagedConnectorMutation] {
         let types = [
@@ -154,7 +154,7 @@ enum ConnectorMutationRequirementResolver {
         ]
         let descriptor = FetchDescriptor<TaskEvent>(
             predicate: #Predicate<TaskEvent> { event in
-                event.task != nil && event.task!.persistentModelID == owner && types.contains(event.type)
+                event.task?.id == taskID && types.contains(event.type)
             }
         )
         return pendingMutations(events: try modelContext.fetch(descriptor).map { TaskOutcomeEventRecord(event: $0) })

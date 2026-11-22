@@ -16,14 +16,10 @@ public enum TaskRunRequestAssociation {
         guard let task = run.task, task.modelContext === context, run.modelContext === context else {
             throw Failure.invalidReference
         }
-        // Matched on the run's persistent identity, which its index answers; a
-        // run's UUID has to be looked for in every event the store holds. Not
-        // narrowed to this task: an association recorded under another task
-        // must still reach the check below and be refused.
-        let runOwner = run.persistentModelID
+        let runID = run.id
         let type = TaskEventTypes.ExecutionRequest.runAssociated.rawValue
         let events = try context.fetch(FetchDescriptor<TaskEvent>(predicate: #Predicate {
-            $0.run != nil && $0.run!.persistentModelID == runOwner && $0.type == type
+            $0.run?.id == runID && $0.type == type
         })).filter { !$0.isDeleted && $0.run?.persistentModelID == run.persistentModelID }
         var recorded: TaskRunRequestAssociationPayload?
         for event in events {
@@ -55,9 +51,9 @@ public enum TaskRunRequestAssociation {
             throw Failure.invalidReference
         }
         let sourceID = request.sourceEventID
-        let owner = task.persistentModelID
+        let taskID = task.id
         let sources = try context.fetch(FetchDescriptor<TaskEvent>(predicate: #Predicate {
-            $0.task != nil && $0.task!.persistentModelID == owner && $0.id == sourceID
+            $0.id == sourceID && $0.task?.id == taskID
         })).filter { !$0.isDeleted && $0.task?.persistentModelID == task.persistentModelID }
         guard sources.count == 1 else { throw Failure.invalidReference }
     }

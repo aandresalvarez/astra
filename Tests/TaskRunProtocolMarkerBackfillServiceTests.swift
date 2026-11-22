@@ -160,13 +160,13 @@ struct TaskRunProtocolMarkerBackfillServiceTests {
 
         // Before the backfill every legacy row is a candidate, so no recovered
         // plan progress can be lost while the flag is still unknown.
-        #expect(try TaskPlanStateReader.read(owner: task.persistentModelID, modelContext: context).recoveryRuns.count == 3)
+        #expect(try TaskPlanStateReader.read(taskID: task.id, modelContext: context).recoveryRuns.count == 3)
 
         await TaskRunProtocolMarkerBackfillService.backfill(modelContext: context)
 
         // After it, SQLite rejects the clean rows instead of handing their
         // output blobs to the main actor.
-        let after = try TaskPlanStateReader.read(owner: task.persistentModelID, modelContext: context)
+        let after = try TaskPlanStateReader.read(taskID: task.id, modelContext: context)
         #expect(after.recoveryRuns.map(\.id) == [markerRunID])
     }
 

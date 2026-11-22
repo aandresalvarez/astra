@@ -371,7 +371,7 @@ enum BrowserSessionPolicyContext {
         let userMessageType = TaskEventTypes.Conversation.userMessage.rawValue
         var descriptor = FetchDescriptor<TaskEvent>(
             predicate: #Predicate<TaskEvent> { event in
-                event.type == userMessageType && event.task != nil && event.task!.persistentModelID == owner
+                event.type == userMessageType && event.task?.persistentModelID == owner
             },
             sortBy: [
                 SortDescriptor(\TaskEvent.timestamp, order: .reverse),
@@ -399,7 +399,7 @@ enum BrowserSessionPolicyContext {
     static func hasRuns(task: AgentTask, modelContext: ModelContext) -> Bool {
         let owner = task.persistentModelID
         var descriptor = FetchDescriptor<TaskRun>(
-            predicate: #Predicate<TaskRun> { run in run.task != nil && run.task!.persistentModelID == owner }
+            predicate: #Predicate<TaskRun> { run in run.task?.persistentModelID == owner }
         )
         descriptor.fetchLimit = 1
         return (try? modelContext.fetch(descriptor).isEmpty == false) ?? false

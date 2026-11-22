@@ -372,10 +372,8 @@ public enum AgentTaskForkService {
 
     private static func prefetchedEvents(for task: AgentTask) -> [TaskEvent] {
         guard let context = task.modelContext else { return task.events }
-        let owner = task.persistentModelID
-        let events = try? context.fetch(FetchDescriptor<TaskEvent>(predicate: #Predicate {
-            $0.task != nil && $0.task!.persistentModelID == owner
-        }))
+        let taskID = task.id
+        let events = try? context.fetch(FetchDescriptor<TaskEvent>(predicate: #Predicate { $0.task?.id == taskID }))
         // Hydrate scalar fields together instead of faulting each history row.
         // Relationships still decide membership, including pending edits and
         // imported tasks that happen to share a UUID.

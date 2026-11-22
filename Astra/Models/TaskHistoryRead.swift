@@ -6,66 +6,60 @@ import SwiftData
 /// can authorize a turn or select a checkout using an obsolete value.
 ///
 /// Filtering in the store avoids faulting every tool event on every read.
+/// Imported copies may share UUIDs, so a UUID narrows the query but the
+/// persistent owner decides which rows belong to this task.
 ///
-/// Rows are matched by the task's persistent identity, never by `task.id`:
-/// imported copies may share a UUID, so only the owner says which rows belong
-/// to this task.
-///
-/// **Every predicate writes `$0.task != nil && $0.task!.x == y`, on purpose.**
-/// SwiftData writes the optional chain `$0.task?.x == y` as
-/// `CASE (ZTASK IS NOT NULL) WHEN 1 THEN … ELSE ? END = ?`, which no index can
-/// answer, so the store walks every event it holds to find one task's. On a
-/// production store of 185,665 events each such read took 47 to 82 ms whatever
-/// the task's size, and a context-state refresh makes six. The unwrapped form
-/// becomes `ZTASK IS NOT NULL AND ZTASK = ?`, which the relationship's index
-/// answers: 3 ms for the same rows.
-///
-/// The nil check is not decoration. SwiftData also evaluates the predicate in
-/// memory against unsaved rows, and there a bare `$0.task!` on a row with no
-/// task makes the whole fetch throw. `&&` stops before the unwrap.
-/// `TaskHistoryOwnerQueryTests` holds every predicate in the app to this form.
+/// Each event read offers two predicates for the same rows. The portable one
+/// is the optional chain, which every supported system runs and which scans
+/// the whole event table. The indexed one is used where SwiftData can run it;
+/// see `TaskOwnerPredicate`.
 public enum TaskHistoryRead {
     /// A launch snapshot needs every event, including agent metadata. Fetch
     /// them together instead of faulting the relationship one row at a time.
     public static func events(for task: AgentTask) -> [TaskEvent] {
-        let owner = task.persistentModelID
-        return events(task: task, predicate: #Predicate<TaskEvent> {
-            $0.task != nil && $0.task!.persistentModelID == owner
+        let taskID = task.id
+        let indexed = TaskOwnerPredicate.events(ownedBy: task.persistentModelID)
+        return events(task: task, indexed: indexed, portable: #Predicate<TaskEvent> {
+            $0.task?.id == taskID
         }, matches: { _ in true })
     }
 
     public static func events(for task: AgentTask, ofTypes types: Set<String>) -> [TaskEvent] {
-        let owner = task.persistentModelID
+        let taskID = task.id
         let values = Array(types)
-        return events(task: task, predicate: #Predicate<TaskEvent> {
-            $0.task != nil && $0.task!.persistentModelID == owner && values.contains($0.type)
+        let indexed = TaskOwnerPredicate.events(ownedBy: task.persistentModelID, types: values)
+        return events(task: task, indexed: indexed, portable: #Predicate<TaskEvent> {
+            $0.task?.id == taskID && values.contains($0.type)
         }, matches: { types.contains($0.type) })
     }
 
     /// Prefix rules intentionally include future execution-request event kinds.
     public static func events(for task: AgentTask, ofTypes types: Set<String>, orTypePrefix prefix: String) -> [TaskEvent] {
-        let owner = task.persistentModelID
+        let taskID = task.id
         let values = Array(types)
-        return events(task: task, predicate: #Predicate<TaskEvent> {
-            $0.task != nil && $0.task!.persistentModelID == owner && (values.contains($0.type) || $0.type.starts(with: prefix))
+        let indexed = TaskOwnerPredicate.events(ownedBy: task.persistentModelID, types: values, orTypePrefix: prefix)
+        return events(task: task, indexed: indexed, portable: #Predicate<TaskEvent> {
+            $0.task?.id == taskID && (values.contains($0.type) || $0.type.starts(with: prefix))
         }, matches: { types.contains($0.type) || $0.type.hasPrefix(prefix) })
     }
 
     /// Legacy payloads without a run binding still need their latest saved or
     /// pending occurrence, without faulting unrelated tool output into the UI.
     public static func events(for task: AgentTask, matchingPayload payload: String) -> [TaskEvent] {
-        let owner = task.persistentModelID
-        return events(task: task, predicate: #Predicate<TaskEvent> {
-            $0.task != nil && $0.task!.persistentModelID == owner && $0.payload == payload
+        let taskID = task.id
+        let indexed = TaskOwnerPredicate.events(ownedBy: task.persistentModelID, payload: payload)
+        return events(task: task, indexed: indexed, portable: #Predicate<TaskEvent> {
+            $0.task?.id == taskID && $0.payload == payload
         }, matches: { $0.payload == payload })
     }
 
     /// A run summary needs all of that run's event kinds, including future
     /// provider evidence, without loading unrelated turns.
     public static func events(for task: AgentTask, runID: UUID) -> [TaskEvent] {
-        let owner = task.persistentModelID
-        return events(task: task, predicate: #Predicate<TaskEvent> {
-            $0.task != nil && $0.task!.persistentModelID == owner && $0.run?.id == runID
+        let taskID = task.id
+        let indexed = TaskOwnerPredicate.events(ownedBy: task.persistentModelID, runID: runID)
+        return events(task: task, indexed: indexed, portable: #Predicate<TaskEvent> {
+            $0.task?.id == taskID && $0.run?.id == runID
         }, matches: { $0.run?.id == runID })
     }
 
@@ -76,9 +70,10 @@ public enum TaskHistoryRead {
     }
 
     public static func event(id eventID: UUID, in task: AgentTask) -> TaskEvent? {
-        let owner = task.persistentModelID
-        return events(task: task, predicate: #Predicate<TaskEvent> {
-            $0.task != nil && $0.task!.persistentModelID == owner && $0.id == eventID
+        let taskID = task.id
+        let indexed = TaskOwnerPredicate.events(ownedBy: task.persistentModelID, id: eventID)
+        return events(task: task, indexed: indexed, portable: #Predicate<TaskEvent> {
+            $0.task?.id == taskID && $0.id == eventID
         }, matches: { $0.id == eventID }).first
     }
 
@@ -91,8 +86,9 @@ public enum TaskHistoryRead {
     }
 
     public static func runs(for task: AgentTask) -> [TaskRunRecord] {
+        let taskID = task.id
         let owner = task.persistentModelID
-        let descriptor = FetchDescriptor<TaskRun>(predicate: #Predicate { $0.task != nil && $0.task!.persistentModelID == owner })
+        let descriptor = FetchDescriptor<TaskRun>(predicate: #Predicate { $0.task?.id == taskID })
         let rows = task.modelContext.flatMap { try? $0.fetch(descriptor) } ?? task.runs
         return rows.filter { !$0.isDeleted && $0.task?.persistentModelID == owner }.map {
             TaskRunRecord(id: $0.id, startedAt: $0.startedAt, runStatus: $0.status, stopReason: $0.stopReason)
@@ -101,14 +97,18 @@ public enum TaskHistoryRead {
 
     private static func events(
         task: AgentTask,
-        predicate: Predicate<TaskEvent>,
+        indexed: Predicate<TaskEvent>,
+        portable: Predicate<TaskEvent>,
         matches: (TaskEvent) -> Bool
     ) -> [TaskEvent] {
         let owner = task.persistentModelID
+        guard let context = task.modelContext else {
+            return task.events.filter { !$0.isDeleted && matches($0) }
+        }
+        let predicate = TaskOwnerPredicate.pick(for: owner, in: context, indexed: indexed, portable: portable)
         var descriptor = FetchDescriptor(predicate: predicate)
         descriptor.relationshipKeyPathsForPrefetching = [\TaskEvent.run]
-        guard let context = task.modelContext,
-              let rows = try? context.fetch(descriptor) else {
+        guard let rows = try? context.fetch(descriptor) else {
             return task.events.filter { !$0.isDeleted && matches($0) }
         }
         return rows.filter { !$0.isDeleted && $0.task?.persistentModelID == owner && matches($0) }

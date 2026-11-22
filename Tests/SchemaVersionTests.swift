@@ -737,7 +737,7 @@ struct SchemaVersionTests {
         cleanRun.setOutput("plain")
         context.insert(cleanRun)
         try context.save()
-        let input = try TaskPlanStateReader.read(owner: migratedTask.persistentModelID, modelContext: context)
+        let input = try TaskPlanStateReader.read(taskID: migratedTask.id, modelContext: context)
         #expect(Set(input.recoveryRuns.map(\.id)) == [runID, markerRun.id])
     }
 

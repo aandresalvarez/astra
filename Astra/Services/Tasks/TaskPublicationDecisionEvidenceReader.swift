@@ -117,7 +117,7 @@ enum TaskPublicationDecisionEvidenceReader {
             let useType = TaskEventTypes.Tool.use.rawValue
             let timestamp = failed.timestamp
             var useQuery = FetchDescriptor<TaskEvent>(predicate: #Predicate {
-                $0.task != nil && $0.task!.persistentModelID == ownerID && $0.run?.id == runID
+                $0.task?.persistentModelID == ownerID && $0.run?.id == runID
                     && $0.type == useType && $0.timestamp <= timestamp
             }, sortBy: ordering)
             useQuery.fetchLimit = 1
@@ -144,7 +144,7 @@ enum TaskPublicationDecisionEvidenceReader {
         let ownerID = current.ownerID, runID = current.runID, boundary = previous.timestamp
         let types = ["tool.result.failed", "git.publish.failed"]
         let additions = FetchDescriptor<TaskEvent>(predicate: #Predicate {
-            $0.task != nil && $0.task!.persistentModelID == ownerID && $0.run?.id == runID
+            $0.task?.persistentModelID == ownerID && $0.run?.id == runID
                 && types.contains($0.type) && $0.timestamp > boundary
         })
         // Any backdated failure is outside this count. Edits/deletions are
@@ -152,7 +152,7 @@ enum TaskPublicationDecisionEvidenceReader {
         guard try context.fetchCount(additions) == current.failureCount - old.failureCount else { return false }
         let useType = "tool.use"
         var uses = FetchDescriptor<TaskEvent>(predicate: #Predicate {
-            $0.task != nil && $0.task!.persistentModelID == ownerID && $0.run?.id == runID
+            $0.task?.persistentModelID == ownerID && $0.run?.id == runID
                 && $0.type == useType && $0.timestamp <= boundary
         }, sortBy: ordering)
         guard try context.fetchCount(uses) == old.precedingUseCount else { return false }
@@ -166,7 +166,7 @@ enum TaskPublicationDecisionEvidenceReader {
     ) throws -> Signature {
         let failureTypes = [TaskExternalOutcomeEventTypes.publicationFailed, TaskEventTypes.Tool.resultFailed.rawValue]
         var failures = FetchDescriptor<TaskEvent>(predicate: #Predicate {
-            $0.task != nil && $0.task!.persistentModelID == ownerID && $0.run?.id == runID && failureTypes.contains($0.type)
+            $0.task?.persistentModelID == ownerID && $0.run?.id == runID && failureTypes.contains($0.type)
         }, sortBy: ordering)
         let count = try context.fetchCount(failures)
         failures.fetchLimit = 1
@@ -177,7 +177,7 @@ enum TaskPublicationDecisionEvidenceReader {
             let boundary = newestFailure.timestamp
             let useType = TaskEventTypes.Tool.use.rawValue
             var uses = FetchDescriptor<TaskEvent>(predicate: #Predicate {
-                $0.task != nil && $0.task!.persistentModelID == ownerID && $0.run?.id == runID
+                $0.task?.persistentModelID == ownerID && $0.run?.id == runID
                     && $0.type == useType && $0.timestamp <= boundary
             }, sortBy: ordering)
             useCount = try context.fetchCount(uses)
@@ -194,7 +194,7 @@ enum TaskPublicationDecisionEvidenceReader {
         guard !events.isEmpty else { return true }
         let ids = events.map(\.id)
         let rows = try context.fetch(FetchDescriptor<TaskEvent>(predicate: #Predicate {
-            $0.task != nil && $0.task!.persistentModelID == ownerID && ids.contains($0.id)
+            $0.task?.persistentModelID == ownerID && ids.contains($0.id)
         })).map(TaskEventSnapshot.init)
         return Set(rows) == Set(events)
     }
@@ -207,20 +207,32 @@ enum TaskPublicationDecisionEvidenceReader {
         [SortDescriptor(\TaskEvent.timestamp, order: .reverse), SortDescriptor(\TaskEvent.id, order: .reverse)]
     }
 
-    private static func query(ownerID: PersistentIdentifier, runID: UUID?, type: String) -> FetchDescriptor<TaskEvent> {
+    /// Runs every time a task's thread is opened, so it goes through the
+    /// relationship's index where SwiftData can run that; see
+    /// `TaskOwnerPredicate`. The other reads here only run once a publication
+    /// failure exists.
+    private static func query(
+        ownerID: PersistentIdentifier, runID: UUID?, type: String, in context: ModelContext
+    ) -> FetchDescriptor<TaskEvent> {
         if let runID {
-            return FetchDescriptor(predicate: #Predicate<TaskEvent> {
-                $0.task != nil && $0.task!.persistentModelID == ownerID && $0.run?.id == runID && $0.type == type
-            }, sortBy: ordering)
+            return FetchDescriptor(predicate: TaskOwnerPredicate.pick(
+                for: ownerID, in: context,
+                indexed: TaskOwnerPredicate.events(ownedBy: ownerID, type: type, runID: runID),
+                portable: #Predicate<TaskEvent> {
+                    $0.task?.persistentModelID == ownerID && $0.run?.id == runID && $0.type == type
+                }), sortBy: ordering)
         }
-        return FetchDescriptor(predicate: #Predicate<TaskEvent> {
-            $0.task != nil && $0.task!.persistentModelID == ownerID && $0.type == type
-        }, sortBy: ordering)
+        return FetchDescriptor(predicate: TaskOwnerPredicate.pick(
+            for: ownerID, in: context,
+            indexed: TaskOwnerPredicate.events(ownedBy: ownerID, type: type),
+            portable: #Predicate<TaskEvent> {
+                $0.task?.persistentModelID == ownerID && $0.type == type
+            }), sortBy: ordering)
     }
 
     private static func newest(ownerID: PersistentIdentifier, runID: UUID?, type: String,
                                in context: ModelContext) throws -> TaskEvent? {
-        var descriptor = query(ownerID: ownerID, runID: runID, type: type)
+        var descriptor = query(ownerID: ownerID, runID: runID, type: type, in: context)
         descriptor.fetchLimit = 1
         return try context.fetch(descriptor).first
     }
@@ -232,10 +244,10 @@ enum TaskPublicationDecisionEvidenceReader {
         ownerID: PersistentIdentifier, runID: UUID, type: String, after cutoff: Date? = nil, cache: Cache? = nil, in context: ModelContext,
         match: (TaskEvent) throws -> [TaskEventSnapshot]?
     ) throws -> [TaskEventSnapshot] {
-        var descriptor = query(ownerID: ownerID, runID: runID, type: type)
+        var descriptor = query(ownerID: ownerID, runID: runID, type: type, in: context)
         if let cutoff {
             descriptor = FetchDescriptor(predicate: #Predicate<TaskEvent> {
-                $0.task != nil && $0.task!.persistentModelID == ownerID && $0.run?.id == runID
+                $0.task?.persistentModelID == ownerID && $0.run?.id == runID
                     && $0.type == type && $0.timestamp > cutoff
             }, sortBy: ordering)
         }

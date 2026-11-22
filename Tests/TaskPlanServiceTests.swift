@@ -35,7 +35,7 @@ struct TaskPlanServiceTests {
         ))
         try context.save()
 
-        let input = try TaskPlanStateReader.read(owner: task.persistentModelID, modelContext: context)
+        let input = try TaskPlanStateReader.read(taskID: task.id, modelContext: context)
         let snapshot = try TaskPlanStateSnapshot.refreshed(
             for: task,
             modelContext: context,
@@ -80,7 +80,7 @@ struct TaskPlanServiceTests {
         }
         try context.save()
 
-        let input = try TaskPlanStateReader.read(owner: task.persistentModelID, modelContext: context)
+        let input = try TaskPlanStateReader.read(taskID: task.id, modelContext: context)
         let snapshot = try TaskPlanStateSnapshot.refreshed(
             for: task,
             modelContext: context,

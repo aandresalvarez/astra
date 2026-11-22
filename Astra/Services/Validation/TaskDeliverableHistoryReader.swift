@@ -30,7 +30,7 @@ enum TaskDeliverableHistoryReader {
         let planFinished = TaskEventTypes.Plan.executionCompleted.rawValue
         let prefix = TaskDeliverableExpectation.userApprovalPayloadPrefix
         var met = FetchDescriptor<TaskEvent>(predicate: #Predicate {
-            $0.task != nil && $0.task!.persistentModelID == ownerID && $0.timestamp < startedAt
+            $0.task?.persistentModelID == ownerID && $0.timestamp < startedAt
                 && ($0.type == planFinished || ($0.type == approved && $0.payload.starts(with: prefix)))
         })
         if !pendingEvents { met.fetchLimit = 1 }
@@ -41,7 +41,7 @@ enum TaskDeliverableHistoryReader {
 
         let completed = TaskRunStopReason.completed.rawValue
         var runs = FetchDescriptor<TaskRun>(predicate: #Predicate {
-            $0.task != nil && $0.task!.persistentModelID == ownerID && $0.startedAt < startedAt && $0.stopReason == completed
+            $0.task?.persistentModelID == ownerID && $0.startedAt < startedAt && $0.stopReason == completed
         }, sortBy: [SortDescriptor(\TaskRun.startedAt, order: .reverse), SortDescriptor(\TaskRun.id, order: .reverse)])
         runs.fetchLimit = pageSize
         while true {
@@ -83,7 +83,7 @@ enum TaskDeliverableHistoryReader {
         let target: UUID? = runID
         let userMessage = TaskEventTypes.Conversation.userMessage.rawValue
         var message = FetchDescriptor<TaskEvent>(predicate: #Predicate {
-            $0.task != nil && $0.task!.persistentModelID == ownerID && $0.run?.id == target && $0.type == userMessage
+            $0.task?.persistentModelID == ownerID && $0.run?.id == target && $0.type == userMessage
         })
         if !pendingEvents { message.fetchLimit = 1 }
         if try context.fetch(message).contains(where: {
@@ -92,7 +92,7 @@ enum TaskDeliverableHistoryReader {
 
         let types = sourceTypes
         let sources = FetchDescriptor<TaskEvent>(predicate: #Predicate {
-            $0.task != nil && $0.task!.persistentModelID == ownerID && $0.run?.id == target && types.contains($0.type)
+            $0.task?.persistentModelID == ownerID && $0.run?.id == target && types.contains($0.type)
         })
         return try context.fetch(sources).contains {
             !$0.isDeleted && $0.task?.persistentModelID == ownerID && $0.run?.id == target
@@ -109,7 +109,7 @@ enum TaskDeliverableHistoryReader {
         // One complete query for this run batch: source pages can lose rows
         // when SwiftData merges pending inserts/deletions around an offset.
         let sources = FetchDescriptor<TaskEvent>(predicate: #Predicate {
-            $0.task != nil && $0.task!.persistentModelID == ownerID
+            $0.task?.persistentModelID == ownerID
                 && $0.run.flatMap { targets.contains($0.id) } == true && types.contains($0.type)
         })
         var result: Set<UUID> = []

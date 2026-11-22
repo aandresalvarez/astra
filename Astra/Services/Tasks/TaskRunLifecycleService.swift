@@ -304,13 +304,14 @@ enum TaskRunLifecycleService {
     }
 
     private static func fetchIncompleteRuns(of task: AgentTask, modelContext: ModelContext) -> [TaskRun] {
-        let owner = task.persistentModelID
+        let taskID = task.id
         let descriptor = FetchDescriptor<TaskRun>(
-            predicate: #Predicate<TaskRun> { $0.task != nil && $0.task!.persistentModelID == owner && $0.completedAt == nil }
+            predicate: #Predicate<TaskRun> { $0.task?.id == taskID && $0.completedAt == nil }
         )
         guard let runs = try? modelContext.fetch(descriptor) else {
             return task.runs.filter { $0.completedAt == nil }
         }
+        let owner = task.persistentModelID
         return runs.filter { !$0.isDeleted && $0.task?.persistentModelID == owner }
     }
 

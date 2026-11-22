@@ -23,9 +23,13 @@ enum AgentEventCompactor {
         let summaryType = TaskEventTypes.Activity.compacted.rawValue
         let captured = TaskEventTypes.System.runtimeResultCaptured.rawValue
         let prepared = TaskEventTypes.System.runtimeOutcomePrepared.rawValue
-        let predicate = #Predicate<TaskEvent> {
-            $0.task != nil && $0.task!.persistentModelID == ownerID && $0.type != summaryType && $0.type != captured && $0.type != prepared
+        let portable = #Predicate<TaskEvent> {
+            $0.task?.persistentModelID == ownerID && $0.type != summaryType && $0.type != captured && $0.type != prepared
         }
+        let predicate = TaskOwnerPredicate.pick(
+            for: ownerID, in: modelContext,
+            indexed: TaskOwnerPredicate.events(ownedBy: ownerID, excludingTypes: summaryType, captured, prepared),
+            portable: portable)
         do {
             let count = try modelContext.fetchCount(FetchDescriptor<TaskEvent>(predicate: predicate))
             guard count > threshold else { return }
@@ -41,7 +45,10 @@ enum AgentEventCompactor {
                 + "\nCompacted detail index:\n" + semanticSummaryLines(from: sample).joined(separator: "\n")
                 + "\nEvidence remains in task history. Latest sampled event: \(sample.last?.id.uuidString ?? "none")."
             let summaries = FetchDescriptor<TaskEvent>(
-                predicate: #Predicate<TaskEvent> { $0.task != nil && $0.task!.persistentModelID == ownerID && $0.type == summaryType },
+                predicate: TaskOwnerPredicate.pick(
+                    for: ownerID, in: modelContext,
+                    indexed: TaskOwnerPredicate.events(ownedBy: ownerID, type: summaryType),
+                    portable: #Predicate<TaskEvent> { $0.task?.persistentModelID == ownerID && $0.type == summaryType }),
                 sortBy: [SortDescriptor(\TaskEvent.timestamp, order: .reverse)])
             // Legacy deletion summaries contain the only surviving description
             // of their lost details. Never overwrite those.
