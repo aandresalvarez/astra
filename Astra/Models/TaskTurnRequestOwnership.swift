@@ -62,12 +62,49 @@ public enum TaskTurnRequestOwnership {
         }
     }
 
+    /// The candidates of several tasks in one lookup, resolved as
+    /// `candidates(taskID:in:)` resolves one: by identity, without refreshing
+    /// the context's loaded graph, pending duplicates and deletions included.
+    ///
+    /// No index serves a lookup by a task's portable ID, so each one walks
+    /// the task table. A caller that goes over many tasks, as a workspace's
+    /// mirror export does, asks here once instead of once per task.
+    public static func candidates(
+        taskIDs: [UUID], in context: ModelContext, batch: Int = candidateLookupBatch
+    ) throws -> [AgentTask] {
+        let wanted = Array(Set(taskIDs))
+        let size = max(1, batch)
+        var found: [AgentTask] = []
+        // Bounded pieces keep each statement's ID list well inside what the
+        // store accepts in one.
+        for start in stride(from: 0, to: wanted.count, by: size) {
+            let piece = Array(wanted[start..<min(start + size, wanted.count)])
+            let identifiers = try context.fetchIdentifiers(
+                FetchDescriptor<AgentTask>(predicate: #Predicate { piece.contains($0.id) }))
+            for identifier in identifiers {
+                guard let task = context.model(for: identifier) as? AgentTask else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                found.append(task)
+            }
+        }
+        return found
+    }
+
+    public static let candidateLookupBatch = 500
+
     public static func resolve(_ request: TaskTurnRequest, in context: ModelContext) throws -> AgentTask? {
         resolve(request, among: try candidates(taskID: request.taskID, in: context))
     }
 
     public static func owned(_ requests: [TaskTurnRequest], by task: AgentTask, in context: ModelContext) throws -> [TaskTurnRequest] {
         var resolver = Resolver(candidates: try candidates(taskID: task.id, in: context))
+        return owned(requests, by: task, resolver: &resolver)
+    }
+
+    /// `owned(_:by:in:)` against a resolver the caller already holds, built
+    /// from candidates that cover `task`.
+    public static func owned(_ requests: [TaskTurnRequest], by task: AgentTask, resolver: inout Resolver) -> [TaskTurnRequest] {
         let owner = task.persistentModelID
         return requests.filter { resolver.resolve($0)?.persistentModelID == owner }
     }
