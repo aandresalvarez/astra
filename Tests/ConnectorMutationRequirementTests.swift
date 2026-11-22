@@ -181,10 +181,10 @@ struct ConnectorMutationRequirementTests {
         context.insert(noise)
         try context.save()
 
-        let fetched = try ConnectorMutationRequirementResolver.pendingMutations(taskID: task.id, in: context)
+        let fetched = try ConnectorMutationRequirementResolver.pendingMutations(owner: task.persistentModelID, in: context)
         #expect(fetched.map(\.stagedPayloadPath) == [mine])
         #expect(fetched == ConnectorMutationRequirementResolver.pendingMutations(task: task))
-        #expect(try ConnectorMutationRequirementResolver.pendingMutations(taskID: otherTask.id, in: context).isEmpty)
+        #expect(try ConnectorMutationRequirementResolver.pendingMutations(owner: otherTask.persistentModelID, in: context).isEmpty)
     }
 
     // MARK: - Helpers

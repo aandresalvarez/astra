@@ -1314,7 +1314,7 @@ enum AgentEventRecorder {
         case .teammateCompleted(let taskId, let parsedName, let status):
             // A completion frame rarely carries the description its start
             // was named from, so the started event owns the name.
-            let name = startedTeammateName(agentId: taskId, taskID: task.id, modelContext: modelContext) ?? parsedName
+            let name = startedTeammateName(agentId: taskId, owner: task.persistentModelID, modelContext: modelContext) ?? parsedName
             // `team.agent.completed` marks the end of the subagent's run
             // whatever its outcome; the payload and audit say which outcome.
             // The audit is team-scoped: a `task.*` verdict here would be read
@@ -1359,12 +1359,14 @@ enum AgentEventRecorder {
     /// The name this task's latest `team.agent.started` event gave the agent
     /// with `agentId`, or nil when that start was never recorded.
     @MainActor
-    private static func startedTeammateName(agentId: String, taskID: UUID, modelContext: ModelContext) -> String? {
+    private static func startedTeammateName(
+        agentId: String, owner: PersistentIdentifier, modelContext: ModelContext
+    ) -> String? {
         guard !agentId.isEmpty else { return nil }
         let startedType = TaskEventTypes.Team.agentStarted.rawValue
         var descriptor = FetchDescriptor<TaskEvent>(
             predicate: #Predicate<TaskEvent> { event in
-                event.type == startedType && event.agentId == agentId && event.task?.id == taskID
+                event.task != nil && event.task!.persistentModelID == owner && event.type == startedType && event.agentId == agentId
             },
             sortBy: [
                 SortDescriptor(\TaskEvent.timestamp, order: .reverse),

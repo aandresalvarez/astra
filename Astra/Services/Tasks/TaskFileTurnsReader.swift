@@ -41,17 +41,17 @@ enum TaskFileTurnsReader {
         guard let task = try modelContext.fetch(taskDescriptor).first else { return nil }
 
         let runs = try modelContext.fetch(FetchDescriptor<TaskRun>(
-            predicate: #Predicate<TaskRun> { $0.task?.persistentModelID == ownerID }
+            predicate: #Predicate<TaskRun> { $0.task != nil && $0.task!.persistentModelID == ownerID }
         ))
         let userMessage = TaskEventTypes.Conversation.userMessage.rawValue
         let planUserMessage = TaskPlanConversationEventTypes.userMessage
         let messages = try modelContext.fetch(FetchDescriptor<TaskEvent>(
             predicate: #Predicate<TaskEvent> {
-                $0.task?.persistentModelID == ownerID && ($0.type == userMessage || $0.type == planUserMessage)
+                $0.task != nil && $0.task!.persistentModelID == ownerID && ($0.type == userMessage || $0.type == planUserMessage)
             }
         ))
         var artifactDescriptor = FetchDescriptor<Artifact>(
-            predicate: #Predicate<Artifact> { $0.task?.persistentModelID == ownerID }
+            predicate: #Predicate<Artifact> { $0.task != nil && $0.task!.persistentModelID == ownerID }
         )
         // A tool write stores the file's whole content on its row; only the
         // path and time are needed, and one task has over 13,000 rows.
@@ -80,7 +80,7 @@ enum TaskFileTurnsReader {
             let ancestorOwnerID = ancestor.persistentModelID
             let forkedAt = fork.createdAt
             var ancestorArtifacts = FetchDescriptor<Artifact>(
-                predicate: #Predicate<Artifact> { $0.task?.persistentModelID == ancestorOwnerID && $0.createdAt <= forkedAt }
+                predicate: #Predicate<Artifact> { $0.task != nil && $0.task!.persistentModelID == ancestorOwnerID && $0.createdAt <= forkedAt }
             )
             ancestorArtifacts.propertiesToFetch = [\.path, \.createdAt]
             artifacts += try modelContext.fetch(ancestorArtifacts)

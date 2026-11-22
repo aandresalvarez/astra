@@ -9,11 +9,15 @@ struct TaskPlanStateReadInput {
 
 /// Reads only the durable rows that can affect the plan projection. Ordinary
 /// conversation history never needs to fault into memory to render plan UI.
+///
+/// The rows are matched by the task's persistent identity, through a checked
+/// unwrap of the relationship. The optional chain made each of the four reads
+/// below walk the whole table; see `TaskHistoryRead`.
 @MainActor
 enum TaskPlanStateReader {
     /// Nonisolated because `TaskPlanService.reconstruct(for:)` is: it runs on
     /// the caller's context exactly as the relationship read it replaces did.
-    nonisolated static func read(taskID: UUID, modelContext: ModelContext) throws -> TaskPlanStateReadInput {
+    nonisolated static func read(owner: PersistentIdentifier, modelContext: ModelContext) throws -> TaskPlanStateReadInput {
         let created = TaskPlanEventTypes.created
         let updated = TaskPlanEventTypes.updated
         let approved = TaskPlanEventTypes.approved
@@ -27,7 +31,7 @@ enum TaskPlanStateReader {
         let stepSkipped = TaskPlanEventTypes.stepSkipped
         let planEvents = try modelContext.fetch(FetchDescriptor<TaskEvent>(
             predicate: #Predicate<TaskEvent> {
-                $0.task?.id == taskID && (
+                $0.task != nil && $0.task!.persistentModelID == owner && (
                     $0.type == created
                         || $0.type == updated
                         || $0.type == approved
@@ -37,7 +41,7 @@ enum TaskPlanStateReader {
         ))
         let executionEvents = try modelContext.fetch(FetchDescriptor<TaskEvent>(
             predicate: #Predicate<TaskEvent> {
-                $0.task?.id == taskID && (
+                $0.task != nil && $0.task!.persistentModelID == owner && (
                     $0.type == executionStarted
                         || $0.type == executionCompleted
                         || $0.type == executionFailed
@@ -46,7 +50,7 @@ enum TaskPlanStateReader {
         ))
         let stepEvents = try modelContext.fetch(FetchDescriptor<TaskEvent>(
             predicate: #Predicate<TaskEvent> {
-                $0.task?.id == taskID && (
+                $0.task != nil && $0.task!.persistentModelID == owner && (
                     $0.type == stepStarted
                         || $0.type == stepCompleted
                         || $0.type == stepBlocked
@@ -66,7 +70,7 @@ enum TaskPlanStateReader {
         // `v16StoreMigratesToUnknownProtocolMarkerFlag`).
         let runDescriptor = FetchDescriptor<TaskRun>(
             predicate: #Predicate<TaskRun> {
-                $0.task?.id == taskID
+                $0.task != nil && $0.task!.persistentModelID == owner
                     && ($0.hasProtocolEvents == nil || $0.hasProtocolEvents == true)
             },
             sortBy: [

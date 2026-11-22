@@ -109,8 +109,9 @@ public enum TaskOutputWorkspaceDiscovery {
             // Pre-event attempts can still be resolved before reassociation.
             let userMessage = TaskEventTypes.Conversation.userMessage.rawValue
             let requestPrefix = "execution.request."
+            let owner = task.persistentModelID
             let sourceEvents = try context.fetch(FetchDescriptor<TaskEvent>(predicate: #Predicate {
-                $0.task?.id == taskID && $0.run?.id == runID
+                $0.task != nil && $0.task!.persistentModelID == owner && $0.run?.id == runID
                     && ($0.type == userMessage || $0.type.starts(with: requestPrefix))
             }))
             let sourceIDs = sourceEvents.filter { $0.task?.persistentModelID == task.persistentModelID }.map(\.id)

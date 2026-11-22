@@ -213,7 +213,7 @@ struct TaskDeliverableFollowUpTests {
 
         for run in [stepRun, clarifyRun, followUpRun] {
             let stored = try TaskDeliverableExpectation.followsUpDeliveredRequest(
-                taskID: fixture.task.id, runID: run.id, startedAt: run.startedAt, in: fixture.context
+                owner: fixture.task.persistentModelID, runID: run.id, startedAt: run.startedAt, in: fixture.context
             )
             #expect(stored == TaskDeliverableExpectation.followsUpDeliveredRequest(run, in: fixture.task))
         }
@@ -494,7 +494,7 @@ private final class DeliverableFollowUpFixture {
         let snapshot = TaskThreadSnapshot(input: TaskThreadSnapshotInput(task: task, maxRuns: maxRuns))
         let latestRun = try #require(snapshot.latestRun)
         let followsUp = try TaskDeliverableExpectation.followsUpDeliveredRequest(
-            taskID: task.id,
+            owner: task.persistentModelID,
             runID: latestRun.id,
             startedAt: latestRun.startedAt,
             in: context

@@ -85,18 +85,18 @@ enum TaskDeliverableExpectation {
     /// as still owing, which is the conservative answer.
     @MainActor
     static func followsUpDeliveredRequest(
-        taskID: UUID,
+        owner: PersistentIdentifier,
         runID: UUID,
         startedAt: Date,
         in modelContext: ModelContext
     ) throws -> Bool {
-        guard try runStartsByConversation(runID, in: modelContext) else { return false }
+        guard try runStartsByConversation(runID, owner: owner, in: modelContext) else { return false }
 
         let approved = TaskEventTypes.Task.approved.rawValue
         let planFinished = TaskEventTypes.Plan.executionCompleted.rawValue
         let approvalPrefix = userApprovalPayloadPrefix
         var metDescriptor = FetchDescriptor<TaskEvent>(predicate: #Predicate<TaskEvent> {
-            $0.task?.id == taskID && $0.timestamp < startedAt
+            $0.task != nil && $0.task!.persistentModelID == owner && $0.timestamp < startedAt
                 && ($0.type == planFinished || ($0.type == approved && $0.payload.starts(with: approvalPrefix)))
         })
         metDescriptor.fetchLimit = 1
@@ -105,13 +105,13 @@ enum TaskDeliverableExpectation {
         let completed = TaskRunStopReason.completed.rawValue
         var runDescriptor = FetchDescriptor<TaskRun>(
             predicate: #Predicate<TaskRun> {
-                $0.task?.id == taskID && $0.startedAt < startedAt && $0.stopReason == completed
+                $0.task != nil && $0.task!.persistentModelID == owner && $0.startedAt < startedAt && $0.stopReason == completed
             },
             sortBy: [SortDescriptor(\.startedAt, order: .reverse)]
         )
         runDescriptor.fetchLimit = recentCompletedRunLimit
         for earlierRun in try modelContext.fetch(runDescriptor) where earlierRun.status == .completed {
-            if try !runStartsAsApprovedPlan(earlierRun.id, in: modelContext) { return true }
+            if try !runStartsAsApprovedPlan(earlierRun.id, owner: owner, in: modelContext) { return true }
         }
         return false
     }
@@ -119,26 +119,32 @@ enum TaskDeliverableExpectation {
     static let recentCompletedRunLimit = 50
 
     @MainActor
-    private static func runSourceEvents(_ runID: UUID, in modelContext: ModelContext) throws -> [TaskEvent] {
+    private static func runSourceEvents(
+        _ runID: UUID, owner: PersistentIdentifier, in modelContext: ModelContext
+    ) throws -> [TaskEvent] {
         let target: UUID? = runID
         let sourceTypes = runSourceEventTypes
         var descriptor = FetchDescriptor<TaskEvent>(predicate: #Predicate<TaskEvent> {
-            $0.run?.id == target && sourceTypes.contains($0.type)
+            $0.task != nil && $0.task!.persistentModelID == owner && $0.run?.id == target && sourceTypes.contains($0.type)
         })
         descriptor.fetchLimit = 4
         return try modelContext.fetch(descriptor)
     }
 
     @MainActor
-    private static func runStartsByConversation(_ runID: UUID, in modelContext: ModelContext) throws -> Bool {
-        try runSourceEvents(runID, in: modelContext).contains {
+    private static func runStartsByConversation(
+        _ runID: UUID, owner: PersistentIdentifier, in modelContext: ModelContext
+    ) throws -> Bool {
+        try runSourceEvents(runID, owner: owner, in: modelContext).contains {
             requestSource(type: $0.type, payload: $0.payload) == .conversation
         }
     }
 
     @MainActor
-    private static func runStartsAsApprovedPlan(_ runID: UUID, in modelContext: ModelContext) throws -> Bool {
-        try runSourceEvents(runID, in: modelContext).contains {
+    private static func runStartsAsApprovedPlan(
+        _ runID: UUID, owner: PersistentIdentifier, in modelContext: ModelContext
+    ) throws -> Bool {
+        try runSourceEvents(runID, owner: owner, in: modelContext).contains {
             requestSource(type: $0.type, payload: $0.payload) == .approvedPlan
         }
     }

@@ -306,7 +306,7 @@ struct TaskDecisionOutcomeRefreshTests {
             if legacy {
                 // The previous view ran this on every updatedAt/snapshot
                 // revision, with the bounded delivery query on main.
-                _ = try TaskDeliverableExpectation.followsUpDeliveredRequest(taskID: task.id,
+                _ = try TaskDeliverableExpectation.followsUpDeliveredRequest(owner: task.persistentModelID,
                     runID: run.id, startedAt: run.startedAt, in: context)
                 _ = TaskExternalOutcomeRequirementResolver.pendingGitHubPullRequest(task: task,
                     targetRunID: run.id, events: current.sortedEvents.map {

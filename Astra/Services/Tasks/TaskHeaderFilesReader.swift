@@ -26,8 +26,8 @@ enum TaskHeaderFilesReader {
 
     static func facts(scope: TaskAttachmentHistoryScope, inputs: [String], taskFolder: String,
                       workspacePath: String, modelContext: ModelContext) throws -> Facts {
-        let taskID = scope.taskID
-        let descriptor = FetchDescriptor<TaskRun>(predicate: #Predicate { $0.task?.id == taskID },
+        let ownerID = scope.ownerID
+        let descriptor = FetchDescriptor<TaskRun>(predicate: #Predicate { $0.task != nil && $0.task!.persistentModelID == ownerID },
             sortBy: [SortDescriptor(\TaskRun.startedAt, order: .reverse), SortDescriptor(\TaskRun.id, order: .reverse)])
         var changes: [StoredFileChange] = []
         var recordedDates: [String: Date] = [:]

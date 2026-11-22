@@ -25,11 +25,11 @@ final class TaskHistoryEvidenceReader: TaskHistoryReading, @unchecked Sendable {
         let captured = TaskEventTypes.System.runtimeResultCaptured.rawValue
         let prepared = TaskEventTypes.System.runtimeOutcomePrepared.rawValue
         let base = #Predicate<TaskEvent> {
-            $0.task?.persistentModelID == ownerID && $0.type != captured && $0.type != prepared
+            $0.task != nil && $0.task!.persistentModelID == ownerID && $0.type != captured && $0.type != prepared
         }
         func event(_ id: UUID) throws -> TaskEvent {
             var descriptor = FetchDescriptor<TaskEvent>(predicate: #Predicate<TaskEvent> {
-                $0.task?.persistentModelID == ownerID && $0.type != captured && $0.type != prepared && $0.id == id
+                $0.task != nil && $0.task!.persistentModelID == ownerID && $0.type != captured && $0.type != prepared && $0.id == id
             })
             descriptor.fetchLimit = 1
             guard let value = try context.fetch(descriptor).first else {
@@ -46,7 +46,7 @@ final class TaskHistoryEvidenceReader: TaskHistoryReading, @unchecked Sendable {
             let boundary = try event(id)
             let timestamp = boundary.timestamp
             predicate = #Predicate<TaskEvent> {
-                $0.task?.persistentModelID == ownerID && $0.type != captured && $0.type != prepared
+                $0.task != nil && $0.task!.persistentModelID == ownerID && $0.type != captured && $0.type != prepared
                     && ($0.timestamp < timestamp || ($0.timestamp == timestamp && $0.id < id))
             }
         }

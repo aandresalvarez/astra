@@ -269,7 +269,7 @@ enum CodexSessionUsageCorrectionService {
         let stats = TaskEventTypes.Task.stats.rawValue
         let reset = ProviderSessionUsageEpoch.resetEventType
         let events = try modelContext.fetch(FetchDescriptor<TaskEvent>(
-            predicate: #Predicate<TaskEvent> { $0.task?.persistentModelID == ownerID && ($0.type == stats || $0.type == reset) },
+            predicate: #Predicate<TaskEvent> { $0.task != nil && $0.task!.persistentModelID == ownerID && ($0.type == stats || $0.type == reset) },
             sortBy: [SortDescriptor(\TaskEvent.timestamp)]
         ))
         let evidence = reportEvidence(events)

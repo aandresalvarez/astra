@@ -74,14 +74,15 @@ enum TaskPlanService: Sendable {
     /// task each reconstruction then fetched every conversation event one row
     /// at a time to find the handful that can change the plan.
     ///
-    /// The reader matches on `task.id`, which a duplicated workspace import
-    /// can share between two live tasks. Any row owned by another task means
-    /// the id alone cannot answer, so that rare case replays the relationship.
+    /// The reader matches on the task's persistent identity, so a duplicated
+    /// workspace import that shares `task.id` between two live tasks cannot
+    /// hand it the other task's rows. The ownership checks below stay as the
+    /// guard for that: a row they reject replays the relationship instead.
     static func reconstruct(for task: AgentTask) -> TaskPlanState {
         let owner = task.persistentModelID
         guard let modelContext = task.modelContext,
-              let input = try? TaskPlanStateReader.read(taskID: task.id, modelContext: modelContext),
-              let newest = try? newestEvent(taskID: task.id, modelContext: modelContext),
+              let input = try? TaskPlanStateReader.read(owner: owner, modelContext: modelContext),
+              let newest = try? newestEvent(owner: owner, modelContext: modelContext),
               newest.task?.persistentModelID == owner,
               input.events.allSatisfy({ $0.task?.persistentModelID == owner }),
               input.recoveryRuns.allSatisfy({ $0.task?.persistentModelID == owner }) else {
@@ -95,9 +96,9 @@ enum TaskPlanService: Sendable {
         return state
     }
 
-    private static func newestEvent(taskID: UUID, modelContext: ModelContext) throws -> TaskEvent? {
+    private static func newestEvent(owner: PersistentIdentifier, modelContext: ModelContext) throws -> TaskEvent? {
         var descriptor = FetchDescriptor<TaskEvent>(
-            predicate: #Predicate<TaskEvent> { $0.task?.id == taskID },
+            predicate: #Predicate<TaskEvent> { $0.task != nil && $0.task!.persistentModelID == owner },
             sortBy: [SortDescriptor(\TaskEvent.timestamp, order: .reverse)]
         )
         descriptor.fetchLimit = 1

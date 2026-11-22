@@ -17,25 +17,26 @@ import ASTRAModels
 /// detached launch view, or one never inserted) has no store to ask, so it is
 /// scanned as before.
 ///
-/// `task.id` narrows the query but does not decide ownership: importing a
+/// Rows are matched by the task's own persistent identity, which is what the
+/// relationship scan answered. `task.id` cannot decide ownership: importing a
 /// workspace as a duplicate restores the exported task and run UUIDs, so two
-/// live tasks can share one. Each row is kept only if its owner is this task's
-/// own persistent identity, which is what the relationship scan answered.
+/// live tasks can share one. Each predicate unwraps the relationship behind
+/// a nil check so the store can use its index; see `TaskHistoryRead`.
 @MainActor
 public enum TaskEventTypeLookup {
     public static func events(ofType type: String, task: AgentTask) -> [TaskEvent] {
-        let taskID = task.id
-        return fetch(task: task, #Predicate<TaskEvent> { $0.task?.id == taskID && $0.type == type }) {
+        let owner = task.persistentModelID
+        return fetch(task: task, #Predicate<TaskEvent> { $0.task != nil && $0.task!.persistentModelID == owner && $0.type == type }) {
             $0.type == type
         }
     }
 
     /// The events of `type` recorded against `run`.
     public static func events(ofType type: String, task: AgentTask, run: TaskRun) -> [TaskEvent] {
-        let taskID = task.id
+        let owner = task.persistentModelID
         let runID = run.id
         return fetch(task: task, #Predicate<TaskEvent> {
-            $0.task?.id == taskID && $0.type == type && $0.run?.id == runID
+            $0.task != nil && $0.task!.persistentModelID == owner && $0.type == type && $0.run?.id == runID
         }) {
             $0.type == type && $0.run?.id == runID
         }

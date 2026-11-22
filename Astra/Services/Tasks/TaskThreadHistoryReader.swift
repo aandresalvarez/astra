@@ -122,10 +122,10 @@ enum TaskThreadHistoryReader {
         guard cursor.ownerID == nil || cursor.ownerID == ownerID else { throw TaskHistoryScope.Failure.ambiguousOwner }
         let startedAt = DispatchTime.now().uptimeNanoseconds
         let events = try modelContext.fetch(FetchDescriptor<TaskEvent>(predicate: #Predicate {
-            $0.task?.persistentModelID == ownerID && eventIDs.contains($0.id)
+            $0.task != nil && $0.task!.persistentModelID == ownerID && eventIDs.contains($0.id)
         }))
         let retainedRuns = try modelContext.fetch(FetchDescriptor<TaskRun>(predicate: #Predicate {
-            $0.task?.persistentModelID == ownerID && runIDs.contains($0.id)
+            $0.task != nil && $0.task!.persistentModelID == ownerID && runIDs.contains($0.id)
         }))
         let liveRuns = try latestRuns(ownerID: ownerID, limit: defaultRunPageSize, modelContext: modelContext)
         let runs = Array(Dictionary((retainedRuns + liveRuns.items).map { ($0.id, $0) },
@@ -300,11 +300,11 @@ enum TaskThreadHistoryReader {
         let owner = TaskEventTypes.System.runtimeExecutionOwnership.rawValue
         let captured = TaskEventTypes.System.runtimeResultCaptured.rawValue
         let events = try modelContext.fetch(FetchDescriptor<TaskEvent>(predicate: #Predicate<TaskEvent> {
-            $0.task?.persistentModelID == ownerID && ($0.type == owner || $0.type == captured || $0.type == "astra.claude_session_usage_unconfirmed"
+            $0.task != nil && $0.task!.persistentModelID == ownerID && ($0.type == owner || $0.type == captured || $0.type == "astra.claude_session_usage_unconfirmed"
                 || $0.type == "astra.claude_session_usage"
                 || ($0.type == "task.stats" && $0.payload.starts(with: "estimated tokens:")))
         }))
-        let allRuns = try modelContext.fetch(FetchDescriptor<TaskRun>(predicate: #Predicate<TaskRun> { $0.task?.persistentModelID == ownerID }))
+        let allRuns = try modelContext.fetch(FetchDescriptor<TaskRun>(predicate: #Predicate<TaskRun> { $0.task != nil && $0.task!.persistentModelID == ownerID }))
         let budgets = TaskRequestBudget.Index(events: events, runs: allRuns)
         return runs.map { run in
             TaskRunSnapshotInput(run: run, budget: run.task.map { budgets.budget(for: run, task: $0) })
@@ -318,10 +318,10 @@ enum TaskThreadHistoryReader {
         modelContext: ModelContext
     ) throws -> (runs: Int, events: Int) {
         let runCount = try modelContext.fetchCount(FetchDescriptor<TaskRun>(
-            predicate: #Predicate<TaskRun> { $0.task?.persistentModelID == ownerID }
+            predicate: #Predicate<TaskRun> { $0.task != nil && $0.task!.persistentModelID == ownerID }
         ))
         let eventCount = try modelContext.fetchCount(FetchDescriptor<TaskEvent>(
-            predicate: #Predicate<TaskEvent> { $0.task?.persistentModelID == ownerID }
+            predicate: #Predicate<TaskEvent> { $0.task != nil && $0.task!.persistentModelID == ownerID }
         ))
         return (runCount, eventCount)
     }
@@ -332,7 +332,7 @@ enum TaskThreadHistoryReader {
         modelContext: ModelContext
     ) throws -> PageResult<TaskRun> {
         var descriptor = FetchDescriptor<TaskRun>(
-            predicate: #Predicate<TaskRun> { $0.task?.persistentModelID == ownerID },
+            predicate: #Predicate<TaskRun> { $0.task != nil && $0.task!.persistentModelID == ownerID },
             sortBy: [
                 SortDescriptor(\TaskRun.startedAt, order: .reverse),
                 SortDescriptor(\TaskRun.id, order: .reverse)
@@ -349,7 +349,7 @@ enum TaskThreadHistoryReader {
         modelContext: ModelContext
     ) throws -> PageResult<TaskEvent> {
         var descriptor = FetchDescriptor<TaskEvent>(
-            predicate: #Predicate<TaskEvent> { $0.task?.persistentModelID == ownerID },
+            predicate: #Predicate<TaskEvent> { $0.task != nil && $0.task!.persistentModelID == ownerID },
             sortBy: [
                 SortDescriptor(\TaskEvent.timestamp, order: .reverse),
                 SortDescriptor(\TaskEvent.id, order: .reverse)
@@ -374,7 +374,7 @@ enum TaskThreadHistoryReader {
         let boundaryDate = cursor.timestamp
         var descriptor = FetchDescriptor<TaskEvent>(
             predicate: #Predicate<TaskEvent> {
-                $0.task?.persistentModelID == ownerID && $0.timestamp >= boundaryDate
+                $0.task != nil && $0.task!.persistentModelID == ownerID && $0.timestamp >= boundaryDate
             },
             sortBy: [
                 SortDescriptor(\TaskEvent.timestamp, order: .reverse),
@@ -399,7 +399,7 @@ enum TaskThreadHistoryReader {
         let boundaryID = cursor.id
         var boundaryDescriptor = FetchDescriptor<TaskRun>(
             predicate: #Predicate<TaskRun> {
-                $0.task?.persistentModelID == ownerID
+                $0.task != nil && $0.task!.persistentModelID == ownerID
                     && $0.startedAt == boundaryDate
                     && $0.id < boundaryID
             },
@@ -428,7 +428,7 @@ enum TaskThreadHistoryReader {
         if remaining > 0 {
             var earlierDescriptor = FetchDescriptor<TaskRun>(
                 predicate: #Predicate<TaskRun> {
-                    $0.task?.persistentModelID == ownerID && $0.startedAt < boundaryDate
+                    $0.task != nil && $0.task!.persistentModelID == ownerID && $0.startedAt < boundaryDate
                 },
                 sortBy: [
                     SortDescriptor(\TaskRun.startedAt, order: .reverse),
@@ -451,7 +451,7 @@ enum TaskThreadHistoryReader {
         let boundaryID = cursor.id
         var boundaryDescriptor = FetchDescriptor<TaskEvent>(
             predicate: #Predicate<TaskEvent> {
-                $0.task?.persistentModelID == ownerID
+                $0.task != nil && $0.task!.persistentModelID == ownerID
                     && $0.timestamp == boundaryDate
                     && $0.id < boundaryID
             },
@@ -464,7 +464,7 @@ enum TaskThreadHistoryReader {
         if remaining > 0 {
             var earlierDescriptor = FetchDescriptor<TaskEvent>(
                 predicate: #Predicate<TaskEvent> {
-                    $0.task?.persistentModelID == ownerID && $0.timestamp < boundaryDate
+                    $0.task != nil && $0.task!.persistentModelID == ownerID && $0.timestamp < boundaryDate
                 },
                 sortBy: [
                     SortDescriptor(\TaskEvent.timestamp, order: .reverse),
@@ -491,7 +491,7 @@ enum TaskThreadHistoryReader {
         let stateEventTypes = TaskThreadStateEventPolicy.eventTypes
         var descriptor = FetchDescriptor<TaskEvent>(
             predicate: #Predicate<TaskEvent> {
-                $0.task?.persistentModelID == ownerID && stateEventTypes.contains($0.type)
+                $0.task != nil && $0.task!.persistentModelID == ownerID && stateEventTypes.contains($0.type)
             }
         )
         // `TaskEventSnapshot` reads `event.run?.id` for every row, so prefetch the
