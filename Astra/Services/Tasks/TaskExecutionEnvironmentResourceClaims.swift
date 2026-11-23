@@ -18,11 +18,15 @@ import ASTRAPersistence
 /// access over SSH: a run declared read-only still gets a shell on the host
 /// with the login's own permissions, so two "readers" could both write.
 extension TaskExecutionResourceClaimResolver {
+    /// `readOnlyInputPaths` are the request's own read-only inputs beyond the
+    /// task's (current-message attachments and sandbox paths approved for a
+    /// retry), mounted into the container like task inputs.
     static func environmentClaims(
         for task: AgentTask,
-        workspaceAccess: TaskExecutionResourceAccess
+        workspaceAccess: TaskExecutionResourceAccess,
+        readOnlyInputPaths: [String] = []
     ) -> [TaskExecutionResourceClaim] {
-        dockerMountClaims(for: task, workspaceAccess: workspaceAccess)
+        dockerMountClaims(for: task, workspaceAccess: workspaceAccess, readOnlyInputPaths: readOnlyInputPaths)
             + remoteDirectoryClaims(for: task, workspaceAccess: workspaceAccess)
     }
 
@@ -70,6 +74,7 @@ extension TaskExecutionResourceClaimResolver {
     static func dockerMountClaims(
         for task: AgentTask,
         workspaceAccess: TaskExecutionResourceAccess,
+        readOnlyInputPaths: [String] = [],
         homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path
     ) -> [TaskExecutionResourceClaim] {
         let environment = launchEnvironment(for: task)
@@ -77,8 +82,11 @@ extension TaskExecutionResourceClaimResolver {
         let declared = Set((environment.mounts.map(\.hostPath)
             + environment.effectiveCredentialProjections.map(\.hostPath)).map(mountIdentity))
         let anticipated = anticipatedCredentialMount(for: environment, task: task, homeDirectoryPath: homeDirectoryPath)
-        guard !declared.isEmpty || anticipated != nil else { return [] }
         let access = TaskWorkspaceAccess(task: task)
+        // Task inputs and the request's own inputs are mounted read-only from
+        // wherever they live, often outside every workspace claim.
+        let inputs = (access.runtimeReadOnlyInputPaths + readOnlyInputPaths).map(mountIdentity)
+        guard !declared.isEmpty || anticipated != nil || !inputs.isEmpty else { return [] }
         let currentDirectory = access.codeWorkingDirectory.isEmpty
             ? access.effectiveWorkspacePath : access.codeWorkingDirectory
         guard !currentDirectory.isEmpty else { return [] }
@@ -93,10 +101,12 @@ extension TaskExecutionResourceClaimResolver {
 
         var needed: [String: TaskExecutionResourceAccess] = [:]
         for mount in DockerExecutionPlanner.mountPlan(
-            currentDirectory: currentDirectory, environment: environment, task: task, workspaceAccess: workspaceAccess
+            currentDirectory: currentDirectory, environment: environment, task: task, workspaceAccess: workspaceAccess,
+            additionalReadOnlyInputPaths: readOnlyInputPaths
         ) {
             let host = mountIdentity(mount.hostPath)
-            guard declared.contains(host), !isAtOrInside(host, ownFolders) else { continue }
+            let isInput = mount.access == .readOnly && isAtOrInside(host, inputs)
+            guard declared.contains(host) || isInput, !isAtOrInside(host, ownFolders) else { continue }
             let writable = mount.access == .readWrite
             guard !isAtOrInside(host, writable ? heldWritable : heldReadable) else { continue }
             needed[host] = writable || needed[host] == .exclusive ? .exclusive : .shared

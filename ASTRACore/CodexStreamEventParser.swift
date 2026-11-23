@@ -158,9 +158,18 @@ public enum CodexStreamEventParser {
             let itemID = string(in: item, keys: ["id", "call_id", "callId"])
             if let status = string(in: item, keys: ["status"])?.lowercased(),
                failedItemStatuses.contains(status) {
-                // Drops the changes held since the start.
+                // Drops the changes held since the start. A cancellation is
+                // still an error result, so the changes are dropped, but its
+                // outcome stays a cancellation.
                 guard let itemID else { return [.control(type: "item.completed.file_change.\(status)")] }
-                return [.toolResult(id: itemID, content: "file_change \(status)", isError: true)]
+                let reported = AgentOperationOutcome(providerStatus: status, exitCode: nil)
+                return [
+                    .operation(.finished(
+                        operationID: itemID, outcome: reported == .cancelled ? .cancelled : .failed,
+                        exitCode: nil, providerStatus: status
+                    )),
+                    .toolResult(id: itemID, content: "file_change \(status)", isError: true)
+                ]
             }
             let changes = fileChangeEvents(from: item, toolUseID: itemID)
             guard !changes.isEmpty else { return [.control(type: fileChangeControlType)] }

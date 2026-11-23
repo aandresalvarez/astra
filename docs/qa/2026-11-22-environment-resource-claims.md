@@ -21,6 +21,11 @@ folder the other mounts.
   wait for workspace writers.
 - The task's own folder, its worktree's Git metadata and mounts inside folders
   the task already holds as workspace claims are left to those claims.
+- Read-only inputs the container mounts from outside the workspace are
+  claimed as a reader too: task inputs, the request's attachments, and
+  sandbox paths approved for a retry. They are frozen with the request, so a
+  container writing one of those folders and the task reading it never run
+  together, while two readers do.
 - If the launch would mount a folder its admitted lease does not cover (a
   read-write mount needs a writer's claim at or above it, a read-only mount any
   claim there), the run stops with the workspace-drift error instead of

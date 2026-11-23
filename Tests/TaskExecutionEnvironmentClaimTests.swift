@@ -166,6 +166,35 @@ struct TaskExecutionEnvironmentClaimTests {
         }
     }
 
+    @Test("Read-only inputs a container mounts from outside the workspace are claimed as a reader")
+    func readOnlyInputsAreClaimed() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let shared = try fixture.directory("shared-dataset")
+        let attachment = try fixture.directory("attached-report")
+        // A task that reads the dataset as an input, and one whose container
+        // writes it.
+        let reader = try fixture.dockerTask("reader", mounts: [])
+        reader.inputs = [shared]
+        let writer = try fixture.dockerTask("writer", mounts: [mount(shared, .readWrite)])
+
+        let claims = TaskExecutionResourceClaimResolver.claims(for: reader)
+        #expect(claims.contains { $0.kind == .docker && TaskExecutionResourceBroker.canonicalKey(for: $0)
+            == TaskExecutionResourceBroker.canonicalKey(kind: .docker, key: shared) && $0.access == .shared })
+        #expect(!TaskExecutionResourceBroker.canAcquire(fixture.lease(reader), active: fixture.lease(writer)))
+        #expect(!TaskExecutionResourceBroker.canAcquire(fixture.lease(writer), active: fixture.lease(reader)))
+
+        // A request's own inputs (an attachment) are claimed the same way.
+        let withAttachment = TaskExecutionResourceClaimResolver.claims(for: reader, readOnlyInputPaths: [attachment])
+        #expect(withAttachment.contains { $0.kind == .docker && TaskExecutionResourceBroker.canonicalKey(for: $0)
+            == TaskExecutionResourceBroker.canonicalKey(kind: .docker, key: attachment) && $0.access == .shared })
+
+        // Two readers of the same input still run together.
+        let otherReader = try fixture.dockerTask("other-reader", mounts: [])
+        otherReader.inputs = [shared]
+        #expect(TaskExecutionResourceBroker.canAcquire(fixture.lease(otherReader), active: fixture.lease(reader)))
+    }
+
     @Test("A launch stops when its environment gained a writable mount after admission")
     func unadmittedWritableMountIsDrift() throws {
         let fixture = try Fixture()

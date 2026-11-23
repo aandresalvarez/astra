@@ -462,7 +462,13 @@ enum ExecutionRequestSubmissionService {
             resourceClaims: TaskExecutionResourceClaimResolver.claims(
                 for: task,
                 acceptedTurn: acceptedTurn,
-                approvedPlan: approvedPlan
+                approvedPlan: approvedPlan,
+                // What the launch mounts read-only for this request: its
+                // attachments, and sandbox paths approved for its retry.
+                readOnlyInputPaths: attachmentPaths + TaskLaunchResourceResolver.approvedSandboxReadablePaths(
+                    from: decodeSourcePayload(event)?.executionPolicyOverride?.permissionGrants ?? [],
+                    homeDirectoryPath: FileManager.default.homeDirectoryForCurrentUser.path
+                )
             ),
             turnIntentSnapshot: turnIntentSnapshot,
             pluginDefinitions: TaskExecutionLaunchSnapshotApplicator.pluginDefinitions(for: task),

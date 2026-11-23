@@ -10,7 +10,8 @@ enum TaskExecutionResourceClaimResolver {
     static func claims(
         for task: AgentTask,
         acceptedTurn: String? = nil,
-        approvedPlan: TaskPlanPayload? = nil
+        approvedPlan: TaskPlanPayload? = nil,
+        readOnlyInputPaths: [String] = []
     ) -> [TaskExecutionResourceClaim] {
         let access: TaskExecutionResourceAccess = TaskWorkspaceConsultationPolicy.hasCommandAssertions(in: approvedPlan)
             ? .exclusive : workspaceAccess(for: task, acceptedTurn: acceptedTurn)
@@ -58,7 +59,8 @@ enum TaskExecutionResourceClaimResolver {
         }
         // Docker mounts and the remote folder follow the workspace access:
         // see `environmentClaims`.
-        return workspaceClaims + readOnlyClaims + gitClaims + environmentClaims(for: task, workspaceAccess: access)
+        return workspaceClaims + readOnlyClaims + gitClaims
+            + environmentClaims(for: task, workspaceAccess: access, readOnlyInputPaths: readOnlyInputPaths)
     }
 
     /// The verified shared Git directory of a prepared worktree, as claim
