@@ -143,9 +143,13 @@ public enum CodexStreamEventParser {
             let exitCode = int(in: item, keys: ["exit_code", "exitCode"])
             let status = string(in: item, keys: ["status"])?.lowercased()
             let failed = (exitCode.map { $0 != 0 } ?? false) || status.map(failedItemStatuses.contains) == true
-            return [.toolResult(
-                id: string(in: item, keys: ["id", "call_id", "callId"]) ?? "", content: commandResultSummary(in: item), isError: failed
-            )]
+            let id = string(in: item, keys: ["id", "call_id", "callId"]) ?? ""
+            let result = AgentEvent.toolResult(id: id, content: commandResultSummary(in: item), isError: failed)
+            // The exit code and status as fields, so nothing downstream has
+            // to read them back out of the summary's `exit_code=` text.
+            guard exitCode != nil || status != nil else { return [result] }
+            let outcome: AgentOperationOutcome = failed ? .failed : AgentOperationOutcome(providerStatus: status, exitCode: exitCode)
+            return [.operation(.finished(operationID: id, outcome: outcome, exitCode: exitCode, providerStatus: status)), result]
         }
         if itemType == "file_change" {
             let itemID = string(in: item, keys: ["id", "call_id", "callId"])
@@ -182,7 +186,21 @@ public enum CodexStreamEventParser {
         if itemType.contains("tool") || item["tool"] != nil || item["name"] != nil {
             let name = string(in: item, keys: ["name", "tool", "tool_name", "toolName"]) ?? "tool"
             let id = string(in: item, keys: ["id", "call_id", "callId"]) ?? ""
-            return [.toolUse(name: name, id: id, inputSummary: inputSummary(in: item))]
+            let use = AgentEvent.toolUse(name: name, id: id, inputSummary: inputSummary(in: item))
+            // The call again, for a completion with no start, then the result
+            // that ends it: the item completing is what says the call is no
+            // longer running. Its status decides the outcome, and without one
+            // the outcome is unknown rather than assumed. Empty content adds
+            // no transcript row.
+            guard !id.isEmpty else { return [use] }
+            let status = string(in: item, keys: ["status"])
+            let failed = status.map { failedItemStatuses.contains($0.lowercased()) } == true
+            let outcome: AgentOperationOutcome = failed ? .failed : AgentOperationOutcome(providerStatus: status, exitCode: nil)
+            return [
+                use,
+                .operation(.finished(operationID: id, outcome: outcome, exitCode: nil, providerStatus: status)),
+                .toolResult(id: id, content: "", isError: failed)
+            ]
         }
         if itemType.contains("error") || itemType == "failed" {
             // An error item is a warning Codex carries on after, such as a
@@ -331,6 +349,8 @@ public enum CodexStreamEventParser {
             )
         case .notice:
             return nil
+        case .operation(let signal):
+            return signal.monitorControlType.map { .control(type: $0) }
         case .fileChange:
             // Progress only. The policy guard reads no paths from a control
             // frame, as it read none from the nil this replaced.

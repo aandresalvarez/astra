@@ -64,7 +64,8 @@ public enum OpenCodeStreamEventParser {
         case .toolUse(let name, let id, let input):
             return [.toolUse(name: name, id: id, inputSummary: inputSummary(input))]
         case .toolResult(let toolID, let content, let isError):
-            return [.toolResult(id: toolID, content: content, isError: isError)]
+            let result = AgentEvent.toolResult(id: toolID, content: content, isError: isError)
+            return finishedSignal(operationID: toolID, rawLine: rawLine).map { [$0, result] } ?? [result]
         case .usage(let input, let output):
             let frame = (try? JSONSerialization.jsonObject(with: Data(rawLine.utf8))) as? [String: Any]
             let totals = frame?[OpenCodeStreamAccounting.totalsKey] as? [String: Any]
@@ -189,8 +190,36 @@ public enum OpenCodeStreamEventParser {
             events.append(.toolResult(toolId: id, content: output))
         } else if let error = state?["error"] as? String, !error.isEmpty {
             events.append(.toolResult(toolId: id, content: error, isError: true))
+        } else if let outcome = terminalOutcome(of: state) {
+            // The status ends the tool whether or not it printed anything: a
+            // completed `true` is finished, not still running.
+            events.append(.toolResult(toolId: id, content: "", isError: outcome == .failed))
         }
         return events
+    }
+
+    /// The outcome a tool part's `state.status` reports, once it is terminal.
+    /// `pending` and `running` are not, and neither is a status this build
+    /// does not know: only the provider can say an operation ended.
+    private static func terminalOutcome(of state: [String: Any]?) -> AgentOperationOutcome? {
+        guard let status = (state?["status"] as? String)?.lowercased(),
+              !["pending", "running", "in_progress", "queued"].contains(status) else {
+            return nil
+        }
+        let outcome = AgentOperationOutcome(providerStatus: status, exitCode: nil)
+        return outcome == .unknown ? nil : outcome
+    }
+
+    /// The terminal status of a `tool_use` frame, as the signal that precedes
+    /// its result.
+    private static func finishedSignal(operationID: String, rawLine: String) -> AgentEvent? {
+        guard let frame = (try? JSONSerialization.jsonObject(with: Data(rawLine.utf8))) as? [String: Any],
+              let state = (frame["part"] as? [String: Any])?["state"] as? [String: Any],
+              let status = state["status"] as? String,
+              let outcome = terminalOutcome(of: state) else {
+            return nil
+        }
+        return .operation(.finished(operationID: operationID, outcome: outcome, exitCode: nil, providerStatus: status))
     }
 
     private static func errorEvent(from object: [String: Any]) -> [ParsedEvent] {

@@ -200,20 +200,40 @@ extension RunAnswerSelectionPolicy {
         case other
     }
 
-    /// Tool results carry no tool name, so each is paired with the oldest
-    /// unanswered tool use, in order.
+    /// A `tool.operation` record names the call a result answers, so results
+    /// that arrive out of order, and calls that finished without output, are
+    /// attributed to their own call. A result without a record — recorded
+    /// before those existed, or from a provider that gave no call id — is
+    /// paired with the oldest unanswered tool use, in order.
     private static func stepKinds(of events: [Event]) -> [StepKind] {
-        var pendingUses: [Bool] = []
+        var useOfResult: [UUID: UUID] = [:]
+        var silentUses: Set<UUID> = []
+        for record in ToolOperationBatch.records(in: events.lazy.map { (type: $0.type, payload: $0.payload) }) {
+            guard let use = record.useEventID else { continue }
+            if let result = record.resultEventID {
+                useOfResult[result] = use
+            } else {
+                // Finished without output: there is no result row to wait for.
+                silentUses.insert(use)
+            }
+        }
+        var pendingUses: [(id: UUID, bookkeeping: Bool)] = []
         return events.map { event in
             switch event.type {
             case "agent.response":
                 return .response
             case "tool.use":
                 let bookkeeping = isBookkeepingTool(toolName(fromUsePayload: event.payload))
-                pendingUses.append(bookkeeping)
+                if !silentUses.contains(event.id) { pendingUses.append((event.id, bookkeeping)) }
                 return bookkeeping ? .bookkeeping : .work
             case "tool.result", "tool.result.failed":
-                let bookkeeping = pendingUses.isEmpty ? false : pendingUses.removeFirst()
+                if let use = useOfResult[event.id] {
+                    // Its call is known. One no longer among the rows must
+                    // not consume another call's turn.
+                    let index = pendingUses.firstIndex { $0.id == use }
+                    return index.map { pendingUses.remove(at: $0).bookkeeping } == true ? .bookkeeping : .work
+                }
+                let bookkeeping = pendingUses.isEmpty ? false : pendingUses.removeFirst().bookkeeping
                 return bookkeeping ? .bookkeeping : .work
             case "permission.denied", "permission.approval.requested", "permission.request.resolved":
                 return .bookkeeping

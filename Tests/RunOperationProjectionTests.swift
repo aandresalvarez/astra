@@ -1,0 +1,370 @@
+import Foundation
+import Testing
+import ASTRAModels
+@testable import ASTRA
+import ASTRACore
+
+/// Issue #477: progress is derived from recorded evidence, and states only
+/// what that evidence supports.
+@Suite("Run operation projection")
+struct RunOperationProjectionTests {
+    private typealias Event = RunOperationProjection.Event
+
+    /// Builds a run's stored events with one-second spacing.
+    private struct History {
+        private(set) var events: [Event] = []
+        private var clock = Date(timeIntervalSince1970: 1_000)
+        private var pendingRecords: [ToolOperationRecord] = []
+
+        @discardableResult
+        mutating func add(_ type: String, _ payload: String) -> UUID {
+            let id = UUID()
+            clock = clock.addingTimeInterval(1)
+            events.append(Event(id: id, type: type, payload: payload, timestamp: clock))
+            return id
+        }
+
+        @discardableResult
+        mutating func use(_ tool: String, _ detail: String? = nil) -> UUID {
+            add("tool.use", "Using tool: \(tool)" + (detail.map { ": \($0)" } ?? ""))
+        }
+
+        /// Finishes a call the way the recorder does: an optional result row,
+        /// then its record.
+        mutating func finish(
+            _ use: UUID?,
+            tool: String? = nil,
+            output: String? = "ok",
+            outcome: AgentOperationOutcome = .succeeded,
+            exitCode: Int? = nil
+        ) {
+            var result: UUID?
+            if let output {
+                result = add(outcome == .failed ? "tool.result.failed" : "tool.result", output)
+            } else {
+                clock = clock.addingTimeInterval(1)
+            }
+            let record = ToolOperationRecord(
+                callID: "call", tool: tool, outcome: outcome, exitCode: exitCode,
+                hasOutput: output != nil, useEventID: use, resultEventID: result, finishedAt: clock
+            )
+            add(ToolOperationRecord.eventType, TaskEvent.payloadString(ToolOperationBatch(operations: [record])))
+        }
+
+        mutating func say(_ text: String) { add("agent.response", text) }
+    }
+
+    @Test("Each call takes the outcome its own record gives, however the results were ordered")
+    func operationsAreCorrelatedByRecord() {
+        var history = History()
+        let read = history.use("Read", "one.swift")
+        let bash = history.use("Bash", "swift test")
+        history.finish(bash, tool: "Bash", output: "failed", outcome: .failed, exitCode: 1)
+        history.finish(read, tool: "Read", output: nil)
+
+        let projection = RunOperationProjection(events: history.events)
+
+        #expect(projection.operations.map(\.tool) == ["Read", "Bash"])
+        #expect(projection.operations.map(\.outcome) == [.succeeded, .failed])
+        #expect(projection.operations[1].exitCode == 1)
+        #expect(projection.finishedCount == 2)
+        #expect(projection.failedCount == 1)
+        #expect(projection.openOperations.isEmpty)
+        #expect(projection.failedUseEventIDs == [bash])
+        // Only the result that kept output counts as one.
+        #expect(projection.resultsWithOutput == 1)
+    }
+
+    @Test("A failure is a milestone of its own, with its exit code and what was run")
+    func failureIsAMilestone() throws {
+        var history = History()
+        let bash = history.use("Bash", "swift test")
+        history.finish(bash, tool: "Bash", output: "1 failed", outcome: .failed, exitCode: 1)
+
+        let milestone = try #require(RunOperationProjection(events: history.events).milestones.first)
+
+        #expect(milestone.kind == .operationFailed)
+        #expect(milestone.text == "Bash failed · exit code 1 — swift test")
+        #expect(milestone.evidenceEventID == history.events.first { $0.type == "tool.result.failed" }?.id)
+    }
+
+    @Test("A long stretch of work between agent messages is summarized, failures counted")
+    func silentStretchIsSummarized() throws {
+        var history = History()
+        history.say("Starting the investigation.")
+        for index in 0..<6 {
+            let use = history.use(index < 4 ? "Read" : "Bash", "item \(index)")
+            history.finish(use, tool: index < 4 ? "Read" : "Bash", outcome: index == 5 ? .failed : .succeeded)
+        }
+        history.say("Found the cause.")
+
+        let projection = RunOperationProjection(events: history.events)
+        let summary = try #require(projection.milestones.first { $0.kind == .workSummary })
+
+        #expect(summary.text == "6 operations: Read ×4, Bash ×2 · 1 failed")
+        #expect(projection.milestones.filter { $0.kind == .operationFailed }.count == 1)
+        // It is placed where the work ended, before the message that follows.
+        #expect(summary.timestamp < (projection.lastAgentMessageAt ?? .distantPast))
+    }
+
+    @Test("A few calls between messages are not worth a summary line")
+    func shortStretchHasNoSummary() {
+        var history = History()
+        for _ in 0..<(RunOperationProjection.workSummaryThreshold - 1) {
+            let use = history.use("Read")
+            history.finish(use, tool: "Read")
+            history.say("Noted.")
+        }
+
+        #expect(RunOperationProjection(events: history.events).milestones.isEmpty)
+    }
+
+    @Test("A background job ending is a milestone stating the job's outcome")
+    func backgroundJobIsAMilestone() throws {
+        var history = History()
+        let job = BackgroundJobRecord(AgentBackgroundJobEvent(
+            jobID: "job-1", kind: "shell_completed", outcome: .failed, exitCode: 2, summary: "Shell completed"
+        ))
+        history.add(BackgroundJobRecord.eventType, TaskEvent.payloadString(job))
+
+        let milestone = try #require(RunOperationProjection(events: history.events).milestones.first)
+
+        #expect(milestone.kind == .backgroundJob(.failed))
+        #expect(milestone.text == "Background job failed · exit code 2 — Shell completed")
+    }
+
+    @Test("A call with no record yet is open; in a history with unrecorded results nothing is claimed")
+    func openOperationsNeedCorrelation() {
+        var recorded = History()
+        let done = recorded.use("Read")
+        recorded.finish(done, tool: "Read")
+        recorded.use("Bash", "swift test")
+        #expect(RunOperationProjection(events: recorded.events).openOperations.map(\.tool) == ["Bash"])
+
+        var beforeFirstResult = History()
+        beforeFirstResult.use("Bash", "swift build")
+        #expect(RunOperationProjection(events: beforeFirstResult.events).openOperations.count == 1)
+
+        var legacy = History()
+        legacy.use("Read")
+        legacy.add("tool.result", "ok")
+        legacy.use("Bash")
+        let projection = RunOperationProjection(events: legacy.events)
+        #expect(projection.openOperations.isEmpty)
+        #expect(!projection.hasOperationRecords)
+        #expect(projection.operations.allSatisfy { $0.outcome == nil })
+    }
+
+    @Test("A legacy failed result is still a milestone, without a guessed call")
+    func legacyFailureIsStillShown() throws {
+        var history = History()
+        history.use("Bash", "make")
+        history.add("tool.result.failed", #"{"version":2,"toolID":"x","message":"Error 2"}"#)
+
+        let projection = RunOperationProjection(events: history.events)
+
+        #expect(projection.milestones.map(\.text) == ["Tool failed"])
+        #expect(projection.failedCount == 0)
+    }
+
+    @Test("A record whose call is not among the rows is still a finished operation")
+    func orphanRecordIsCounted() throws {
+        var history = History()
+        history.finish(nil, tool: "Bash", output: "boom", outcome: .failed, exitCode: 3)
+
+        let projection = RunOperationProjection(events: history.events)
+
+        #expect(projection.operations.count == 1)
+        #expect(projection.operations.first?.startedAt == nil)
+        #expect(projection.failedCount == 1)
+        #expect(projection.milestones.map(\.text) == ["Bash failed · exit code 3"])
+    }
+
+    @Test("The same history always yields the same milestone ids")
+    func milestoneIDsAreStable() {
+        var history = History()
+        for _ in 0..<6 {
+            let use = history.use("Bash", "x")
+            history.finish(use, tool: "Bash", outcome: .failed, exitCode: 1)
+        }
+
+        let first = RunOperationProjection(events: history.events)
+        let second = RunOperationProjection(events: history.events)
+
+        #expect(first == second)
+        #expect(Set(first.milestones.map(\.id)).count == first.milestones.count)
+    }
+
+    // MARK: - Answer selection
+
+    @Test("A call that finished without output does not answer a later call's result")
+    func silentCallDoesNotStealALaterResult() throws {
+        // Draft, save it silently, read something, then sign off. Without the
+        // record the read's result was paired with the write and counted as
+        // bookkeeping, joining the sign-off to a draft it does not belong to.
+        var history = History()
+        history.say(String(repeating: "Draft. ", count: 200))
+        let write = history.use("Write", "notes.md")
+        history.finish(write, tool: "Write", output: nil)
+        let read = history.use("Read", "other.swift")
+        history.finish(read, tool: "Read", output: "contents")
+        history.say("Saved.")
+        let events = history.events.map { RunAnswerSelectionPolicy.Event(id: $0.id, type: $0.type, payload: $0.payload) }
+
+        let selection = try #require(RunAnswerSelectionPolicy.legacySelection(events))
+
+        let signOff = try #require(history.events.last { $0.type == "agent.response" })
+        #expect(selection.answer == [[signOff.id]])
+    }
+
+    @Test("Out-of-order results are classified by their own call")
+    func outOfOrderResultsAreClassifiedByTheirCall() throws {
+        var history = History()
+        history.say(String(repeating: "Answer. ", count: 200))
+        let write = history.use("Write", "answer.md")
+        let read = history.use("Read", "check.swift")
+        // The read's result arrives first. Paired in order it would be taken
+        // for the write's, and the write's for the read's.
+        history.finish(read, tool: "Read", output: "contents")
+        history.finish(write, tool: "Write", output: "written")
+        history.say("Done.")
+        let events = history.events.map { RunAnswerSelectionPolicy.Event(id: $0.id, type: $0.type, payload: $0.payload) }
+
+        let selection = try #require(RunAnswerSelectionPolicy.legacySelection(events))
+
+        // Real work (the read) separates the two messages either way; what
+        // matters is that the anchor is the read's own result.
+        let readResult = try #require(history.events.first { $0.type == "tool.result" && $0.payload == "contents" })
+        #expect(selection.anchor != nil)
+        #expect(selection.answer.count == 1)
+        #expect(history.events.firstIndex { $0.id == selection.anchor } ?? 0 >= history.events.firstIndex { $0.id == readResult.id } ?? 0)
+    }
+
+    // MARK: - Presentation
+
+    @Test("Observed milestones join the agent's messages in time order, the agent first at a tie")
+    func timelineMergesByTime() {
+        let base = Date(timeIntervalSince1970: 5_000)
+        let agent = [
+            TaskRunProgressMessage(id: UUID(), text: "Looking.", timestamp: base),
+            TaskRunProgressMessage(id: UUID(), text: "Fixing.", timestamp: base.addingTimeInterval(20))
+        ]
+        var history = History()
+        let use = history.use("Bash", "swift test")
+        history.finish(use, tool: "Bash", output: "failed", outcome: .failed, exitCode: 1)
+        let projection = RunOperationProjection(events: history.events.map {
+            RunOperationProjection.Event(id: $0.id, type: $0.type, payload: $0.payload, timestamp: base.addingTimeInterval(10))
+        })
+        let operations = RunOperationsPresentation(run: Self.run(status: .completed), projection: projection)
+
+        let timeline = operations.timeline(merging: agent)
+
+        #expect(timeline.map(\.text) == ["Looking.", "Bash failed · exit code 1 — swift test", "Fixing."])
+        #expect(timeline.map(\.origin) == [.agent, .observedFailure, .agent])
+        #expect(RunOperationsPresentation.empty.timeline(merging: agent) == agent)
+    }
+
+    @Test("Freshness is stated as what it is: live traffic, or the last recorded event")
+    func freshnessDistinguishesLiveFromRecorded() {
+        let now = Date(timeIntervalSince1970: 9_000)
+        var history = History()
+        history.say("Starting.")
+        history.use("Bash", "swift test")
+        let projection = RunOperationProjection(events: history.events.map {
+            RunOperationProjection.Event(id: $0.id, type: $0.type, payload: $0.payload, timestamp: now.addingTimeInterval(-600))
+        })
+        let running = RunOperationsPresentation(run: Self.run(status: .running), projection: projection)
+
+        let live = RunLiveActivity(lastTrafficAt: now.addingTimeInterval(-12))
+        #expect(running.freshnessLine(now: now, live: live) == "Last activity 12s ago · last update from the agent 10m ago")
+        // After a relaunch there is no live stream to speak of.
+        #expect(running.freshnessLine(now: now, live: nil) == "Last recorded activity 10m ago · last update from the agent 10m ago")
+
+        let ended = RunOperationsPresentation(run: Self.run(status: .completed), projection: projection)
+        #expect(ended.freshnessLine(now: now, live: live) == nil)
+        #expect(ended.inFlightCount == 0)
+    }
+
+    @Test("Ages read as seconds, minutes, then hours")
+    func ageFormatting() {
+        let now = Date(timeIntervalSince1970: 100_000)
+        #expect(RunOperationsPresentation.age(since: now.addingTimeInterval(-5), now: now) == "5s")
+        #expect(RunOperationsPresentation.age(since: now.addingTimeInterval(-125), now: now) == "2m")
+        #expect(RunOperationsPresentation.age(since: now.addingTimeInterval(-3_600), now: now) == "1h")
+        #expect(RunOperationsPresentation.age(since: now.addingTimeInterval(-3_900), now: now) == "1h 5m")
+        #expect(RunOperationsPresentation.age(since: now.addingTimeInterval(30), now: now) == "0s")
+    }
+
+    private static func run(status: RunStatus) -> TaskRunSnapshot {
+        let task = AgentTask(title: "Task", goal: "Goal")
+        let run = TaskRun(task: task)
+        run.status = status
+        return TaskRunSnapshot(input: TaskRunSnapshotInput(run: run))
+    }
+}
+
+@Suite("Run live activity")
+struct RunLiveActivityStoreTests {
+    @Test("Each run has its own live activity, and none after its stream ends")
+    func liveActivityIsScopedToItsRun() {
+        let store = RunLiveActivityStore()
+        let (first, second) = (UUID(), UUID())
+        let start = Date(timeIntervalSince1970: 1_000)
+
+        store.observe(.toolUse(name: "Bash", id: "call-1", inputSummary: nil), runID: first, at: start)
+        store.observe(.control(type: "tool.execution_partial_result"), runID: first, at: start.addingTimeInterval(30))
+
+        #expect(store.activity(for: first)?.lastTrafficAt == start.addingTimeInterval(30))
+        #expect(store.activity(for: first)?.lastOperationSignalAt == start)
+        #expect(store.activity(for: first)?.activeOperationID == "call-1")
+        #expect(store.activity(for: second) == nil)
+
+        store.observe(.toolResult(id: "call-1", content: "", isError: false), runID: first, at: start.addingTimeInterval(40))
+        #expect(store.activity(for: first)?.activeOperationID == nil)
+
+        store.finish(runID: first)
+        #expect(store.activity(for: first) == nil)
+    }
+
+    @Test("Live operation activity keeps a streaming run from reading as quiet")
+    func liveActivityKeepsHealthActive() {
+        let now = Date(timeIntervalSince1970: 50_000)
+        let task = AgentTask(title: "Task", goal: "Goal")
+        task.status = .running
+        let run = TaskRun(task: task)
+        run.status = .running
+        run.startedAt = now.addingTimeInterval(-1_200)
+        let stale = TaskEvent(task: task, type: "tool.use", payload: "Using tool: Bash: swift test", run: run)
+        stale.timestamp = now.addingTimeInterval(-900)
+        let snapshot = TaskThreadSnapshot(goal: task.goal, createdAt: task.createdAt, events: [stale], runs: [run])
+
+        let withoutLive = TaskRuntimeHealth.evaluate(taskStatus: .running, snapshot: snapshot, now: now)
+        let withLive = TaskRuntimeHealth.evaluate(
+            taskStatus: .running,
+            snapshot: snapshot,
+            now: now,
+            liveActivity: RunLiveActivity(lastTrafficAt: now, lastOperationSignalAt: now.addingTimeInterval(-20))
+        )
+
+        #expect(withoutLive.state == .quiet)
+        #expect(withLive.state == .active)
+        #expect(withLive.lastRuntimeProgressAt == now.addingTimeInterval(-20))
+    }
+
+    @Test("A failed result and an operation record count as runtime progress")
+    func failedResultsAreProgress() {
+        let now = Date(timeIntervalSince1970: 50_000)
+        for type in ["tool.result.failed", ToolOperationRecord.eventType, BackgroundJobRecord.eventType] {
+            let task = AgentTask(title: "Task", goal: "Goal")
+            task.status = .running
+            let run = TaskRun(task: task)
+            run.status = .running
+            run.startedAt = now.addingTimeInterval(-1_200)
+            let event = TaskEvent(task: task, type: type, payload: "{}", run: run)
+            event.timestamp = now.addingTimeInterval(-30)
+            let snapshot = TaskThreadSnapshot(goal: task.goal, createdAt: task.createdAt, events: [event], runs: [run])
+
+            #expect(TaskRuntimeHealth.evaluate(taskStatus: .running, snapshot: snapshot, now: now).state == .active, "\(type)")
+        }
+    }
+}

@@ -32,6 +32,16 @@ final class AgentEventRecordingState {
     /// Runs that also recorded unkeyed `.text`, whose output is append-only.
     private var runsWithUnkeyedText: Set<UUID> = []
 
+    private var openToolUseEvents: [String: TaskEvent] = [:]
+    private var pendingOperationStatuses: [String: PendingOperationStatus] = [:]
+    private var openOperationBatches: [UUID: TaskEvent] = [:]
+
+    struct PendingOperationStatus: Equatable {
+        let outcome: AgentOperationOutcome
+        let exitCode: Int?
+        let providerStatus: String?
+    }
+
     /// File changes announced with the tool call that makes them, in the
     /// order they were announced, until that call's result arrives.
     private var pendingFileChanges: [(runID: UUID, toolUseID: String, change: PendingFileChange)] = []
@@ -160,6 +170,38 @@ final class AgentEventRecordingState {
         toolUseEvidenceByRunAndID["\(run.id.uuidString)#\(id)"] = evidence
         toolNamesByRunAndID["\(run.id.uuidString)#\(id)"] = name
         toolUseCommandByRunAndID["\(run.id.uuidString)#\(id)"] = fullEvidence ?? evidence
+    }
+
+    /// The `tool.use` row of a call that has not finished yet. A provider that
+    /// reports one call's state as several frames repeats the call; while it
+    /// is open that is one operation, not a new one.
+    func openToolUseEvent(id: String, run: TaskRun) -> TaskEvent? {
+        guard !id.isEmpty else { return nil }
+        return openToolUseEvents["\(run.id.uuidString)#\(id)"]
+    }
+
+    func openToolUse(_ event: TaskEvent, id: String, run: TaskRun) {
+        guard !id.isEmpty else { return }
+        openToolUseEvents["\(run.id.uuidString)#\(id)"] = event
+    }
+
+    /// The `tool.operation` row still taking this run's records.
+    func openOperationBatch(for run: TaskRun) -> TaskEvent? { openOperationBatches[run.id] }
+
+    func setOpenOperationBatch(_ event: TaskEvent, for run: TaskRun) { openOperationBatches[run.id] = event }
+
+    /// The provider's own terminal status for a call, held until its result.
+    func holdOperationStatus(_ status: PendingOperationStatus, id: String, run: TaskRun) {
+        guard !id.isEmpty else { return }
+        pendingOperationStatuses["\(run.id.uuidString)#\(id)"] = status
+    }
+
+    /// Closes a call: its open row, its name and any status the provider
+    /// reported for it. The id may be used again by a later call.
+    func finishToolOperation(id: String, run: TaskRun) -> (use: TaskEvent?, tool: String?, status: PendingOperationStatus?) {
+        guard !id.isEmpty else { return (nil, nil, nil) }
+        let key = "\(run.id.uuidString)#\(id)"
+        return (openToolUseEvents.removeValue(forKey: key), toolNamesByRunAndID[key], pendingOperationStatuses.removeValue(forKey: key))
     }
 
     func toolUseFullEvidence(id: String, run: TaskRun) -> String? {
@@ -644,8 +686,9 @@ enum AgentEventRecorder {
         recordingMode: AgentRuntimeRecordingMode = .initial,
         recordingState: AgentEventRecordingState? = nil
     ) {
+        RunLiveActivityStore.shared.observe(event, runID: run.id)
         switch event {
-        case .control, .assistantMessage:
+        case .control, .assistantMessage, .operation(.progress), .operation(.finished):
             break
         default:
             recordingState?.noteNonMessageEvent(for: run)
@@ -728,7 +771,13 @@ enum AgentEventRecorder {
             let payload = "Using tool: \(name)\(suffix)"
             recordingState?.recordToolUse(id: id, name: name, evidence: payload, run: run,
                                           fullEvidence: "Using tool: \(name)" + (inputSummary.map { ": \($0)" } ?? ""))
-            modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Tool.use, payload: payload, run: run))
+            if let open = recordingState?.openToolUseEvent(id: id, run: run) {
+                AgentToolOperationRecording.updateOpenUse(open, payload: payload, task: task)
+            } else {
+                let use = TaskEvent(task: task, eventType: TaskEventTypes.Tool.use, payload: payload, run: run)
+                modelContext.insert(use)
+                recordingState?.openToolUse(use, id: id, run: run)
+            }
 
         case .toolResult(let toolID, let content, let isError):
             recordingState?.breakConversationCoalescing(for: run)
@@ -747,6 +796,7 @@ enum AgentEventRecorder {
                     task: task, type: AgentExternalActionObserver.resultEventType, payload: marker, run: run
                 ))
             }
+            var resultEvent: TaskEvent?
             if !content.isEmpty {
                 let eventType = isError ? TaskEventTypes.Tool.resultFailed : TaskEventTypes.Tool.result
                 let payload = isError
@@ -756,8 +806,14 @@ enum AgentEventRecorder {
                         toolUseEvidence: recordingState?.toolUseEvidence(id: toolID, run: run)
                     ))
                     : String(content.prefix(10_000))
-                modelContext.insert(TaskEvent(task: task, eventType: eventType, payload: payload, run: run))
+                let event = TaskEvent(task: task, eventType: eventType, payload: payload, run: run)
+                modelContext.insert(event)
+                resultEvent = event
             }
+            AgentToolOperationRecording.recordFinished(
+                callID: toolID, isError: isError, resultEvent: resultEvent,
+                task: task, run: run, modelContext: modelContext, recordingState: recordingState
+            )
             // The result, not the call, is the evidence a file changed.
             if let pending = recordingState?.takePendingFileChanges(toolUseID: toolID, run: run), !pending.isEmpty {
                 if isError {
@@ -909,6 +965,11 @@ enum AgentEventRecorder {
             // A warning the provider carried on after: visible, never a failure.
             modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.info, payload: message, run: run))
 
+        case .operation(let signal):
+            AgentToolOperationRecording.record(
+                signal, task: task, run: run, modelContext: modelContext, recordingState: recordingState
+            )
+
         case .unknown(_, let type, _):
             recordingState?.breakConversationCoalescing(for: run)
             AppLogger.audit(.workerStarted, category: "Worker", taskID: task.id, fields: [
@@ -962,6 +1023,8 @@ enum AgentEventRecorder {
             return .toolUse(name: toolName, id: "", input: input)
         case .teamEvent(let teamEvent):
             return parsedEvent(from: teamEvent)
+        case .operation(let signal):
+            return signal.monitorControlType.map { .control(type: $0) }
         case .notice, .unknown:
             return nil
         }
@@ -1236,6 +1299,8 @@ enum AgentEventRecorder {
         modelContext: ModelContext,
         processExitedCleanly: Bool
     ) {
+        // The stream has ended: the run has no live activity left to show.
+        RunLiveActivityStore.shared.finish(runID: run.id)
         let unresolved = recordingState.takeUnresolvedFileChanges(for: run)
         guard !unresolved.isEmpty else { return }
         guard processExitedCleanly else {

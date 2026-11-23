@@ -182,7 +182,10 @@ struct CodexCLIRuntimeTests {
             .flatMap(\.command)
         #expect(observedCommand == "/bin/zsh -lc 'git status --short --branch'")
 
-        if case .toolResult(let id, let content, _) = parsedEvents[2].first {
+        #expect(parsedEvents[2].first == .operation(.finished(
+            operationID: "item_1", outcome: .succeeded, exitCode: 0, providerStatus: "completed"
+        )))
+        if case .toolResult(let id, let content, _) = parsedEvents[2].last {
             #expect(id == "item_1")
             #expect(content.contains("ok"))
             #expect(content.contains("exit_code=0"))

@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 import ASTRAModels
 
 enum TaskRuntimeHealthState: String, Equatable, Sendable {
@@ -49,7 +50,8 @@ struct TaskRuntimeHealth: Equatable, Sendable {
         taskStatus: TaskStatus,
         snapshot: TaskThreadSnapshot,
         now: Date = Date(),
-        quietThreshold: TimeInterval = Self.quietThreshold
+        quietThreshold: TimeInterval = Self.quietThreshold,
+        liveActivity: RunLiveActivity? = nil
     ) -> TaskRuntimeHealth {
         guard taskStatus == .running, let run = snapshot.latestRun else {
             return TaskRuntimeHealth(
@@ -74,7 +76,11 @@ struct TaskRuntimeHealth: Equatable, Sendable {
         let fileActivity = snapshot.activity(for: run).fileChanges.max { $0.timestamp < $1.timestamp }
         let progressEvents = runEvents.filter(Self.isProgressEvent)
         let latestProgressEvent = progressEvents.last
-        let latestProgressAt = latestDate(latestProgressEvent?.timestamp, fileActivity?.timestamp)
+        // The stream this process is receiving is the same evidence the
+        // watchdog acts on. Partial output that is never stored still counts
+        // here, so the run cannot be alive to one and quiet to the other.
+        let liveOperationAt = (liveActivity ?? RunLiveActivityStore.shared.activity(for: run.id))?.lastOperationSignalAt
+        let latestProgressAt = latestDate(latestDate(latestProgressEvent?.timestamp, fileActivity?.timestamp), liveOperationAt)
         let latestConversationAt = runEvents.last(where: Self.isConversationActivityEvent)?.timestamp
         let latestWarning = runEvents.last { $0.type == "permission.denied" }
         let latestPlanBlock = runEvents.last { $0.type == "plan.step.blocked" }
@@ -191,6 +197,7 @@ struct TaskRuntimeHealth: Equatable, Sendable {
     private static func isProgressEvent(_ event: TaskEventSnapshot) -> Bool {
         switch event.type {
         case "task.started", "agent.response", "agent.thinking", "tool.use", "tool.result",
+             "tool.result.failed", ToolOperationRecord.eventType, BackgroundJobRecord.eventType,
              "task.stats", "task.completed", "astra.todo.replace", "astra.complete",
              "budget.warning",
              "plan.step.started", "plan.step.completed", "plan.step.blocked", "plan.step.skipped",

@@ -566,6 +566,7 @@ struct TaskToolCall: Identifiable, Hashable, Sendable {
 struct TaskToolResult: Identifiable, Hashable, Sendable {
     let id: UUID
     let payload: String
+    var isFailure = false
 }
 
 struct TaskRunNotice: Identifiable, Hashable, Sendable {
@@ -578,6 +579,7 @@ struct TaskRunProgressMessage: Identifiable, Hashable, Sendable {
     let id: UUID
     let text: String
     let timestamp: Date
+    var origin: Origin = .agent
 }
 
 struct TaskRunOutputPresentation: Hashable, Sendable {
@@ -984,6 +986,10 @@ struct TaskThreadSnapshot: Sendable {
                         id: event.id,
                         payload: event.payload
                     ))
+                case "tool.result.failed":
+                    resultsByRunID[runID, default: []].append(TaskToolResult(
+                        id: event.id, payload: ToolResultFailurePayload.decodeMessage(from: event.payload), isFailure: true
+                    ))
                 case "budget.warning", "budget.exceeded", "error", "permission.approval.requested", "astra.permission_summary":
                     noticesByRunID[runID, default: []].append(TaskRunNotice(
                         id: event.id,
@@ -1063,12 +1069,14 @@ struct TaskThreadSnapshot: Sendable {
             let displayNotices = run.hasVPNWarning ? act.notices.filter { $0.type != "error" } : act.notices
             let actionableNotices = displayNotices.filter { TaskRunNoticePresentationRules.shouldShowInline($0, for: run) }
 
+            let operations = RunOperationsPresentation(run: run, events: eventsByRunID[run.id] ?? [])
             activityPresentations[run.id] = RunActivityPresentation(
                 run: run,
                 activity: act,
                 notices: displayNotices,
                 suppressedNoticeIDs: Set(actionableNotices.map(\.id)),
-                progressMessages: outputPres.progressMessages
+                progressMessages: operations.timeline(merging: outputPres.progressMessages),
+                operations: operations
             )
         }
         activityPresentationByRunID = activityPresentations

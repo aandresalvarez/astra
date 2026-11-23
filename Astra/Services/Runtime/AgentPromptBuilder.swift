@@ -1706,6 +1706,16 @@ enum AgentPromptBuilder {
         """, kind: .tools, to: &sections, sourcePointers: [sourcePointer(label: "runtime permissions", target: "sandbox reporting contract")])
 
         appendSection("""
+        Progress updates:
+        The person supervising this task follows it through your short messages, not your tool calls. Write one or two plain sentences when you:
+        - finish investigating and decide what to do, or change direction;
+        - hit a failure or blocker that matters, saying what you will try next;
+        - start something long, such as a full test run, a build, or waiting on a background job;
+        - get an important result and decide the next step.
+        Write these as ordinary assistant text, not ASTRA_EVENT markers. Do not narrate every tool call, and do not repeat tool output or system notifications verbatim.
+        """, kind: .tools, to: &sections, sourcePointers: [sourcePointer(label: "runtime protocol", target: "progress narration")])
+
+        appendSection("""
         Astra Run Protocol v1:
         Emit structured progress markers only when useful, each on its own line and outside code fences.
         Marker prefix must be exactly `ASTRA_EVENT ` followed by one JSON object.
