@@ -102,23 +102,48 @@ extension TaskExecutionResourceClaimResolver {
         }
     }
 
-    /// Host folders the launch would mount read-write that the admitted lease
-    /// does not hold as a writer. Empty when they agree, and for a launch
-    /// with no lease to compare against. Anything here means the environment
-    /// changed after admission; the launch must stop rather than write a
-    /// folder nothing serializes.
-    static func unadmittedWritableMounts(
+    /// Host folders the launch would mount that the admitted lease does not
+    /// cover: a read-write mount needs a writer's claim at or above it, a
+    /// read-only one any claim there, because a reader must still wait for a
+    /// container writing the same folder. Empty when they agree, and for a
+    /// launch with no lease to compare against. Anything here means the
+    /// environment changed after admission; the launch must stop rather than
+    /// use a folder nothing serializes.
+    static func unadmittedMounts(
         lease: [TaskResourceLockClaim]?,
         task: AgentTask,
         workspaceAccess: TaskExecutionResourceAccess
     ) -> [String] {
         guard let lease else { return [] }
-        let held = lease.filter { $0.resourceKind == .docker && $0.accessMode == .write }
-            .map { TaskExecutionResourceBroker.canonicalKey(kind: .docker, key: $0.resourceKey) }
-        return dockerMountClaims(for: task, workspaceAccess: workspaceAccess)
-            .filter { $0.access == .exclusive }
-            .map { TaskExecutionResourceBroker.canonicalKey(for: $0) }
-            .filter { path in !held.contains { path == $0 || path.hasPrefix($0 + "/") } }
+        let held = lease.filter { $0.resourceKind == .docker }.map {
+            (key: TaskExecutionResourceBroker.canonicalKey(kind: .docker, key: $0.resourceKey), writes: $0.accessMode == .write)
+        }
+        return dockerMountClaims(for: task, workspaceAccess: workspaceAccess).compactMap { claim in
+            let path = TaskExecutionResourceBroker.canonicalKey(for: claim)
+            let needsWrite = claim.access == .exclusive
+            let covered = held.contains { (path == $0.key || path.hasPrefix($0.key + "/")) && ($0.writes || !needsWrite) }
+            return covered ? nil : path
+        }
+    }
+
+    /// Remote folders the launch would reach that the admitted lease does
+    /// not cover, by the same rule as mounts. The connections file can change
+    /// between admission and launch; a folder it now names that no claim
+    /// covers must stop the launch, as a changed mount does.
+    static func unadmittedRemoteDirectories(
+        lease: [TaskResourceLockClaim]?,
+        task: AgentTask,
+        workspaceAccess: TaskExecutionResourceAccess
+    ) -> [String] {
+        guard let lease else { return [] }
+        let held = lease.filter { $0.resourceKind == .remoteDirectory }
+        return remoteDirectoryClaims(for: task, workspaceAccess: workspaceAccess).compactMap { claim in
+            let needsWrite = claim.access == .exclusive
+            let covered = held.contains {
+                RemoteDirectoryClaimKey.covers($0.resourceKey, claim.key) && ($0.accessMode == .write || !needsWrite)
+            }
+            return covered ? nil : claim.key
+        }
     }
 
     private static func mountIdentity(_ path: String) -> String {

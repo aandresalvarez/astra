@@ -58,7 +58,10 @@ enum AgentToolOperationRecording {
         modelContext: ModelContext,
         recordingState: AgentEventRecordingState?
     ) {
-        let finished = recordingState?.finishToolOperation(id: callID, run: run)
+        var finished = recordingState?.finishToolOperation(id: callID, run: run)
+        if callID.isEmpty, let use = recordingState?.finishUnnamedToolUse(run: run) {
+            finished = (use, finished?.tool, finished?.status)
+        }
         let outcome: AgentOperationOutcome = isError ? .failed : (finished?.status?.outcome ?? .succeeded)
         let record = ToolOperationRecord(
             callID: callID,

@@ -7,9 +7,11 @@ import ASTRAPersistence
 /// Nothing here contacts the host, so two spellings are compared by what can
 /// be known locally:
 ///
-/// - The machine is the connection's declared `host` and `port`. A connection
-///   that names only an SSH config alias is keyed by that alias. Two names for
-///   one machine (an alias here, its `HostName` there) are not unified.
+/// - The machine is the route `ssh` takes (`SSHConnection.sshDestinationArguments`):
+///   a connection with an SSH config alias is keyed by that alias, whatever
+///   its `host`, `port` and `user` fields say, because `ssh` is given only the
+///   alias. Otherwise it is the declared `host` and `port`. Two names for one
+///   machine (an alias here, its `HostName` there) are not unified.
 /// - The folder is normalized lexically. A relative path and `~/…` are rooted
 ///   at the login user's home (`~user`, or `~` when no user is declared).
 ///   Symlinks and the real location of a home directory stay unknown.
@@ -22,14 +24,27 @@ enum RemoteDirectoryClaimKey {
 
     static func key(for connection: SSHConnection) -> String? {
         guard let machine = machine(for: connection) else { return nil }
-        return machine + String(separator) + canonicalPath(connection.remotePath, user: connection.user)
+        // Through an alias the login user is the alias's, not the `user`
+        // field's, so its home stays unnamed and overlaps conservatively.
+        let user = token(connection.configAlias).isEmpty ? connection.user : ""
+        return machine + String(separator) + canonicalPath(connection.remotePath, user: user)
     }
 
     static func machine(for connection: SSHConnection) -> String? {
-        let host = token(connection.host).lowercased()
-        if !host.isEmpty { return "\(host):\(connection.port)" }
         let alias = token(connection.configAlias)
-        return alias.isEmpty ? nil : "alias:\(alias)"
+        if !alias.isEmpty { return "alias:\(alias)" }
+        let host = token(connection.host).lowercased()
+        return host.isEmpty ? nil : "\(host):\(connection.port)"
+    }
+
+    /// Whether holding `held` covers a request for `requested`: the same
+    /// machine, and the same folder or one containing it. Unlike `overlap`,
+    /// an uncertain relation never counts as covered.
+    static func covers(_ held: String, _ requested: String) -> Bool {
+        guard let held = parts(held), let requested = parts(requested), held.machine == requested.machine else {
+            return false
+        }
+        return held.path == requested.path || contains(held.path, requested.path)
     }
 
     /// `/absolute/path`, `~user/path`, or `~/path`, without `.` segments,

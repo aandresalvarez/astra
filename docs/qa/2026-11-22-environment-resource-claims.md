@@ -21,8 +21,9 @@ folder the other mounts.
   wait for workspace writers.
 - The task's own folder, its worktree's Git metadata and mounts inside folders
   the task already holds as workspace claims are left to those claims.
-- If the launch would mount a folder read-write that its admitted lease does
-  not hold as a writer, the run stops with the workspace-drift error instead of
+- If the launch would mount a folder its admitted lease does not cover (a
+  read-write mount needs a writer's claim at or above it, a read-only mount any
+  claim there), the run stops with the workspace-drift error instead of
   starting.
 
 **Remote folders.** A task in a workspace with SSH connections claims each
@@ -30,7 +31,12 @@ connection's remote folder: host and port, then the folder, normalized without
 contacting the host. The claim follows the run's workspace access, so a
 write-capable run is a writer and a run declared read-only is a reader.
 
+- The machine is the route `ssh` takes: a connection with an SSH config alias
+  is keyed by the alias, whatever its host fields say.
 - Different hosts, and separate folders on one host, run together.
+- If the connections file names a remote folder the admitted lease does not
+  cover when the launch starts, the run stops with the workspace-drift error,
+  as for a changed mount.
 - The same folder, a folder containing it and a folder inside it conflict when
   either run is a writer. Readers share.
 - Where two folders cannot be compared locally (`~/app` against `/srv/app`, or

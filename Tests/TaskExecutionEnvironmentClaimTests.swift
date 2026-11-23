@@ -177,22 +177,30 @@ struct TaskExecutionEnvironmentClaimTests {
                                       resourceClaims: TaskExecutionResourceClaimResolver.claims(for: task))
         let lease = fixture.lease(task, request: request)
 
-        #expect(TaskExecutionResourceClaimResolver.unadmittedWritableMounts(
+        #expect(TaskExecutionResourceClaimResolver.unadmittedMounts(
             lease: lease, task: task, workspaceAccess: .exclusive).isEmpty)
 
         fixture.setEnvironment(task, mounts: [mount(cache, .readWrite), mount(added, .readWrite)])
-        #expect(TaskExecutionResourceClaimResolver.unadmittedWritableMounts(
+        #expect(TaskExecutionResourceClaimResolver.unadmittedMounts(
             lease: lease, task: task, workspaceAccess: .exclusive) == [added])
         #expect(TaskExecutionResourceClaimResolver.hasWorkspacePathDrift(
             request: request, task: task, lease: lease, workspaceAccess: .exclusive))
         // With or without a durable request.
         #expect(TaskExecutionResourceClaimResolver.hasWorkspacePathDrift(
             request: nil, task: task, lease: lease, workspaceAccess: .exclusive))
-        // A read-only mount added late needs no writer lease, and a launch with
-        // no lease to compare against is not judged here.
+        // A read-only mount added late is drift too: it needs a reader's claim
+        // to wait for a container that writes the same folder.
         fixture.setEnvironment(task, mounts: [mount(cache, .readWrite), mount(added, .readOnly)])
+        #expect(TaskExecutionResourceClaimResolver.unadmittedMounts(
+            lease: lease, task: task, workspaceAccess: .exclusive) == [added])
+        #expect(TaskExecutionResourceClaimResolver.hasWorkspacePathDrift(
+            request: request, task: task, lease: lease, workspaceAccess: .exclusive))
+        // A read-only mount inside a folder the lease writes is covered by it.
+        let inside = try fixture.directory("shared-build-cache/inside")
+        fixture.setEnvironment(task, mounts: [mount(cache, .readWrite), mount(inside, .readOnly)])
         #expect(!TaskExecutionResourceClaimResolver.hasWorkspacePathDrift(
             request: request, task: task, lease: lease, workspaceAccess: .exclusive))
+        // A launch with no lease to compare against is not judged here.
         fixture.setEnvironment(task, mounts: [mount(cache, .readWrite), mount(added, .readWrite)])
         #expect(!TaskExecutionResourceClaimResolver.hasWorkspacePathDrift(
             request: request, task: task, lease: nil, workspaceAccess: .exclusive))
@@ -231,6 +239,44 @@ struct TaskExecutionEnvironmentClaimTests {
     }
 
     // MARK: - Remote folders
+
+    @Test("A launch stops when the connections name a remote folder its lease does not cover")
+    func unadmittedRemoteFolderIsDrift() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let task = try fixture.remoteTask("a", connection(path: "/srv/service-a"))
+        let request = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 1,
+                                      resourceClaims: TaskExecutionResourceClaimResolver.claims(for: task))
+        let lease = fixture.lease(task, request: request)
+        let path = try #require(task.workspace?.primaryPath)
+
+        #expect(!TaskExecutionResourceClaimResolver.hasWorkspacePathDrift(
+            request: request, task: task, lease: lease, workspaceAccess: .exclusive))
+
+        // The connections file changed between admission and launch.
+        SSHConnectionManager.save([connection(path: "/srv/service-b")], workspacePath: path)
+        #expect(TaskExecutionResourceClaimResolver.unadmittedRemoteDirectories(
+            lease: lease, task: task, workspaceAccess: .exclusive) == ["release.example.com:22 /srv/service-b"])
+        #expect(TaskExecutionResourceClaimResolver.hasWorkspacePathDrift(
+            request: request, task: task, lease: lease, workspaceAccess: .exclusive))
+        #expect(TaskExecutionResourceClaimResolver.hasWorkspacePathDrift(
+            request: nil, task: task, lease: lease, workspaceAccess: .exclusive))
+
+        // A folder inside the one the lease writes is covered by it.
+        SSHConnectionManager.save([connection(path: "/srv/service-a/releases")], workspacePath: path)
+        #expect(!TaskExecutionResourceClaimResolver.hasWorkspacePathDrift(
+            request: request, task: task, lease: lease, workspaceAccess: .exclusive))
+
+        // A reader's lease does not cover a launch that would write.
+        SSHConnectionManager.save([connection(path: "/srv/service-a")], workspacePath: path)
+        let readerLease = lease.map { claim in
+            var copy = claim
+            if copy.resourceKind == .remoteDirectory { copy.accessMode = .readOnly }
+            return copy
+        }
+        #expect(TaskExecutionResourceClaimResolver.hasWorkspacePathDrift(
+            request: request, task: task, lease: readerLease, workspaceAccess: .exclusive))
+    }
 
     @Test("Independent remote folders and hosts run together")
     func independentRemoteFoldersRunTogether() throws {

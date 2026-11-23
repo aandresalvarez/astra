@@ -35,6 +35,7 @@ final class AgentEventRecordingState {
     private var openToolUseEvents: [String: TaskEvent] = [:]
     private var pendingOperationStatuses: [String: PendingOperationStatus] = [:]
     private var openOperationBatches: [UUID: TaskEvent] = [:]
+    private var openUnnamedToolUses: [UUID: [TaskEvent]] = [:]
 
     struct PendingOperationStatus: Equatable {
         let outcome: AgentOperationOutcome
@@ -181,8 +182,25 @@ final class AgentEventRecordingState {
     }
 
     func openToolUse(_ event: TaskEvent, id: String, run: TaskRun) {
-        guard !id.isEmpty else { return }
+        guard !id.isEmpty else {
+            openUnnamedToolUses[run.id, default: []].append(event)
+            return
+        }
         openToolUseEvents["\(run.id.uuidString)#\(id)"] = event
+    }
+
+    /// The one call a result without an id can only belong to: the run's
+    /// single open call that had no id either. With two or more open, which
+    /// one finished is unknown, and none is named.
+    func finishUnnamedToolUse(run: TaskRun) -> TaskEvent? {
+        guard let open = openUnnamedToolUses[run.id], !open.isEmpty else { return nil }
+        guard open.count == 1 else {
+            // One of them finished; which is unknown. The count still drops.
+            openUnnamedToolUses[run.id]?.removeFirst()
+            return nil
+        }
+        openUnnamedToolUses[run.id] = []
+        return open[0]
     }
 
     /// The open call a permission denial names: by id, or by tool name when

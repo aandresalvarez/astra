@@ -66,19 +66,37 @@ public struct RunOperationProjection: Sendable, Equatable {
     public let resultsWithOutput: Int
     public let lastOperationEventAt: Date?
     public let lastAgentMessageAt: Date?
+    /// Records with no call id: each finished one of the calls above, which
+    /// one being unknown.
+    public let unattributedFinishedCount: Int
+    public let unattributedFailedCount: Int
+    /// Calls counted as no longer open because an id-less record finished
+    /// one of them.
+    private let closedByUnattributedRecords: Set<UUID>
 
     public static let empty = RunOperationProjection(
         operations: [], milestones: [], resultsWithOutput: 0, lastOperationEventAt: nil, lastAgentMessageAt: nil
     )
 
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.operations == rhs.operations && lhs.milestones == rhs.milestones
+            && lhs.resultsWithOutput == rhs.resultsWithOutput
+            && lhs.lastOperationEventAt == rhs.lastOperationEventAt && lhs.lastAgentMessageAt == rhs.lastAgentMessageAt
+            && lhs.unattributedFinishedCount == rhs.unattributedFinishedCount
+            && lhs.unattributedFailedCount == rhs.unattributedFailedCount
+            && lhs.closedByUnattributedRecords == rhs.closedByUnattributedRecords
+    }
+
     /// Operations between two agent messages before they earn a summary line.
     public static let workSummaryThreshold = 5
 
-    public var finishedCount: Int { operations.filter { $0.outcome != nil }.count }
-    public var failedCount: Int { operations.filter { $0.outcome == .failed }.count }
+    public var finishedCount: Int { operations.filter { $0.outcome != nil }.count + unattributedFinishedCount }
+    public var failedCount: Int { operations.filter { $0.outcome == .failed }.count + unattributedFailedCount }
     /// Calls with no terminal evidence. In a run that is still going these
     /// are in flight; in one that ended, how they ended was never recorded.
-    public var openOperations: [Operation] { operations.filter { $0.outcome == nil && $0.isCorrelated } }
+    public var openOperations: [Operation] {
+        operations.filter { $0.outcome == nil && $0.isCorrelated && !closedByUnattributedRecords.contains($0.id) }
+    }
     public var failedUseEventIDs: Set<UUID> { Set(operations.filter { $0.outcome == .failed }.map(\.id)) }
     /// Whether this run's results are tied to their calls by record.
     public var hasOperationRecords: Bool { operations.contains { $0.outcome != nil && $0.isCorrelated } }
@@ -89,6 +107,9 @@ public struct RunOperationProjection: Sendable, Equatable {
         var recordedResults: Set<UUID> = []
         var resultTimestamps: [UUID: Date] = [:]
         var hasRecords = false
+        // A call that finished without output has no result row: its record
+        // is the only stored evidence of that activity.
+        var lastRecordedCompletionAt: Date?
         for event in events {
             switch event.type {
             case "tool.result", "tool.result.failed":
@@ -98,6 +119,7 @@ public struct RunOperationProjection: Sendable, Equatable {
                     hasRecords = true
                     if let result = record.resultEventID { recordedResults.insert(result) }
                     let at = record.finishedAt ?? event.timestamp
+                    lastRecordedCompletionAt = max(lastRecordedCompletionAt ?? at, at)
                     if let use = record.useEventID {
                         recordOfUse[use] = (record, at)
                     } else {
@@ -117,6 +139,8 @@ public struct RunOperationProjection: Sendable, Equatable {
         var operations: [Operation] = []
         var milestones: [Milestone] = []
         var stretch: [Operation] = []
+        var unattributedFinished = 0
+        var unattributedFailed = 0
         var lastOperationEventAt: Date?
         var lastAgentMessageAt: Date?
 
@@ -200,10 +224,25 @@ public struct RunOperationProjection: Sendable, Equatable {
         }
         closeStretch()
 
-        // A record whose call was never among these rows — the provider gave
-        // no call id, or the call lies outside the loaded history — is still
-        // a finished operation, and still a failure worth a line.
-        for orphan in orphanRecords {
+        // A record whose call lies outside the loaded history is still a
+        // finished operation, and still a failure worth a line. One with no
+        // call id at all finishes a call whose row is already counted above
+        // (its use could not be named), so it adds its failure, not a second
+        // operation.
+        for orphan in orphanRecords where orphan.record.callID.isEmpty {
+            unattributedFinished += 1
+            if orphan.record.outcome == .failed { unattributedFailed += 1 }
+            if let summary = orphan.record.failureSummary {
+                milestones.append(Milestone(
+                    id: Self.derivedID(from: orphan.eventID, salt: UInt8(truncatingIfNeeded: 96 &+ orphan.index)),
+                    timestamp: orphan.at,
+                    kind: .operationFailed,
+                    text: summary,
+                    evidenceEventID: orphan.record.resultEventID ?? orphan.eventID
+                ))
+            }
+        }
+        for orphan in orphanRecords where !orphan.record.callID.isEmpty {
             let id = Self.derivedID(from: orphan.eventID, salt: UInt8(truncatingIfNeeded: 16 &+ orphan.index))
             operations.append(Operation(
                 id: id,
@@ -227,12 +266,26 @@ public struct RunOperationProjection: Sendable, Equatable {
             }
         }
 
+        // The calls those id-less records finished are the oldest open ones
+        // with no record. Which exact call each one finished is unknown, so
+        // they leave the open set without being given an outcome.
+        var closedByUnattributed = Set<UUID>()
+        if unattributedFinished > 0 {
+            for operation in operations where operation.outcome == nil && operation.isCorrelated {
+                guard closedByUnattributed.count < unattributedFinished else { break }
+                closedByUnattributed.insert(operation.id)
+            }
+        }
+        self.unattributedFinishedCount = unattributedFinished
+        self.unattributedFailedCount = unattributedFailed
+        self.closedByUnattributedRecords = closedByUnattributed
         self.operations = operations
         self.milestones = milestones.sorted { $0.timestamp < $1.timestamp }
         resultsWithOutput = hasRecords
             ? operations.filter { $0.resultEventID != nil }.count
+                + orphanRecords.filter { $0.record.callID.isEmpty && $0.record.resultEventID != nil }.count
             : resultTimestamps.count
-        self.lastOperationEventAt = lastOperationEventAt
+        self.lastOperationEventAt = [lastOperationEventAt, lastRecordedCompletionAt].compactMap { $0 }.max()
         self.lastAgentMessageAt = lastAgentMessageAt
     }
 
@@ -248,6 +301,9 @@ public struct RunOperationProjection: Sendable, Equatable {
         self.resultsWithOutput = resultsWithOutput
         self.lastOperationEventAt = lastOperationEventAt
         self.lastAgentMessageAt = lastAgentMessageAt
+        unattributedFinishedCount = 0
+        unattributedFailedCount = 0
+        closedByUnattributedRecords = []
     }
 
     // MARK: - Text

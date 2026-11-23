@@ -265,8 +265,8 @@ struct ToolOperationRecordingTests {
         #expect(fixture.operations.first?.providerStatus == "deferred")
     }
 
-    @Test("A result with no call id is recorded honestly, without a call to point at")
-    func resultWithoutCallIDHasNoUse() throws {
+    @Test("A result with no call id finishes the run's one open call that had no id either")
+    func resultWithoutCallIDFinishesTheOnlyUnnamedCall() throws {
         let fixture = try Fixture()
 
         fixture.record(
@@ -276,8 +276,28 @@ struct ToolOperationRecordingTests {
 
         let record = try #require(fixture.operations.first)
         #expect(record.callID.isEmpty)
-        #expect(record.useEventID == nil)
+        #expect(record.useEventID == fixture.events(TaskEventTypes.Tool.use).first?.id)
         #expect(record.resultEventID != nil)
+    }
+
+    @Test("With two unnamed calls open, an id-less result names neither, and still counts once")
+    func ambiguousUnnamedResultNamesNoCall() throws {
+        let fixture = try Fixture()
+        fixture.run.status = .running
+
+        fixture.record(
+            .toolUse(name: "tool", id: "", inputSummary: "first"),
+            .toolUse(name: "tool", id: "", inputSummary: "second"),
+            .toolResult(id: "", content: "done", isError: false)
+        )
+
+        #expect(fixture.operations.first?.useEventID == nil)
+        try fixture.context.save()
+        let operations = TaskThreadSnapshot(task: fixture.task).activityPresentation(for: fixture.run).operations
+        // Two calls, one of which finished; never three operations.
+        #expect(operations.totalCount == 2)
+        #expect(operations.finishedCount == 1)
+        #expect(operations.inFlightCount == 1)
     }
 
     @Test("Partial output refreshes liveness and stores nothing")

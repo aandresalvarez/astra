@@ -84,16 +84,16 @@ struct TaskRuntimeHealth: Equatable, Sendable {
         let latestConversationAt = runEvents.last(where: Self.isConversationActivityEvent)?.timestamp
         let latestWarning = runEvents.last { $0.type == "permission.denied" }
         let latestPlanBlock = runEvents.last { $0.type == "plan.step.blocked" }
-        let laterProgressAfterWarningAt = latestWarning.flatMap { warning -> Date? in
-            let laterEventAt = progressEvents.last { $0.timestamp > warning.timestamp }?.timestamp
-            let laterFileAt = fileActivity.flatMap { $0.timestamp > warning.timestamp ? $0.timestamp : nil }
-            return latestDate(laterEventAt, laterFileAt)
+        // Live operation activity after a warning or a blocked step is
+        // recovery from it, as a stored event would be.
+        func progress(after date: Date) -> Date? {
+            let laterEventAt = progressEvents.last { $0.timestamp > date }?.timestamp
+            let laterFileAt = fileActivity.flatMap { $0.timestamp > date ? $0.timestamp : nil }
+            let laterLiveAt = liveOperationAt.flatMap { $0 > date ? $0 : nil }
+            return latestDate(latestDate(laterEventAt, laterFileAt), laterLiveAt)
         }
-        let laterProgressAfterPlanBlockAt = latestPlanBlock.flatMap { block -> Date? in
-            let laterEventAt = progressEvents.last { $0.timestamp > block.timestamp }?.timestamp
-            let laterFileAt = fileActivity.flatMap { $0.timestamp > block.timestamp ? $0.timestamp : nil }
-            return latestDate(laterEventAt, laterFileAt)
-        }
+        let laterProgressAfterWarningAt = latestWarning.flatMap { progress(after: $0.timestamp) }
+        let laterProgressAfterPlanBlockAt = latestPlanBlock.flatMap { progress(after: $0.timestamp) }
 
         let lastActivityAt = latestDate(
             latestProgressAt,

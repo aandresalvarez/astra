@@ -53,6 +53,23 @@ struct RunOperationProjectionTests {
 
         mutating func say(_ text: String) { add("agent.response", text) }
 
+        /// Records as a provider with no call ids leaves them.
+        mutating func clearRecordCallIDs() {
+            events = events.map { event in
+                guard event.type == ToolOperationRecord.eventType,
+                      let batch = ToolOperationBatch.decode(from: event.payload) else { return event }
+                let records = batch.operations.map {
+                    ToolOperationRecord(
+                        callID: "", tool: $0.tool, outcome: $0.outcome, exitCode: $0.exitCode,
+                        providerStatus: $0.providerStatus, hasOutput: $0.hasOutput, useEventID: $0.useEventID,
+                        resultEventID: $0.resultEventID, finishedAt: $0.finishedAt
+                    )
+                }
+                return Event(id: event.id, type: event.type,
+                             payload: TaskEvent.payloadString(ToolOperationBatch(operations: records)), timestamp: event.timestamp)
+            }
+        }
+
         /// The same rows as an older build would have left them.
         mutating func dropRecords() { events.removeAll { $0.type == ToolOperationRecord.eventType } }
     }
@@ -181,6 +198,36 @@ struct RunOperationProjectionTests {
         #expect(projection.operations.first?.startedAt == nil)
         #expect(projection.failedCount == 1)
         #expect(projection.milestones.map(\.text) == ["Bash failed · exit code 3"])
+    }
+
+    @Test("A call that finished without output moves the last recorded activity to its finish")
+    func silentCompletionIsRecordedActivity() throws {
+        var history = History()
+        let use = history.use("Bash", "true")
+        history.finish(use, tool: "Bash", output: nil)
+
+        let projection = RunOperationProjection(events: history.events)
+        let record = try #require(history.events.last)
+
+        #expect(projection.lastOperationEventAt == ToolOperationBatch.decode(from: record.payload)?.operations.first?.finishedAt)
+        #expect(projection.lastOperationEventAt.map { $0 > history.events[0].timestamp } == true)
+    }
+
+    @Test("A record without a call id finishes a call already counted, and is not a second operation")
+    func idLessRecordIsNotASecondOperation() {
+        var history = History()
+        history.use("tool", "x")
+        history.finish(nil, tool: nil, output: "failed", outcome: .failed, exitCode: 2)
+        // `finish` gives every record the id "call"; an id-less provider gives none.
+        history.clearRecordCallIDs()
+
+        let projection = RunOperationProjection(events: history.events)
+
+        #expect(projection.operations.count == 1)
+        #expect(projection.finishedCount == 1)
+        #expect(projection.failedCount == 1)
+        #expect(projection.openOperations.isEmpty)
+        #expect(projection.milestones.map(\.text) == ["Tool failed · exit code 2"])
     }
 
     @Test("The same history always yields the same milestone ids")
@@ -356,6 +403,28 @@ struct RunLiveActivityStoreTests {
 
         store.finish(runID: first)
         #expect(store.activity(for: first) == nil)
+    }
+
+    @Test("Live operation activity after a warning is recovery, not a stall")
+    func liveActivityRecoversFromAWarning() {
+        let now = Date(timeIntervalSince1970: 60_000)
+        let task = AgentTask(title: "Task", goal: "Goal")
+        task.status = .running
+        let run = TaskRun(task: task)
+        run.status = .running
+        run.startedAt = now.addingTimeInterval(-1_200)
+        let warning = TaskEvent(task: task, type: "permission.denied", payload: "Permission denied for tool: Bash. blocked", run: run)
+        warning.timestamp = now.addingTimeInterval(-600)
+        let snapshot = TaskThreadSnapshot(goal: task.goal, createdAt: task.createdAt, events: [warning], runs: [run])
+
+        let stalled = TaskRuntimeHealth.evaluate(taskStatus: .running, snapshot: snapshot, now: now)
+        let recovering = TaskRuntimeHealth.evaluate(
+            taskStatus: .running, snapshot: snapshot, now: now,
+            liveActivity: RunLiveActivity(lastTrafficAt: now, lastOperationSignalAt: now.addingTimeInterval(-15))
+        )
+
+        #expect(stalled.state == .possiblyStalled)
+        #expect(recovering.state == .recoveredWarning)
     }
 
     @Test("Live operation activity keeps a streaming run from reading as quiet")

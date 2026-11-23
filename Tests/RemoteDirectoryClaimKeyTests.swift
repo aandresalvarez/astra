@@ -34,7 +34,27 @@ struct RemoteDirectoryClaimKeyTests {
         #expect(RemoteDirectoryClaimKey.canonicalPath("service", user: " ") == "~/service")
     }
 
-    @Test("The machine is the declared host and port, or the alias when no host is declared")
+    @Test("A configured alias is the machine, whatever the host fields say, because ssh is given only the alias")
+    func aliasIsTheRouteSSHTakes() {
+        // Two entries on one alias, one with stale host fields: one route.
+        let current = RemoteDirectoryClaimKey.key(for: connection(host: "", path: "/srv/app", alias: "prod"))!
+        let stale = RemoteDirectoryClaimKey.key(for: connection(host: "old.example.com", port: 2222, path: "/srv/app", alias: "prod"))!
+        #expect(current == stale)
+        #expect(RemoteDirectoryClaimKey.overlap(current, stale))
+        // Through an alias the login user is the alias's, so `~` stays unnamed.
+        #expect(RemoteDirectoryClaimKey.key(for: connection(path: "~/app", alias: "prod")) == "alias:prod ~/app")
+    }
+
+    @Test("Covering is the same machine and the same or a containing folder, never an uncertain one")
+    func coveringFolders() {
+        #expect(RemoteDirectoryClaimKey.covers("h:22 /srv", "h:22 /srv/app"))
+        #expect(RemoteDirectoryClaimKey.covers("h:22 /srv/app", "h:22 /srv/app"))
+        #expect(!RemoteDirectoryClaimKey.covers("h:22 /srv/app", "h:22 /srv"))
+        #expect(!RemoteDirectoryClaimKey.covers("h:22 /srv/app", "other:22 /srv/app"))
+        #expect(!RemoteDirectoryClaimKey.covers("h:22 ~/app", "h:22 /srv/app"))
+    }
+
+    @Test("The machine is the declared host and port, or the alias when one is set")
     func machineIdentity() {
         #expect(RemoteDirectoryClaimKey.key(for: connection(path: "~/service")) == "release.example.com:22 ~deploy/service")
         #expect(RemoteDirectoryClaimKey.key(for: connection(port: 2222, path: "/srv/app")) == "release.example.com:2222 /srv/app")

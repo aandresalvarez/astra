@@ -155,9 +155,11 @@ enum TaskExecutionResourceClaimResolver {
         lease: [TaskResourceLockClaim]? = nil,
         workspaceAccess: TaskExecutionResourceAccess = .exclusive
     ) -> Bool {
-        // A Docker mount the launch would write that the admitted lease does
-        // not hold is drift too, with or without a durable request.
-        if !unadmittedWritableMounts(lease: lease, task: task, workspaceAccess: workspaceAccess).isEmpty {
+        // A Docker mount or remote folder the launch would use that the
+        // admitted lease does not cover is drift too, with or without a
+        // durable request.
+        if !unadmittedMounts(lease: lease, task: task, workspaceAccess: workspaceAccess).isEmpty
+            || !unadmittedRemoteDirectories(lease: lease, task: task, workspaceAccess: workspaceAccess).isEmpty {
             return true
         }
         guard let request else { return false }
