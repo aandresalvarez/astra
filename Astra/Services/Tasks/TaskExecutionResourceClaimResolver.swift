@@ -33,9 +33,11 @@ enum TaskExecutionResourceClaimResolver {
         // repository run together, while a writer of the main checkout, which
         // holds that directory exclusively, still waits for them and they for
         // it. Writable main checkouts claim their Git metadata because they
-        // have direct write access to .git. Other checkouts retain the
-        // credential grant's Git-intent predicate, including its context-only
-        // known gap documented in TaskExecutionResourceClaimCoverageTests.
+        // have direct write access to .git. Other checkouts follow the
+        // credential grant's Git-intent predicate over the accepted turn,
+        // title, and goal. That grant also reads launch context the claim
+        // never sees; `TaskLaunchResourceResolver.restrictingGitWrites` keeps
+        // such a path read-only unless it was claimed exclusively here.
         let mutatesGitMetadata = task.isolationStrategy == .gitBranch
             || GitOperationIntentDetector.detectsRuntimeGitOperation(
                 prompt: acceptedTurn ?? "",
@@ -125,8 +127,11 @@ enum TaskExecutionResourceClaimResolver {
             ?? task.isolationStrategy
         let validation = policy.flatMap { ValidationStrategy(rawValue: $0.validationStrategyRawValue) }
             ?? task.validationStrategy
-        let hooks = policy?.templateHooksJSON ?? task.templateHooksJSON
-        return isolation == .gitBranch || validation == .runTests || (!hooks.isEmpty && hooks != "{}")
+        let claimsHookSettings = TemplateHookInjectionPolicy.claimsCheckoutSettings(
+            hooksJSON: policy?.templateHooksJSON ?? task.templateHooksJSON,
+            runtimeRawValue: request?.runtimeIDSnapshot ?? task.runtimeID ?? task.resolvedRuntimeID.rawValue
+        )
+        return isolation == .gitBranch || validation == .runTests || claimsHookSettings
             || TaskWorkspaceConsultationPolicy.hasCommandAssertions(
                 in: TaskWorkspaceConsultationPolicy.acceptedPlan(for: request, task: task))
     }
@@ -163,15 +168,15 @@ enum TaskExecutionResourceClaimResolver {
     }
 
     /// Git common directories the request may write: those it admitted
-    /// exclusively, including intrinsic workflow claims. A pre-claim row is
-    /// admitted under its fallback workspace claim, so it projects that set
-    /// rather than falling through. `nil` only for a direct launch.
+    /// exclusively, including intrinsic workflow claims. A pre-claim row and
+    /// a direct launch with no request are both admitted under the fallback
+    /// workspace claim, so they project that set too. Neither falls through
+    /// to an unrestricted launch: Git metadata nobody claimed stays read-only.
     static func admittedWritableGitMetadataRoots(
         for request: TaskTurnRequest?,
         task: AgentTask
-    ) -> [String]? {
-        guard let request else { return nil }
-        return admissionClaims(for: request, task: task)
+    ) -> [String] {
+        admissionClaims(for: request, task: task)
             .filter { $0.kind == .gitCommonDirectory && $0.access == .exclusive }
             .map(\.key)
     }
@@ -182,11 +187,14 @@ enum TaskExecutionResourceClaimResolver {
     ) -> TaskExecutionResourceAccess {
         // ASTRA itself — not the prompt — rewrites the checkout's
         // `.claude/settings.local.json` before the provider starts and restores
-        // it afterwards (`TaskQueue.injectTemplateHooks`). That mutation happens
-        // whatever the task declares or reads as its intent, so a hook-injecting
-        // task must never resolve to a concurrently-admissible shared claim:
-        // two of them would overwrite each other's backup and strand or drop
-        // executable hooks while the sibling is still running.
+        // it afterwards (`RuntimeTemplateHookScope`, created by
+        // `AgentRuntimeWorker` for the task's code working directory). That
+        // mutation happens whatever the task declares or reads as its intent,
+        // so a hook-injecting task must never resolve to a
+        // concurrently-admissible shared claim: two of them would overwrite
+        // each other's backup and strand or drop executable hooks while the
+        // sibling is still running. A runtime that never reads the file gets
+        // no injection and so no claim; see `TemplateHookInjectionPolicy`.
         if injectsTemplateHooks(task) || requiresExclusiveWorkflowAccess(task) {
             return .exclusive
         }
@@ -254,10 +262,11 @@ enum TaskExecutionResourceClaimResolver {
         }
     }
 
-    /// Mirrors `ClaudeSettingsStore.injectTemplateHooks`' own write guard: an
-    /// empty or `{}` payload never touches the settings file.
     private static func injectsTemplateHooks(_ task: AgentTask) -> Bool {
-        !task.templateHooksJSON.isEmpty && task.templateHooksJSON != "{}"
+        TemplateHookInjectionPolicy.claimsCheckoutSettings(
+            hooksJSON: task.templateHooksJSON,
+            runtimeRawValue: task.runtimeID ?? task.resolvedRuntimeID.rawValue
+        )
     }
 
     /// Shared admission covers the provider boundary only when every
