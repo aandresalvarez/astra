@@ -246,7 +246,7 @@ struct TaskTurnMessageLifecyclePresentation: Equatable, Sendable {
         switch reason {
         case "task_owner_unresolved": "ASTRA cannot identify which imported copy owns this saved request. No new execution was started. Send a new message in the intended copy."
         case "launch_policy_unreadable": "The saved launch settings could not be read. No new execution was started; send a new request with the intended settings."
-        default: reason
+        default: TaskWorkspaceConsultationAvailability.terminalDetail(forReason: reason) ?? reason
         }
     }
 

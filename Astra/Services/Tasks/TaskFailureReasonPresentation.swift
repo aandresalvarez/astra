@@ -17,12 +17,15 @@ enum TaskFailureReasonPresentation {
         return remediation.isEmpty ? nil : remediation
     }
 
+    /// What `reason` says when no error event names a cause.
+    static let unknownReason = "The agent encountered an error. Check the activity log."
+
     static func reason(errorPayloads: [String], latestExitCode: Int?) -> String {
         guard let payload = errorPayloads.last else {
             if latestExitCode == 143 {
                 return "Process killed (SIGTERM) - likely timeout."
             }
-            return "The agent encountered an error. Check the activity log."
+            return unknownReason
         }
         return reason(payload: payload, latestExitCode: latestExitCode)
     }

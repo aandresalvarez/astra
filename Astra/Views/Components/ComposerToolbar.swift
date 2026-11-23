@@ -126,6 +126,9 @@ struct ComposerToolbar: View {
     var onPolicyLevelChange: ((AgentPolicyLevel) -> Void)?
     var consultationMode: Binding<Bool>?
     var consultationModeDisabled = false
+    /// The task or saved draft this composer sends for; decides whether
+    /// Consult can start. Nil for a new composer with no draft yet.
+    var consultationTask: AgentTask?
 
     // MARK: - Submit button style
 
@@ -164,6 +167,14 @@ struct ComposerToolbar: View {
         }
     }
 
+    /// Scalar settings only (sandbox mode, branch, tests, hooks), so it is
+    /// cheap enough for `body`. Read from the same source as admission.
+    private var consultationAvailability: TaskWorkspaceConsultationAvailability {
+        TaskWorkspaceConsultationAvailability.resolve(
+            sandboxEnforcement: TaskWorkspaceConsultationAvailability.storedSandboxEnforcement(),
+            task: consultationTask)
+    }
+
     private var toolbarContent: some View {
         HStack(spacing: ComposerToolbarPresentation.controlSpacing) {
             plusMenu
@@ -173,22 +184,30 @@ struct ComposerToolbar: View {
             }
 
             if let consultationMode, workspace != nil {
+                let consultation = ComposerConsultationMenuPresentation(
+                    isConsult: consultationMode.wrappedValue, availability: consultationAvailability)
                 Menu {
-                    Picker("Workspace access", selection: consultationMode) {
-                        Text("Work").tag(false)
-                        Text("Consult").tag(true)
+                    // Toggles, not a Picker: a menu disables a toggle item,
+                    // and an unavailable Consult must not be choosable.
+                    Toggle("Work", isOn: Binding(get: { !consultationMode.wrappedValue },
+                        set: { if $0 { consultationMode.wrappedValue = false } }))
+                    Toggle("Consult", isOn: Binding(get: { consultationMode.wrappedValue },
+                        set: { if $0 { consultationMode.wrappedValue = true } }))
+                        .disabled(consultation.consultChoiceDisabled)
+                    if let note = consultation.menuNote {
+                        Divider()
+                        Text(note)
                     }
                 } label: {
-                    Label(consultationMode.wrappedValue ? "Consult" : "Work",
-                        systemImage: consultationMode.wrappedValue ? "text.bubble" : "hammer")
+                    Label(consultation.title, systemImage: consultation.systemImage)
                         .font(Stanford.ui(13))
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
                 .disabled(isRunning || consultationModeDisabled || isPlanMode)
-                .help("Consult reads workspace files while other tasks work. Files may change during the answer. Switch to Work to change workspace files.")
+                .help(consultation.help)
                 .accessibilityLabel("Workspace access")
-                .accessibilityValue(consultationMode.wrappedValue ? "Consult" : "Work")
+                .accessibilityValue(consultation.accessibilityValue)
                 .accessibilityIdentifier("WorkspaceConsultationMode")
             }
 

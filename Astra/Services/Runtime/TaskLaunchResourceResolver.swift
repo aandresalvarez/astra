@@ -57,7 +57,7 @@ enum TaskLaunchResourceResolver {
                 severity: .error,
                 code: "consultation_requires_read_only_workspace",
                 message: "Consult cannot start with writable workspace access.",
-                repairAction: "Enable sandbox enforcement and disable branch changes, automatic tests, and template hooks, or switch to Work."
+                repairAction: "Turn on the Execution Sandbox (Settings → Runtime) and turn off branch changes, automatic tests, and template hooks, or switch to Work."
             ))
         }
         let resolutionSnapshot = capabilityResolutionSnapshot ?? TaskCapabilityResolutionSnapshot.capture(

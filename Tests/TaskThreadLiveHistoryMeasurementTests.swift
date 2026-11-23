@@ -97,7 +97,7 @@ private struct LiveHistoryMeasurementTranscript: View {
         switch item {
         case .userMessage(_, let text, _), .planUserMessage(let text, _),
              .planAssistantMessage(let text, _), .scheduleResult(let text, _),
-             .systemInfo(let text, _, _), .recapResult(let text, _): text
+             .systemInfo(let text, _, _), .recapResult(let text, _), .launchFailure(_, let text, _, _): text
         case .agentResponse(let run): run.output
         case .externalAction(let record): record.contextLine
         }

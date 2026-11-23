@@ -692,7 +692,7 @@ struct TaskDecisionDockPresentation: Equatable {
                 ? TaskRequestBudget.exhaustedMessage
                 : (context.failureReason ?? "The run failed. Review the output, then resume or retry."),
             metrics: metrics(context),
-            details: details(context),
+            details: details(context, additional: overBudget ? [] : [failureReasonDetail(context)].compactMap { $0 }),
             primaryAction: context.canResume && context.hasProviderSession
                 ? action(.resume, title: "Resume", systemImage: "play.fill")
                 : (context.canRetry ? action(.retry, title: "Retry", systemImage: "arrow.clockwise") : nil),
@@ -709,6 +709,15 @@ struct TaskDecisionDockPresentation: Equatable {
             overflowActions: supportAndCloseOverflowActions(context, closeTitle: nil),
             prefersExpandedDetails: true
         )
+    }
+
+    /// The dock's own row shows only the title, so the reason the run stopped
+    /// must be a row of its own in the details, not just the row's tooltip.
+    private static func failureReasonDetail(_ context: Context) -> TaskDecisionDockDetail? {
+        guard let reason = context.failureReason?.trimmingCharacters(in: .whitespacesAndNewlines), !reason.isEmpty,
+              reason != TaskFailureReasonPresentation.unknownReason else { return nil }
+        return TaskDecisionDockDetail(id: "failure-reason", title: "Why it stopped", summary: reason,
+            systemImage: "exclamationmark.bubble", tone: .failed)
     }
 
     private static func noUsableResultPresentation(_ context: Context) -> TaskDecisionDockPresentation {
