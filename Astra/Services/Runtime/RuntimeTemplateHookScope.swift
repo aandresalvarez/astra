@@ -11,11 +11,17 @@ final class RuntimeTemplateHookScope {
     private let path: String
     private let injected: Bool
     private let backup: Data?
-    init(task: AgentTask, path: String, runtime: AgentRuntimeID, workspaceAccess: TaskExecutionResourceAccess) {
+    init(
+        task: AgentTask,
+        path: String,
+        runtime: AgentRuntimeID,
+        workspaceAccess: TaskExecutionResourceAccess,
+        lease: [TaskResourceLockClaim]? = nil
+    ) {
         self.hooks = task.templateHooksJSON
         self.path = path
         self.injected = TemplateHookInjectionPolicy.injects(
-            hooksJSON: hooks, runtime: runtime, workspaceAccess: workspaceAccess)
+            hooksJSON: hooks, runtime: runtime, workspaceAccess: workspaceAccess, path: path, lease: lease)
         self.backup = injected ? ClaudeSettingsStore.injectTemplateHooks(hooksJSON: hooks, workspacePath: path) : nil
         if !injected, TemplateHookInjectionPolicy.hasHooks(hooks) {
             let readsSettings = TemplateHookInjectionPolicy.readsCheckoutSettings(runtime)

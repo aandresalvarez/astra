@@ -139,4 +139,33 @@ struct TemplateHookInjectionPolicyTests {
             try FileManager.default.removeItem(atPath: ClaudeSettingsStore.settingsDirectory(for: checkout))
         }
     }
+
+    @Test("Hooks are written only into a folder the admitted lease holds as a writer")
+    func hooksNeedTheLeaseToCoverTheirFolder() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-hook-lease-\(UUID().uuidString)", isDirectory: true)
+        let held = root.appendingPathComponent("held").path
+        let moved = root.appendingPathComponent("moved").path
+        try FileManager.default.createDirectory(atPath: held + "/nested", withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: moved, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        func claim(_ key: String, _ access: TaskResourceAccessMode, _ kind: TaskExecutionResourceKind = .workspace) -> TaskResourceLockClaim {
+            TaskResourceLockClaim(taskID: UUID(), resourceKey: key, accessMode: access, runMode: "test", resourceKind: kind)
+        }
+        func injects(_ path: String, _ lease: [TaskResourceLockClaim]?) -> Bool {
+            TemplateHookInjectionPolicy.injects(
+                hooksJSON: #"{"PreToolUse":[]}"#, runtime: .claudeCode, workspaceAccess: .exclusive, path: path, lease: lease)
+        }
+
+        #expect(injects(held, [claim(held, .write)]))
+        #expect(injects(held + "/nested", [claim(held, .write)]))
+        // The checkout moved while the request was queued: the lease covers
+        // the old folder, not the one the hooks would be written into.
+        #expect(!injects(moved, [claim(held, .write)]))
+        // A reader's claim, or one of another kind, does not cover a write.
+        #expect(!injects(held, [claim(held, .readOnly)]))
+        #expect(!injects(held, [claim(held, .write, .docker)]))
+        // A launch admission never saw keeps the access check alone.
+        #expect(injects(moved, nil))
+    }
 }

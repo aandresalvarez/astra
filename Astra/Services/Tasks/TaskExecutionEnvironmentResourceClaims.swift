@@ -8,12 +8,15 @@ import ASTRAPersistence
 /// mounts into the container, and the remote folder a workspace SSH
 /// connection works in.
 ///
-/// Both follow the run's workspace access. A read-only run gets its Docker
-/// mounts read-only and declares itself a reader of the remote folder; a
-/// write-capable run is a writer of both. `TaskExecutionResourceAdmissionPolicy
+/// Docker mounts follow the run's workspace access: a read-only run gets them
+/// read-only, a write-capable run read-write. `TaskExecutionResourceAdmissionPolicy
 /// .lockClaims` therefore derives them again from the access it finally
 /// admits, so a request frozen as a reader and admitted as a writer (sandboxing
 /// Off) holds what its launch will be granted.
+///
+/// A remote folder is always claimed as a writer's. Nothing enforces read-only
+/// access over SSH: a run declared read-only still gets a shell on the host
+/// with the login's own permissions, so two "readers" could both write.
 extension TaskExecutionResourceClaimResolver {
     static func environmentClaims(
         for task: AgentTask,
@@ -32,9 +35,10 @@ extension TaskExecutionResourceClaimResolver {
     ) -> [TaskExecutionResourceClaim] {
         guard let workspace = task.workspace, !workspace.primaryPath.isEmpty else { return [] }
         var seen = Set<String>()
+        // `workspaceAccess` is deliberately not used: see the type comment.
         return SSHConnectionManager.loadForExport(workspacePath: workspace.primaryPath).compactMap { connection in
             guard let key = RemoteDirectoryClaimKey.key(for: connection), seen.insert(key).inserted else { return nil }
-            return TaskExecutionResourceClaim(kind: .remoteDirectory, key: key, access: workspaceAccess)
+            return TaskExecutionResourceClaim(kind: .remoteDirectory, key: key, access: .exclusive)
         }
     }
 

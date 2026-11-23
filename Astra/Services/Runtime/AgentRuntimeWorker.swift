@@ -413,7 +413,8 @@ final class AgentRuntimeWorker {
         defer { isRunning = false }
         cancellationRequested = false
         let hooks = auditPhase == .run ? RuntimeTemplateHookScope(task: launchTask, path: TaskWorkspaceAccess(
-            task: launchTask).codeWorkingDirectory, runtime: selectedRuntime, workspaceAccess: executionWorkspaceAccess) : nil
+            task: launchTask).codeWorkingDirectory, runtime: selectedRuntime, workspaceAccess: executionWorkspaceAccess,
+            lease: executionPolicy.admittedResourceClaims) : nil
         defer { hooks?.restore() }
 
         // Settle executionEnvironmentSnapshotJSON before resolving

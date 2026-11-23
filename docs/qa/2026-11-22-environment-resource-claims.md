@@ -28,8 +28,9 @@ folder the other mounts.
 
 **Remote folders.** A task in a workspace with SSH connections claims each
 connection's remote folder: host and port, then the folder, normalized without
-contacting the host. The claim follows the run's workspace access, so a
-write-capable run is a writer and a run declared read-only is a reader.
+contacting the host. The claim is always a writer's, even for a run declared
+read-only: nothing enforces read-only access over SSH, where a run gets a shell
+with the login's own permissions.
 
 - The machine is the route `ssh` takes: a connection with an SSH config alias
   is keyed by the alias, whatever its host fields say.
@@ -37,8 +38,8 @@ write-capable run is a writer and a run declared read-only is a reader.
 - If the connections file names a remote folder the admitted lease does not
   cover when the launch starts, the run stops with the workspace-drift error,
   as for a changed mount.
-- The same folder, a folder containing it and a folder inside it conflict when
-  either run is a writer. Readers share.
+- The same folder, a folder containing it and a folder inside it conflict,
+  read-only or not.
 - Where two folders cannot be compared locally (`~/app` against `/srv/app`, or
   a path that climbs out of a home), they are treated as overlapping.
 
@@ -68,8 +69,9 @@ A claim on `~/.ssh` would have serialized every remote-workspace task, which is
 the blanket lock this work is meant to avoid.
 
 **Template hooks.** Hooks are injected into `.claude/settings.local.json` only
-for a runtime that reads it, and only while the run holds its checkout
-exclusively. A task on Codex CLI, Copilot CLI, Cursor CLI, Antigravity CLI or
+for a runtime that reads it, only while the run holds its checkout
+exclusively, and only into a folder its admitted lease holds as a writer, so a
+checkout that moved while the request was queued is never written. A task on Codex CLI, Copilot CLI, Cursor CLI, Antigravity CLI or
 OpenCode CLI no longer gets the file written and no longer claims its checkout
 exclusively because of hooks.
 
@@ -122,8 +124,10 @@ None. No container, SSH connection or provider was started for this change.
 - Remote folders are compared by spelling. A symlink on the host, or one
   machine reached under two names (an SSH alias here, its host name there), is
   not recognized as the same folder.
-- A read-only remote claim is a declaration. ASTRA's sandbox limits what a run
-  writes on this Mac, not what it does over SSH.
+- A run declared read-only still holds its remote folder as a writer,
+  because ASTRA's sandbox limits what a run writes on this Mac, not what it
+  does over SSH. Two read-only tasks on one remote folder therefore wait for
+  each other.
 - A credential projection ASTRA adds at launch (gcloud application-default
   credentials, read-only) is mounted after admission, so its shared claim is
   not held for that first run.

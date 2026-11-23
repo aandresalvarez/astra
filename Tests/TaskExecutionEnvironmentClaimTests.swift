@@ -292,7 +292,7 @@ struct TaskExecutionEnvironmentClaimTests {
         #expect(TaskExecutionResourceBroker.canAcquire(fixture.lease(otherHost), active: fixture.lease(first)))
     }
 
-    @Test("Writers of the same, a containing, or a contained remote folder wait; readers share", arguments: [
+    @Test("Tasks on the same, a containing, or a contained remote folder wait, read-only or not", arguments: [
         ("/srv/service", "/srv/service"),
         ("/srv", "/srv/service"),
         ("/srv/service/releases", "/srv/service"),
@@ -311,7 +311,9 @@ struct TaskExecutionEnvironmentClaimTests {
         #expect(!TaskExecutionResourceBroker.canAcquire(fixture.lease(otherWriter), active: fixture.lease(writer)))
         #expect(!TaskExecutionResourceBroker.canAcquire(fixture.lease(reader), active: fixture.lease(writer)))
         #expect(!TaskExecutionResourceBroker.canAcquire(fixture.lease(writer), active: fixture.lease(reader)))
-        #expect(TaskExecutionResourceBroker.canAcquire(fixture.lease(otherReader), active: fixture.lease(reader)))
+        // Nothing enforces read-only access over SSH, so a declared reader
+        // holds the folder as a writer does.
+        #expect(!TaskExecutionResourceBroker.canAcquire(fixture.lease(otherReader), active: fixture.lease(reader)))
 
         let conflict = try #require(TaskExecutionResourceBroker.firstConflict(
             requested: fixture.lease(otherWriter), active: fixture.lease(writer)))
@@ -321,15 +323,15 @@ struct TaskExecutionEnvironmentClaimTests {
         ).hasPrefix("Waiting for remote folder "))
     }
 
-    @Test("A declared remote reader is admitted as a writer once sandboxing is Off")
-    func remoteReaderFollowsItsAdmittedAccess() throws {
+    @Test("A declared remote reader holds the folder as a writer, with sandboxing on or Off")
+    func remoteReaderHoldsTheFolderAsAWriter() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
         let task = try fixture.remoteTask("a", connection(path: "/srv/service"), readOnly: true)
         let request = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 1,
                                       resourceClaims: TaskExecutionResourceClaimResolver.claims(for: task))
 
-        #expect(fixture.lease(task, request: request).first { $0.resourceKind == .remoteDirectory }?.accessMode == .readOnly)
+        #expect(fixture.lease(task, request: request).first { $0.resourceKind == .remoteDirectory }?.accessMode == .write)
         #expect(fixture.lease(task, request: request, sandboxEnforcement: .off)
             .first { $0.resourceKind == .remoteDirectory }?.accessMode == .write)
     }
