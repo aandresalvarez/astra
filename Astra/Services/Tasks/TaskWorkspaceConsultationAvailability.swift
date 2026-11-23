@@ -16,6 +16,8 @@ enum TaskWorkspaceConsultationAvailability: Equatable, Sendable {
     /// The task changes branches, runs tests, or runs template hooks, which
     /// ASTRA performs with write access around the run.
     case needsPlainWorkflow
+    /// Both at once: fixing either one alone still leaves Consult refused.
+    case needsSandboxAndPlainWorkflow
 
     var isAvailable: Bool { self == .available }
 
@@ -25,6 +27,8 @@ enum TaskWorkspaceConsultationAvailability: Equatable, Sendable {
         case .available: nil
         case .needsSandbox: "Consult needs the Execution Sandbox (Settings → Runtime)"
         case .needsPlainWorkflow: "Consult is off for branch changes, automatic tests and template hooks"
+        case .needsSandboxAndPlainWorkflow:
+            "Consult needs the Execution Sandbox and no branch changes, automatic tests or template hooks"
         }
     }
 
@@ -37,6 +41,8 @@ enum TaskWorkspaceConsultationAvailability: Equatable, Sendable {
             "Consult only reads workspace files, and the Execution Sandbox is what enforces that. It is Off, so Consult cannot start. Turn it on in Settings → Runtime, or use Work."
         case .needsPlainWorkflow:
             "Consult only reads workspace files. This task changes branches, runs automatic tests, or runs template hooks, which need write access. Turn those off, or use Work."
+        case .needsSandboxAndPlainWorkflow:
+            "Consult only reads workspace files. The Execution Sandbox is Off, and this task changes branches, runs automatic tests, or runs template hooks. Turn the sandbox on in Settings → Runtime and turn those off, or use Work."
         }
     }
 
@@ -51,10 +57,15 @@ enum TaskWorkspaceConsultationAvailability: Equatable, Sendable {
         sandboxEnforcement: ExecutionSandboxEnforcement,
         task: AgentTask?
     ) -> Self {
-        if let task, task.isLive, TaskExecutionResourceClaimResolver.requiresExclusiveWorkflowAccess(for: nil, task: task) {
-            return .needsPlainWorkflow
+        let sandboxOff = sandboxEnforcement == .off
+        let workflowWrites = task.map { $0.isLive
+            && TaskExecutionResourceClaimResolver.requiresExclusiveWorkflowAccess(for: nil, task: $0) } ?? false
+        switch (sandboxOff, workflowWrites) {
+        case (true, true): return .needsSandboxAndPlainWorkflow
+        case (true, false): return .needsSandbox
+        case (false, true): return .needsPlainWorkflow
+        case (false, false): return .available
         }
-        return sandboxEnforcement == .off ? .needsSandbox : .available
     }
 
     /// The setting admission reads (`TaskQueue.sandboxEnforcementProvider`).

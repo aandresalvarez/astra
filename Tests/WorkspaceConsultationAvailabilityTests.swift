@@ -49,7 +49,12 @@ struct WorkspaceConsultationAvailabilityTests {
         #expect(TaskWorkspaceConsultationAvailability.resolve(sandboxEnforcement: .strict, task: task) == .needsPlainWorkflow)
         task.isolationStrategy = .sameDirectory
         task.validationStrategy = .runTests
-        #expect(TaskWorkspaceConsultationAvailability.resolve(sandboxEnforcement: .off, task: task) == .needsPlainWorkflow)
+        // With the sandbox also Off, fixing either blocker alone would leave
+        // Consult refused, so both are named.
+        let both = TaskWorkspaceConsultationAvailability.resolve(sandboxEnforcement: .off, task: task)
+        #expect(both == .needsSandboxAndPlainWorkflow)
+        #expect(both.menuNote?.contains("Execution Sandbox") == true && both.menuNote?.contains("template hooks") == true)
+        #expect(both.explanation?.contains("Settings → Runtime") == true && both.explanation?.contains("branches") == true)
         task.validationStrategy = .manual
         task.templateHooksJSON = "{\"hook\":true}"
         #expect(TaskWorkspaceConsultationAvailability.resolve(sandboxEnforcement: .bestEffort, task: task) == .needsPlainWorkflow)
