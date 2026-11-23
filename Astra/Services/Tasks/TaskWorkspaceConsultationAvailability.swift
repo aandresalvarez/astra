@@ -63,11 +63,13 @@ enum TaskWorkspaceConsultationAvailability: Equatable, Sendable {
     }
 
     /// A readable sentence for a turn request that ended with one of the
-    /// gate's reasons; nil for every other reason.
+    /// gate's reasons; nil for every other reason. The read-only reason covers
+    /// both causes (sandbox Off, or branch changes / tests / hooks), so its
+    /// sentence names both remedies rather than guessing which one applied.
     static func terminalDetail(forReason reason: String?) -> String? {
         switch reason {
         case "consultation_requires_read_only_workspace":
-            "Consult needs read-only workspace access. Turn on the Execution Sandbox, or use Work."
+            "Consult needs read-only workspace access: turn on the Execution Sandbox and turn off branch changes, automatic tests and template hooks, or use Work."
         case "consultation_plan_commands":
             "Consult cannot run a plan's commands. Use Work."
         default:

@@ -112,7 +112,10 @@ struct WorkspaceConsultationAvailabilityTests {
         request.terminalReason = "consultation_requires_read_only_workspace"
         let chip = TaskTurnMessageLifecyclePresentation.resolve(messageEventID: eventID, requests: [request.snapshot])
         #expect(chip?.title == "Couldn’t start")
-        #expect(chip?.detail == "Consult needs read-only workspace access. Turn on the Execution Sandbox, or use Work.")
+        // The reason covers sandbox Off and workflow writes alike, so the
+        // sentence must name both remedies, not only the sandbox.
+        let detail = chip?.detail ?? ""
+        #expect(detail.contains("Execution Sandbox") && detail.contains("branch changes") && detail.hasSuffix("or use Work."))
 
         request.terminalReason = "some_future_reason"
         #expect(TaskTurnMessageLifecyclePresentation.resolve(messageEventID: eventID,
