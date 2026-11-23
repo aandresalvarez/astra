@@ -185,6 +185,15 @@ final class AgentEventRecordingState {
         openToolUseEvents["\(run.id.uuidString)#\(id)"] = event
     }
 
+    /// The open call a permission denial names: by id, or by tool name when
+    /// exactly one open call of this run used that tool.
+    func openOperationID(deniedTool tool: String, run: TaskRun) -> String? {
+        let prefix = "\(run.id.uuidString)#"
+        if openToolUseEvents[prefix + tool] != nil { return tool }
+        let named = openToolUseEvents.keys.filter { $0.hasPrefix(prefix) && toolNamesByRunAndID[$0] == tool }
+        return named.count == 1 ? named.first.map { String($0.dropFirst(prefix.count)) } : nil
+    }
+
     /// The `tool.operation` row still taking this run's records.
     func openOperationBatch(for run: TaskRun) -> TaskEvent? { openOperationBatches[run.id] }
 
@@ -695,10 +704,13 @@ enum AgentEventRecorder {
         }
         switch event {
         case .control(let type):
-            if let toolUseID = ToolCallDenialMarker.toolUseID(fromControlType: type),
-               let dropped = recordingState?.takePendingFileChanges(toolUseID: toolUseID, run: run),
-               !dropped.isEmpty {
-                logDroppedFileChanges(dropped.count, reason: "permission_denied", task: task)
+            if let toolUseID = ToolCallDenialMarker.toolUseID(fromControlType: type) {
+                if let dropped = recordingState?.takePendingFileChanges(toolUseID: toolUseID, run: run), !dropped.isEmpty {
+                    logDroppedFileChanges(dropped.count, reason: "permission_denied", task: task)
+                }
+                AgentToolOperationRecording.recordDenied(
+                    tool: toolUseID, task: task, run: run, modelContext: modelContext, recordingState: recordingState
+                )
             }
 
         case .assistantMessage(let message):
@@ -771,7 +783,9 @@ enum AgentEventRecorder {
             let payload = "Using tool: \(name)\(suffix)"
             recordingState?.recordToolUse(id: id, name: name, evidence: payload, run: run,
                                           fullEvidence: "Using tool: \(name)" + (inputSummary.map { ": \($0)" } ?? ""))
-            if let open = recordingState?.openToolUseEvent(id: id, run: run) {
+            // An id that is only the tool's name is a parser's stand-in for a
+            // missing one: it cannot tell a repeated frame from a second call.
+            if id != name, let open = recordingState?.openToolUseEvent(id: id, run: run) {
                 AgentToolOperationRecording.updateOpenUse(open, payload: payload, task: task)
             } else {
                 let use = TaskEvent(task: task, eventType: TaskEventTypes.Tool.use, payload: payload, run: run)
@@ -860,6 +874,9 @@ enum AgentEventRecorder {
             if let dropped = recordingState?.takePendingFileChangesDenied(tool: tool, run: run), !dropped.isEmpty {
                 logDroppedFileChanges(dropped.count, reason: "permission_denied", task: task)
             }
+            AgentToolOperationRecording.recordDenied(
+                tool: tool, task: task, run: run, modelContext: modelContext, recordingState: recordingState
+            )
             modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Tool.permissionDenied, payload: "Permission requested for tool: \(tool). \(String(reason.prefix(300)))", run: run))
             AppLogger.audit(.workerPermissionDenied, category: "Worker", taskID: task.id, fields: [
                 "tool": AgentEventRecordingPresentation.normalizedPermissionTool(tool),

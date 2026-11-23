@@ -194,11 +194,12 @@ struct OperationEvidenceConformanceTests {
         #expect(operations.totalCount == stream.calls)
         #expect(operations.finishedCount == stream.calls)
         #expect(operations.failedCount == 1)
-        #expect(operations.inFlightCount == 0)
-        #expect(presentation.progressMessages.contains { $0.origin == .observedFailure && $0.text.contains("failed") })
+        #expect(presentation.timeline.contains { $0.origin == .observedFailure && $0.text.contains("failed") })
+        // None of it is attributed to the agent.
+        #expect(presentation.progressMessages.allSatisfy { $0.origin == .agent })
         #expect(presentation.technicalOutputs.contains { $0.title == "Failed tool result" && $0.rawPayload.contains("1 test failed") })
         if stream.hasBackgroundJob {
-            #expect(presentation.progressMessages.contains { $0.text.hasPrefix("Background job failed · exit code 1") })
+            #expect(presentation.timeline.contains { $0.text.hasPrefix("Background job failed · exit code 1") })
         }
         // The same stored history gives the same presentation again.
         #expect(TaskThreadSnapshot(task: task).activityPresentation(for: run).operations == operations)

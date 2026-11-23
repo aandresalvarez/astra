@@ -93,6 +93,8 @@ public struct AgentBackgroundJobEvent: Sendable, Equatable {
 /// record names both by row id together with the provider's call id.
 public struct ToolOperationRecord: Codable, Sendable, Equatable {
     public static let eventType = "tool.operation"
+    /// The status of a call that ended because permission for it was denied.
+    public static let deniedStatus = "permission_denied"
 
     /// The provider's tool-call or step id; empty when it gave none.
     public let callID: String
@@ -142,6 +144,7 @@ public struct ToolOperationRecord: Codable, Sendable, Equatable {
     public var failureSummary: String? {
         guard outcome == .failed || outcome == .cancelled else { return nil }
         let name = tool.map { "\($0) " } ?? "Tool "
+        if providerStatus == Self.deniedStatus { return "\(name)was denied permission" }
         let verb = outcome == .cancelled ? "was cancelled" : "failed"
         return exitCode.map { "\(name)\(verb) · exit code \($0)" } ?? "\(name)\(verb)"
     }
@@ -154,7 +157,11 @@ public struct ToolOperationRecord: Codable, Sendable, Equatable {
 public struct ToolOperationBatch: Codable, Sendable, Equatable {
     public static let currentVersion = 1
     /// Records per row. A full row is left as it is and a new one started.
-    public static let capacity = 40
+    public static let capacity = 16
+    /// A row is also full at this many characters, whatever its count: the
+    /// task mirror truncates a payload past 4,000, and a truncated batch
+    /// would not decode.
+    public static let payloadCharacterLimit = 3_600
 
     public let version: Int
     public var operations: [ToolOperationRecord]
@@ -180,10 +187,12 @@ public struct ToolOperationBatch: Codable, Sendable, Equatable {
 }
 
 /// The durable record of a provider background job ending, written as a
-/// `runtime.background_job` event. It is kept apart from assistant text so a
+/// `tool.background_job` event. It is kept apart from assistant text so a
 /// job notice never reads as the agent's own narration.
 public struct BackgroundJobRecord: Codable, Sendable, Equatable {
-    public static let eventType = "runtime.background_job"
+    /// Not under `runtime.`: that prefix marks ASTRA's own recovery evidence,
+    /// which the task mirror exports without its usual bounds.
+    public static let eventType = "tool.background_job"
     public static let currentVersion = 1
     public static let summaryLimit = 500
 

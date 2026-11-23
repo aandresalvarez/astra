@@ -24,6 +24,28 @@ enum AgentToolOperationRecording {
         TaskThreadChangeNotifier.post(taskID: task.id, source: "tool_use_updated")
     }
 
+    /// A denied call gets no result: the denial is what ended it. Closes the
+    /// open call the denial names — by its id, or by its tool's name when
+    /// exactly one open call used that tool — and nothing when it names none,
+    /// so a denial that arrives twice, or for a call already finished, adds
+    /// no record.
+    static func recordDenied(
+        tool: String,
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        recordingState: AgentEventRecordingState?
+    ) {
+        guard let recordingState, let callID = recordingState.openOperationID(deniedTool: tool, run: run) else { return }
+        recordingState.holdOperationStatus(
+            .init(outcome: .failed, exitCode: nil, providerStatus: ToolOperationRecord.deniedStatus), id: callID, run: run
+        )
+        recordFinished(
+            callID: callID, isError: true, resultEvent: nil,
+            task: task, run: run, modelContext: modelContext, recordingState: recordingState
+        )
+    }
+
     /// Called for every tool result, including one with no output. The
     /// provider's own status decides the outcome when it gave one; an error
     /// result is a failure whatever the status said.
@@ -53,9 +75,11 @@ enum AgentToolOperationRecording {
         // recording with no state to remember it in, starts a new row.
         if let open = recordingState?.openOperationBatch(for: run),
            var batch = ToolOperationBatch.decode(from: open.payload),
-           batch.operations.count < ToolOperationBatch.capacity {
+           batch.operations.count < ToolOperationBatch.capacity,
+           case let payload = TaskEvent.payloadString(ToolOperationBatch(operations: batch.operations + [record])),
+           payload.count <= ToolOperationBatch.payloadCharacterLimit {
             batch.operations.append(record)
-            open.payload = RunSecretRedactionScope.redact(TaskEvent.payloadString(batch), taskID: task.id)
+            open.payload = RunSecretRedactionScope.redact(payload, taskID: task.id)
             let changedAt = Date()
             open.timestamp = changedAt
             task.updatedAt = changedAt

@@ -140,7 +140,10 @@ public struct RunOperationProjection: Sendable, Equatable {
                 closeStretch()
             case "tool.use":
                 lastOperationEventAt = event.timestamp
-                let call = Self.toolCall(fromUsePayload: event.payload)
+                // ASTRA writes its own notes as `tool.use` rows too (isolation,
+                // validation). Only a row in the recorder's form is a call a
+                // provider made, and so one that can finish.
+                guard let call = Self.toolCall(fromUsePayload: event.payload) else { continue }
                 let finished = recordOfUse[event.id]
                 let operation = Operation(
                     id: event.id,
@@ -250,12 +253,9 @@ public struct RunOperationProjection: Sendable, Equatable {
     // MARK: - Text
 
     /// `Using tool: <name>[: <input>]`, as the recorder writes a call.
-    static func toolCall(fromUsePayload payload: String) -> (tool: String, detail: String?) {
+    static func toolCall(fromUsePayload payload: String) -> (tool: String, detail: String?)? {
         let prefix = "Using tool: "
-        guard payload.hasPrefix(prefix) else {
-            let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
-            return (trimmed.isEmpty ? "Tool" : String(trimmed.prefix(60)), nil)
-        }
+        guard payload.hasPrefix(prefix) else { return nil }
         let body = payload.dropFirst(prefix.count)
         let name = String(body.prefix { $0 != ":" }).trimmingCharacters(in: .whitespaces)
         let rest = body.dropFirst(name.count).drop { $0 == ":" || $0 == " " }

@@ -52,6 +52,9 @@ struct RunOperationProjectionTests {
         }
 
         mutating func say(_ text: String) { add("agent.response", text) }
+
+        /// The same rows as an older build would have left them.
+        mutating func dropRecords() { events.removeAll { $0.type == ToolOperationRecord.eventType } }
     }
 
     @Test("Each call takes the outcome its own record gives, however the results were ordered")
@@ -197,47 +200,65 @@ struct RunOperationProjectionTests {
 
     // MARK: - Answer selection
 
-    @Test("A call that finished without output does not answer a later call's result")
-    func silentCallDoesNotStealALaterResult() throws {
-        // Draft, save it silently, read something, then sign off. Without the
-        // record the read's result was paired with the write and counted as
-        // bookkeeping, joining the sign-off to a draft it does not belong to.
-        var history = History()
-        history.say(String(repeating: "Draft. ", count: 200))
-        let write = history.use("Write", "notes.md")
-        history.finish(write, tool: "Write", output: nil)
-        let read = history.use("Read", "other.swift")
-        history.finish(read, tool: "Read", output: "contents")
-        history.say("Saved.")
-        let events = history.events.map { RunAnswerSelectionPolicy.Event(id: $0.id, type: $0.type, payload: $0.payload) }
-
-        let selection = try #require(RunAnswerSelectionPolicy.legacySelection(events))
-
-        let signOff = try #require(history.events.last { $0.type == "agent.response" })
-        #expect(selection.answer == [[signOff.id]])
+    /// The two cases below end with a long draft, a file write, and a short
+    /// sign-off: one answer, as long as the write's result is read as the
+    /// write's. Paired by arrival order it was taken for an earlier read's,
+    /// counted as work, and the draft was dropped from the answer.
+    private static func answerRows(_ history: History) -> [[UUID]]? {
+        RunAnswerSelectionPolicy.legacySelection(
+            history.events.map { RunAnswerSelectionPolicy.Event(id: $0.id, type: $0.type, payload: $0.payload) }
+        )?.answer
     }
 
-    @Test("Out-of-order results are classified by their own call")
-    func outOfOrderResultsAreClassifiedByTheirCall() throws {
+    @Test("A call that finished without output does not answer a later call's result")
+    func silentCallDoesNotStealALaterResult() throws {
         var history = History()
-        history.say(String(repeating: "Answer. ", count: 200))
+        let read = history.use("Read", "notes.swift")
+        history.finish(read, tool: "Read", output: nil)
+        history.say(String(repeating: "Draft. ", count: 200))
         let write = history.use("Write", "answer.md")
-        let read = history.use("Read", "check.swift")
-        // The read's result arrives first. Paired in order it would be taken
-        // for the write's, and the write's for the read's.
-        history.finish(read, tool: "Read", output: "contents")
         history.finish(write, tool: "Write", output: "written")
-        history.say("Done.")
-        let events = history.events.map { RunAnswerSelectionPolicy.Event(id: $0.id, type: $0.type, payload: $0.payload) }
+        history.say("Saved.")
+        let messages = history.events.filter { $0.type == "agent.response" }.map(\.id)
 
-        let selection = try #require(RunAnswerSelectionPolicy.legacySelection(events))
+        #expect(Self.answerRows(history) == [[messages[0]], [messages[1]]])
 
-        // Real work (the read) separates the two messages either way; what
-        // matters is that the anchor is the read's own result.
-        let readResult = try #require(history.events.first { $0.type == "tool.result" && $0.payload == "contents" })
-        #expect(selection.anchor != nil)
-        #expect(selection.answer.count == 1)
-        #expect(history.events.firstIndex { $0.id == selection.anchor } ?? 0 >= history.events.firstIndex { $0.id == readResult.id } ?? 0)
+        // The same rows without records keep the old reading: nothing says
+        // the read finished, so the write's result is taken for the read's.
+        history.dropRecords()
+        #expect(Self.answerRows(history) == [[messages[1]]])
+    }
+
+    @Test("A result that arrives before an older call's is still its own call's")
+    func outOfOrderResultIsClassifiedByItsCall() throws {
+        var history = History()
+        let read = history.use("Read", "slow.swift")
+        history.say(String(repeating: "Draft. ", count: 200))
+        let write = history.use("Write", "answer.md")
+        history.finish(write, tool: "Write", output: "written")
+        history.say("Saved.")
+        // The read's result arrives last of all.
+        history.finish(read, tool: "Read", output: "contents")
+        let messages = history.events.filter { $0.type == "agent.response" }.map(\.id)
+
+        #expect(Self.answerRows(history) == [[messages[0]], [messages[1]]])
+
+        history.dropRecords()
+        #expect(Self.answerRows(history) == [[messages[1]]])
+    }
+
+    @Test("Part of a history is counted as part, never stated as the run's total")
+    func partialHistoryIsLabelled() {
+        var history = History()
+        let use = history.use("Read")
+        history.finish(use, tool: "Read")
+        let events = history.events.map { TaskEventSnapshotBuilder.event($0) }
+
+        let whole = RunOperationsPresentation(run: Self.run(status: .completed), events: events)
+        let partial = RunOperationsPresentation(run: Self.run(status: .completed), events: events, historyIsPartial: true)
+
+        #expect(whole.summaryLine == "1 operation · 1 finished")
+        #expect(partial.summaryLine == "1 operation in the loaded history · 1 finished")
     }
 
     // MARK: - Presentation
@@ -300,6 +321,17 @@ struct RunOperationProjectionTests {
         let run = TaskRun(task: task)
         run.status = status
         return TaskRunSnapshot(input: TaskRunSnapshotInput(run: run))
+    }
+}
+
+private enum TaskEventSnapshotBuilder {
+    static func event(_ event: RunOperationProjection.Event) -> TaskEventSnapshot {
+        let task = AgentTask(title: "Task", goal: "Goal")
+        let stored = TaskEvent(task: task, type: event.type, payload: event.payload)
+        // Records name rows by id, so the rebuilt rows keep theirs.
+        stored.id = event.id
+        stored.timestamp = event.timestamp
+        return TaskEventSnapshot(event: stored)
     }
 }
 

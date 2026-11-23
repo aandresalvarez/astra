@@ -431,8 +431,9 @@ public enum CopilotStreamEventParser {
                 summary: summary
             )))]
         }
+        // The control is what the process monitor sees: the provider is alive.
         guard let summary else { return [.control(type: type)] }
-        return [.notice(message: summary)]
+        return [.control(type: type), .notice(message: summary)]
     }
 
     /// The text of a notification without the `<system_notification>` wrapper

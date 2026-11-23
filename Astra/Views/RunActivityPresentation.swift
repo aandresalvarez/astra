@@ -875,7 +875,7 @@ extension RunActivityPresentation {
         if !progressMessages.isEmpty || hasPlanItems || operations.hasContent {
             tabs.append(.init(
                 tab: .updates,
-                count: progressMessages.isEmpty ? nil : progressMessages.count
+                count: timeline.isEmpty ? nil : timeline.count
             ))
         }
 

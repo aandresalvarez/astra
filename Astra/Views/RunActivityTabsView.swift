@@ -142,7 +142,7 @@ struct RunActivitySelectedTabView<ToolsContent: View, PolicyContent: View, LogsC
         case .updates:
             RunActivityProgressTimelineView(
                 presentation: RunActivityProgressTimelinePresentation(
-                    messages: presentation.progressMessages,
+                    messages: presentation.timeline,
                     planItems: planItems,
                     historyAnchorID: updateHistoryAnchorID
                 ),

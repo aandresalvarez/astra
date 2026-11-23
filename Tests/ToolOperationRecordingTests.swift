@@ -128,6 +128,98 @@ struct ToolOperationRecordingTests {
         #expect(fixture.operations.count == 1)
     }
 
+    @Test("An id that is only the tool's name does not merge two calls")
+    func nameFallbackIDIsNotAnIdentity() throws {
+        let fixture = try Fixture()
+
+        // A parser with no call id to go on uses the tool's name; two
+        // overlapping calls then share it.
+        fixture.record(
+            .toolUse(name: "shellToolCall", id: "shellToolCall", inputSummary: "make a"),
+            .toolUse(name: "shellToolCall", id: "shellToolCall", inputSummary: "make b")
+        )
+
+        #expect(fixture.events(TaskEventTypes.Tool.use).map(\.payload).sorted() == [
+            "Using tool: shellToolCall: make a", "Using tool: shellToolCall: make b"
+        ])
+    }
+
+    @Test("A denied call is closed by its denial, once, and is not left in flight")
+    func deniedCallIsClosed() throws {
+        let fixture = try Fixture()
+        fixture.run.status = .running
+        let line = #"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"Permission denied: Bash is not allowed here","is_error":true}]}}"#
+
+        fixture.record(.toolUse(name: "Bash", id: "toolu_1", inputSummary: "rm -rf build"))
+        // Claude reports the denial as a denial plus a marker naming the call;
+        // both arrive, and only one may close it.
+        for parsed in StreamEventParser.parseAll(line: line) {
+            for event in AgentEventRecorder.agentEvents(from: parsed) { fixture.record(event) }
+        }
+
+        let record = try #require(fixture.operations.first)
+        #expect(fixture.operations.count == 1)
+        #expect(record.outcome == .failed)
+        #expect(record.providerStatus == ToolOperationRecord.deniedStatus)
+        #expect(record.useEventID == fixture.events(TaskEventTypes.Tool.use).first?.id)
+        #expect(record.failureSummary == "Bash was denied permission")
+        try fixture.context.save()
+        let operations = TaskThreadSnapshot(task: fixture.task).activityPresentation(for: fixture.run).operations
+        #expect(operations.inFlightCount == 0)
+        #expect(operations.failedCount == 1)
+    }
+
+    @Test("A denial that names no open call adds no record")
+    func denialWithoutAnOpenCallAddsNothing() throws {
+        let fixture = try Fixture()
+
+        fixture.record(
+            .toolUse(name: "Bash", id: "a", inputSummary: "one"),
+            .toolUse(name: "Bash", id: "b", inputSummary: "two"),
+            // Two open Bash calls: the name alone does not say which.
+            .permissionRequested(tool: "Bash", reason: "not allowed")
+        )
+
+        #expect(fixture.operations.isEmpty)
+    }
+
+    @Test("ASTRA's own notes in the tool rows are not provider operations")
+    func astraNotesAreNotOperations() throws {
+        let fixture = try Fixture()
+        fixture.run.status = .running
+        for payload in ["Isolation: copy -> /tmp/work", "Running validation tests...", "Running AI self-check..."] {
+            fixture.context.insert(TaskEvent(task: fixture.task, eventType: TaskEventTypes.Tool.use, payload: payload, run: fixture.run))
+        }
+        fixture.record(.toolUse(name: "Bash", id: "open", inputSummary: "swift test"))
+        try fixture.context.save()
+
+        let operations = TaskThreadSnapshot(task: fixture.task).activityPresentation(for: fixture.run).operations
+
+        #expect(operations.totalCount == 1)
+        #expect(operations.inFlight.map(\.tool) == ["Bash"])
+    }
+
+    @Test("A batch row stays under the size the task mirror exports whole")
+    func batchRowsStayExportable() throws {
+        let fixture = try Fixture()
+        let longName = String(repeating: "mcp__server__tool_", count: 12)
+
+        // Long names fill a row by size well before it reaches its count.
+        for index in 0..<ToolOperationBatch.capacity {
+            let id = "call-\(index)-\(UUID().uuidString)"
+            fixture.record(
+                .toolUse(name: longName, id: id, inputSummary: nil),
+                .toolResult(id: id, content: "ok", isError: false)
+            )
+        }
+
+        let rows = fixture.events(TaskEventTypes.Tool.operation)
+        #expect(rows.count > 1)
+        #expect(fixture.operations.count == ToolOperationBatch.capacity)
+        #expect(rows.allSatisfy { $0.payload.count <= ToolOperationBatch.payloadCharacterLimit })
+        #expect(rows.allSatisfy { ToolOperationBatch.decode(from: $0.payload) != nil })
+    }
+
     @Test("A call id used again after its result is a new operation")
     func reusedCallIDAfterResultIsANewOperation() throws {
         let fixture = try Fixture()
@@ -305,10 +397,13 @@ struct ToolOperationRecordingTests {
         #expect(first.operations.failedCount == 1)
         #expect(first.operations.inFlightCount == 0)
         #expect(first.operations.summaryLine == "2 operations · 2 finished · 1 failed")
-        let lines = first.progressMessages.map(\.text)
+        // The agent said nothing, and what it said is still kept apart from
+        // what was observed.
+        #expect(first.progressMessages.isEmpty)
+        let lines = first.timeline.map(\.text)
         #expect(lines.contains("Bash failed — swift test"))
         #expect(lines.contains("Background job completed · exit code 0 — Build finished"))
-        #expect(first.progressMessages.first { $0.text.hasPrefix("Bash failed") }?.origin == .observedFailure)
+        #expect(first.timeline.first { $0.text.hasPrefix("Bash failed") }?.origin == .observedFailure)
         // The failed result reaches the details with its original evidence.
         #expect(first.technicalOutputs.contains { $0.title == "Failed tool result" && $0.rawPayload.contains("1 test failed") })
         #expect(first.tools.first { $0.toolName == "Bash" }?.countLabel == "1 call · 1 failed")
@@ -333,7 +428,7 @@ struct ToolOperationRecordingTests {
         let presentation = TaskThreadSnapshot(task: fixture.task).activityPresentation(for: fixture.run)
 
         #expect(presentation.technicalOutputs.contains { $0.rawPayload.contains("Error 2") })
-        #expect(presentation.progressMessages.contains { $0.text == "Bash failed — make" })
+        #expect(presentation.timeline.contains { $0.text == "Bash failed — make" })
         // What is shown is told apart from what was recorded.
         let logs = try #require(presentation.tabDescriptors(hasPlanItems: false).first { $0.tab == .logs })
         #expect(logs.total == 21)

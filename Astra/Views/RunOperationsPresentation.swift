@@ -44,6 +44,9 @@ struct RunOperationsPresentation: Hashable, Sendable {
     let resultsWithOutput: Int
     let lastRecordedActivityAt: Date?
     let lastAgentMessageAt: Date?
+    /// Whether the thread loaded only part of the task's history, so the
+    /// counts here are of what is loaded and not of the whole run.
+    var historyIsPartial = false
 
     static let empty = RunOperationsPresentation(
         runID: nil, isRunning: false, totalCount: 0, finishedCount: 0, failedCount: 0,
@@ -51,11 +54,12 @@ struct RunOperationsPresentation: Hashable, Sendable {
         failedUseEventIDs: [], resultsWithOutput: 0, lastRecordedActivityAt: nil, lastAgentMessageAt: nil
     )
 
-    init(run: TaskRunSnapshot, events: [TaskEventSnapshot]) {
+    init(run: TaskRunSnapshot, events: [TaskEventSnapshot], historyIsPartial: Bool = false) {
         let projection = RunOperationProjection(events: events.map {
             .init(id: $0.id, type: $0.type, payload: $0.payload, timestamp: $0.timestamp)
         })
         self.init(run: run, projection: projection)
+        self.historyIsPartial = historyIsPartial
     }
 
     init(run: TaskRunSnapshot, projection: RunOperationProjection) {
@@ -126,7 +130,9 @@ struct RunOperationsPresentation: Hashable, Sendable {
     /// only stated where records make it a fact.
     var summaryLine: String? {
         guard totalCount > 0 else { return nil }
-        var parts = ["\(totalCount) \(totalCount == 1 ? "operation" : "operations")"]
+        // Part of the history is not a run total, and must not read as one.
+        let scope = historyIsPartial ? " in the loaded history" : ""
+        var parts = ["\(totalCount) \(totalCount == 1 ? "operation" : "operations")\(scope)"]
         if hasOperationRecords { parts.append("\(finishedCount) finished") }
         if failedCount > 0 { parts.append("\(failedCount) failed") }
         if inFlightCount > 0 { parts.append("\(inFlightCount) in flight") }
@@ -177,6 +183,13 @@ private extension RunOperationProjection.Milestone {
         case .workSummary: false
         }
     }
+}
+
+extension RunActivityPresentation {
+    /// The Updates timeline: the agent's messages with the observed
+    /// milestones among them. `progressMessages` stays the agent's own, for
+    /// the places that quote or count what the agent said.
+    var timeline: [TaskRunProgressMessage] { operations.timeline(merging: progressMessages) }
 }
 
 extension RunActivityTabDescriptor {

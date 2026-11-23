@@ -1069,13 +1069,13 @@ struct TaskThreadSnapshot: Sendable {
             let displayNotices = run.hasVPNWarning ? act.notices.filter { $0.type != "error" } : act.notices
             let actionableNotices = displayNotices.filter { TaskRunNoticePresentationRules.shouldShowInline($0, for: run) }
 
-            let operations = RunOperationsPresentation(run: run, events: eventsByRunID[run.id] ?? [])
+            let operations = RunOperationsPresentation(run: run, events: eventsByRunID[run.id] ?? [], historyIsPartial: omittedEventCount > 0)
             activityPresentations[run.id] = RunActivityPresentation(
                 run: run,
                 activity: act,
                 notices: displayNotices,
                 suppressedNoticeIDs: Set(actionableNotices.map(\.id)),
-                progressMessages: operations.timeline(merging: outputPres.progressMessages),
+                progressMessages: outputPres.progressMessages,
                 operations: operations
             )
         }

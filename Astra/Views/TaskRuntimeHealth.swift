@@ -329,8 +329,10 @@ struct TaskRuntimeHealth: Equatable, Sendable {
                     return "Skipping a plan step..."
                 case "tool.use":
                     return latestTool.map { "Running \($0)..." } ?? "Running a tool..."
-                case "tool.result":
+                case "tool.result", "tool.result.failed", ToolOperationRecord.eventType:
                     return "Processing tool output..."
+                case BackgroundJobRecord.eventType:
+                    return "A background job finished..."
                 case "agent.response":
                     return "Writing response..."
                 case "agent.thinking":

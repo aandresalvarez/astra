@@ -44,7 +44,11 @@ struct AgentOperationParserTests {
     func copilotOtherNotificationIsANotice() {
         let line = #"{"type":"system.notification","data":{"content":"<system_notification>Agent is idle</system_notification>","kind":{"type":"agent_idle","agentId":"a-1"}}}"#
 
-        #expect(CopilotStreamEventParser.parseIdentifiedAgentEvents(line: line) == [.notice(message: "Agent is idle")])
+        // The control keeps the process monitor's liveness; the notice is
+        // what is recorded.
+        #expect(CopilotStreamEventParser.parseIdentifiedAgentEvents(line: line) == [
+            .control(type: "system.notification"), .notice(message: "Agent is idle")
+        ])
     }
 
     @Test("A background job ending keeps the process monitor's progress clock running")
