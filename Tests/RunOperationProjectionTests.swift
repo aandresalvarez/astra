@@ -37,7 +37,8 @@ struct RunOperationProjectionTests {
             output: String? = "ok",
             outcome: AgentOperationOutcome = .succeeded,
             exitCode: Int? = nil,
-            candidates: [UUID]? = nil
+            candidates: [UUID]? = nil,
+            group: UUID? = nil
         ) {
             var result: UUID?
             if let output {
@@ -48,7 +49,7 @@ struct RunOperationProjectionTests {
             let record = ToolOperationRecord(
                 callID: "call", tool: tool, outcome: outcome, exitCode: exitCode,
                 hasOutput: output != nil, useEventID: use, resultEventID: result, finishedAt: clock,
-                candidateUseEventIDs: candidates
+                groupID: group ?? (candidates == nil ? nil : UUID()), candidateUseEventIDs: candidates
             )
             add(ToolOperationRecord.eventType, TaskEvent.payloadString(ToolOperationBatch(operations: [record])))
         }
@@ -224,13 +225,34 @@ struct RunOperationProjectionTests {
         #expect(projection.openOperations.map(\.id) == [unrelated])
     }
 
+    @Test("A call that joins a group later is counted with it, not as a second group")
+    func lateMemberJoinsItsGroup() {
+        var history = History()
+        let group = UUID()
+        let first = history.use("bash", "a")
+        let second = history.use("bash", "b")
+        history.finish(nil, tool: "bash", candidates: [first, second], group: group)
+        // A third call opens under the same id before the group has emptied.
+        let third = history.use("bash", "c")
+        history.finish(nil, tool: "bash", candidates: [third], group: group)
+        history.finish(nil, tool: "bash", candidates: [], group: group)
+
+        let projection = RunOperationProjection(events: history.events)
+
+        #expect(projection.totalCount == 3)
+        #expect(projection.finishedCount == 3)
+        #expect(projection.unidentifiedOpenCount == 0)
+        #expect(projection.openOperations.isEmpty)
+    }
+
     @Test("A group's results never finish more calls than the group had")
     func groupClosuresAreBounded() {
         var history = History()
         let first = history.use("bash", "a")
         let second = history.use("bash", "b")
-        history.finish(nil, tool: "bash", candidates: [first, second])
-        history.finish(nil, tool: "bash", candidates: [first, second])
+        let group = UUID()
+        history.finish(nil, tool: "bash", candidates: [first, second], group: group)
+        history.finish(nil, tool: "bash", candidates: [], group: group)
 
         let projection = RunOperationProjection(events: history.events)
 

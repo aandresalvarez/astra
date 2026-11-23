@@ -33,10 +33,9 @@ final class AgentEventRecordingState {
     private var runsWithUnkeyedText: Set<UUID> = []
 
     private var openToolUseEvents: [String: [TaskEvent]] = [:]
-    /// Ids two open calls have shared since their list was last empty.
-    private var ambiguousOpenKeys: Set<String> = []
-    /// Every call opened under an id since its list was last empty.
-    private var openGroupMembers: [String: [UUID]] = [:]
+    /// Ids two open calls have shared since their list was last empty: the
+    /// group's own id, and its members no record has listed yet.
+    private var ambiguousGroups: [String: (id: UUID, unlisted: [UUID])] = [:]
     private var pendingOperationStatuses: [String: PendingOperationStatus] = [:]
     private var openOperationBatches: [UUID: TaskEvent] = [:]
 
@@ -182,7 +181,7 @@ final class AgentEventRecordingState {
     /// one operation, not a new one.
     func openToolUseEvent(id: String, run: TaskRun) -> TaskEvent? {
         let key = "\(run.id.uuidString)#\(id)"
-        guard !id.isEmpty, !ambiguousOpenKeys.contains(key), let open = openToolUseEvents[key], open.count == 1 else {
+        guard !id.isEmpty, ambiguousGroups[key] == nil, let open = openToolUseEvents[key], open.count == 1 else {
             return nil
         }
         return open[0]
@@ -194,8 +193,15 @@ final class AgentEventRecordingState {
     func openToolUse(_ event: TaskEvent, id: String, run: TaskRun) {
         let key = "\(run.id.uuidString)#\(id)"
         openToolUseEvents[key, default: []].append(event)
-        openGroupMembers[key, default: []].append(event.id)
-        if openToolUseEvents[key, default: []].count > 1 { ambiguousOpenKeys.insert(key) }
+        let open = openToolUseEvents[key, default: []]
+        if var group = ambiguousGroups[key] {
+            group.unlisted.append(event.id)
+            ambiguousGroups[key] = group
+        } else if open.count > 1 {
+            // From here on these calls cannot be told apart: one group, named
+            // by an id of its own, holding every call open under the id.
+            ambiguousGroups[key] = (UUID(), open.map(\.id))
+        }
     }
 
     /// The open call a permission denial names: by id, or by tool name when
@@ -206,7 +212,7 @@ final class AgentEventRecordingState {
         let named = openToolUseEvents.filter {
             $0.key.hasPrefix(prefix) && !$0.value.isEmpty && toolNamesByRunAndID[$0.key] == tool
         }
-        return named.count == 1 && named.first?.value.count == 1 && named.first.map({ !ambiguousOpenKeys.contains($0.key) }) == true
+        return named.count == 1 && named.first?.value.count == 1 && named.first.map({ ambiguousGroups[$0.key] == nil }) == true
             ? named.first.map { String($0.key.dropFirst(prefix.count)) } : nil
     }
 
@@ -228,24 +234,26 @@ final class AgentEventRecordingState {
     func finishToolOperation(
         id: String,
         run: TaskRun
-    ) -> (use: TaskEvent?, tool: String?, status: PendingOperationStatus?, candidates: [UUID]?) {
+    ) -> (use: TaskEvent?, tool: String?, status: PendingOperationStatus?, group: (id: UUID, listed: [UUID])?) {
         let key = "\(run.id.uuidString)#\(id)"
         let status = id.isEmpty ? nil : pendingOperationStatuses.removeValue(forKey: key)
         let tool = id.isEmpty ? nil : toolNamesByRunAndID[key]
         guard var open = openToolUseEvents[key], !open.isEmpty else { return (nil, tool, status, nil) }
         // Once two calls shared the id, which ones are still open is unknown
         // until all of them have finished, so none is named meanwhile: the
-        // record lists every call it may have been instead.
-        let ambiguous = ambiguousOpenKeys.contains(key)
-        let use = ambiguous ? nil : open[0]
-        let candidates = ambiguous ? openGroupMembers[key] : nil
+        // record names their group and lists members not yet listed.
+        var groupRecord: (id: UUID, listed: [UUID])?
+        if var group = ambiguousGroups[key] {
+            let listed = Array(group.unlisted.prefix(ToolOperationRecord.candidatesPerRecord))
+            group.unlisted.removeFirst(listed.count)
+            ambiguousGroups[key] = group
+            groupRecord = (group.id, listed)
+        }
+        let use = groupRecord == nil ? open[0] : nil
         open.removeFirst()
         openToolUseEvents[key] = open.isEmpty ? nil : open
-        if open.isEmpty {
-            ambiguousOpenKeys.remove(key)
-            openGroupMembers[key] = nil
-        }
-        return (use, tool, status, candidates)
+        if open.isEmpty { ambiguousGroups[key] = nil }
+        return (use, tool, status, groupRecord)
     }
 
     func toolUseFullEvidence(id: String, run: TaskRun) -> String? {

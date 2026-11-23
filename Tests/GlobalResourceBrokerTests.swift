@@ -181,6 +181,32 @@ struct GlobalResourceBrokerTests {
         #expect(!TaskExecutionResourceBroker.conflicts(git, workspace))
     }
 
+    @Test("A reviewed decision names what the broker treats as the same folders")
+    func namingMirrorsFolderConflicts() {
+        let (requester, holder) = (UUID(), UUID())
+        func names(_ requested: TaskResourceLockClaim, _ held: TaskResourceLockClaim) -> Bool {
+            TaskExecutionResourceBroker.names(requested, resourceOf: held)
+        }
+        // A remote folder names the one inside it on the same machine.
+        #expect(names(claim(taskID: requester, kind: .remoteDirectory, key: "h:22 /srv", access: .write),
+                      claim(taskID: holder, kind: .remoteDirectory, key: "h:22 /srv/app", access: .write)))
+        #expect(!names(claim(taskID: requester, kind: .remoteDirectory, key: "h:22 /srv/app", access: .write),
+                       claim(taskID: holder, kind: .remoteDirectory, key: "h:22 /srv", access: .write)))
+        #expect(!names(claim(taskID: requester, kind: .remoteDirectory, key: "h:22 /srv", access: .write),
+                       claim(taskID: holder, kind: .remoteDirectory, key: "other:22 /srv/app", access: .write)))
+        // A workspace folder names a Docker mount inside it, and a mount of a
+        // repository names that repository's Git metadata.
+        #expect(names(claim(taskID: requester, kind: .workspace, key: "/tmp/astra-names/repo", access: .write),
+                      claim(taskID: holder, kind: .docker, key: "/tmp/astra-names/repo/cache", access: .write)))
+        #expect(names(claim(taskID: requester, kind: .docker, key: "/tmp/astra-names/repo", access: .write),
+                      claim(taskID: holder, kind: .gitCommonDirectory, key: "/tmp/astra-names/repo/.git", access: .write)))
+        // A workspace claim still never names Git metadata, and access must match.
+        #expect(!names(claim(taskID: requester, kind: .workspace, key: "/tmp/astra-names/repo", access: .write),
+                       claim(taskID: holder, kind: .gitCommonDirectory, key: "/tmp/astra-names/repo/.git", access: .write)))
+        #expect(!names(claim(taskID: requester, kind: .workspace, key: "/tmp/astra-names/repo", access: .write),
+                       claim(taskID: holder, kind: .docker, key: "/tmp/astra-names/repo/cache", access: .readOnly)))
+    }
+
     private func claim(
         taskID: UUID,
         kind: TaskExecutionResourceKind = .accountSession,

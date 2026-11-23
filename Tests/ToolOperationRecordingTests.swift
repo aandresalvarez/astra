@@ -237,6 +237,27 @@ struct ToolOperationRecordingTests {
         #expect(rows.allSatisfy { ToolOperationBatch.decode(from: $0.payload) != nil })
     }
 
+    @Test("A group larger than one record can list is still counted whole")
+    func largeGroupIsCountedWhole() throws {
+        let fixture = try Fixture()
+        fixture.run.status = .running
+        let count = ToolOperationRecord.candidatesPerRecord + 6
+
+        for index in 0..<count { fixture.record(.toolUse(name: "tool", id: "", inputSummary: "call \(index)")) }
+        // A call that joins once results have started belongs to the group too.
+        fixture.record(.toolResult(id: "", content: "", isError: false))
+        fixture.record(.toolUse(name: "tool", id: "", inputSummary: "late"))
+        for _ in 0..<count { fixture.record(.toolResult(id: "", content: "", isError: false)) }
+
+        #expect(fixture.operations.allSatisfy { ($0.candidateUseEventIDs?.count ?? 0) <= ToolOperationRecord.candidatesPerRecord })
+        #expect(Set(fixture.operations.compactMap(\.groupID)).count == 1)
+        try fixture.context.save()
+        let operations = TaskThreadSnapshot(task: fixture.task).activityPresentation(for: fixture.run).operations
+        #expect(operations.totalCount == count + 1)
+        #expect(operations.finishedCount == count + 1)
+        #expect(operations.inFlightCount == 0)
+    }
+
     @Test("A call id used again after its result is a new operation")
     func reusedCallIDAfterResultIsANewOperation() throws {
         let fixture = try Fixture()

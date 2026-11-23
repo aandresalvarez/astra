@@ -246,10 +246,12 @@ public struct RunOperationProjection: Sendable, Equatable {
         // A record that names a call and lists no candidates is an operation
         // of its own: its call lies outside these rows, or was never recorded
         // as open at all.
-        var ambiguousGroups: [Set<UUID>: [(record: ToolOperationRecord, at: Date, eventID: UUID, index: Int)]] = [:]
+        // Records of one group share its id; each lists the members it was
+        // the first to list, so together they name the whole group.
+        var ambiguousGroups: [UUID: [(record: ToolOperationRecord, at: Date, eventID: UUID, index: Int)]] = [:]
         for orphan in orphanRecords {
-            if orphan.record.useEventID == nil, let candidates = orphan.record.candidateUseEventIDs {
-                ambiguousGroups[Set(candidates), default: []].append(orphan)
+            if orphan.record.useEventID == nil, let group = orphan.record.groupID {
+                ambiguousGroups[group, default: []].append(orphan)
                 continue
             }
             let id = Self.derivedID(from: orphan.eventID, salt: UInt8(truncatingIfNeeded: 16 &+ orphan.index))
@@ -281,7 +283,8 @@ public struct RunOperationProjection: Sendable, Equatable {
         var ambiguousCalls = Set<UUID>()
         var unidentifiedOpen = 0
         var unloadedFinished = 0
-        for (members, records) in ambiguousGroups {
+        for records in ambiguousGroups.values {
+            let members = Set(records.flatMap { $0.record.candidateUseEventIDs ?? [] })
             let loaded = members.intersection(seenUses).subtracting(recordOfUse.keys)
             ambiguousCalls.formUnion(loaded)
             unidentifiedOpen += max(0, loaded.count - records.count)

@@ -75,7 +75,8 @@ enum AgentToolOperationRecording {
             useEventID: finished?.use?.id,
             resultEventID: resultEvent?.id,
             finishedAt: Date(),
-            candidateUseEventIDs: finished?.candidates
+            groupID: finished?.group?.id,
+            candidateUseEventIDs: finished?.group?.listed
         )
         // The run's open batch takes the record in place; a full one, or a
         // recording with no state to remember it in, starts a new row.

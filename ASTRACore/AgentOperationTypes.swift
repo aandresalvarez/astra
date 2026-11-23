@@ -113,12 +113,17 @@ public struct ToolOperationRecord: Codable, Sendable, Equatable {
     /// row to take the time from.
     public let finishedAt: Date?
     /// Set when several open calls shared the result's id, so which one
-    /// finished is unknown: the `tool.use` rows of those calls. `useEventID`
-    /// is then nil. A record with neither finished a call that was never
-    /// recorded as open (Codex reports a `file_change` only by its result).
+    /// finished is unknown. `groupID` names those calls for as long as any
+    /// of them stays open; each record lists the members not yet listed by
+    /// an earlier record of the group, so the group's records together name
+    /// every member. `useEventID` is then nil. A record with neither finished
+    /// a call that was never recorded as open (Codex reports a `file_change`
+    /// only by its result).
+    public let groupID: UUID?
     public let candidateUseEventIDs: [UUID]?
-    /// Candidates kept per record, so one record stays a bounded size.
-    public static let candidateLimit = 16
+    /// Members listed per record at most, so one record stays a bounded size;
+    /// the rest are listed by the group's next records.
+    public static let candidatesPerRecord = 64
 
     public init(
         callID: String,
@@ -130,6 +135,7 @@ public struct ToolOperationRecord: Codable, Sendable, Equatable {
         useEventID: UUID? = nil,
         resultEventID: UUID? = nil,
         finishedAt: Date? = nil,
+        groupID: UUID? = nil,
         candidateUseEventIDs: [UUID]? = nil
     ) {
         self.callID = callID
@@ -141,13 +147,14 @@ public struct ToolOperationRecord: Codable, Sendable, Equatable {
         self.useEventID = useEventID
         self.resultEventID = resultEventID
         self.finishedAt = finishedAt
-        self.candidateUseEventIDs = candidateUseEventIDs.map { Array($0.prefix(Self.candidateLimit)) }
+        self.groupID = groupID
+        self.candidateUseEventIDs = candidateUseEventIDs
     }
 
     private enum CodingKeys: String, CodingKey {
         case callID = "id", tool, outcome, exitCode, providerStatus = "status"
         case hasOutput = "output", useEventID = "use", resultEventID = "result", finishedAt = "at"
-        case candidateUseEventIDs = "candidates"
+        case groupID = "group", candidateUseEventIDs = "candidates"
     }
 
     /// What a failed operation is called where only a line is shown.
