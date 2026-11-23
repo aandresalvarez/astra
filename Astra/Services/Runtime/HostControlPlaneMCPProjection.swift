@@ -634,8 +634,8 @@ enum HostControlPlaneMCPProjection {
     }
 
     private static func allowedSSHAliases(task: AgentTask) -> [String] {
-        guard let workspace = task.workspace else { return [] }
-        let values = SSHConnectionManager.load(workspacePath: workspace.primaryPath).flatMap { connection in
+        guard task.workspace != nil else { return [] }
+        let values = LaunchSSHConnectionSnapshot.connections(for: task).flatMap { connection in
             [
                 clean(connection.configAlias),
                 clean(connection.name),

@@ -103,10 +103,10 @@ enum RemoteWorkspaceJobShim {
     /// the argv the helper hands to `ssh`. Tildes are expanded here because
     /// the helper runs `ssh` directly, without a shell to expand them.
     static func offeredConnections(task: AgentTask, targets: [String]) -> [RemoteWorkspaceJobShimConnection] {
-        guard let workspace = task.workspace else { return [] }
+        guard task.workspace != nil else { return [] }
         let offered = Set(targets)
         var seen: Set<String> = []
-        return SSHConnectionManager.load(workspacePath: workspace.primaryPath).compactMap { connection in
+        return LaunchSSHConnectionSnapshot.connections(for: task).compactMap { connection in
             let target = RemoteWorkspaceSSHRoute.connectTarget(for: connection)
             guard offered.contains(target), seen.insert(target).inserted else { return nil }
             return RemoteWorkspaceJobShimConnection(

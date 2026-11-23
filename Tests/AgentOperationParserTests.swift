@@ -108,6 +108,22 @@ struct AgentOperationParserTests {
         }
     }
 
+    @Test("A cancelled Codex command or tool item is a cancellation, not a failure")
+    func codexCancellationIsKept() {
+        let command = CodexStreamEventParser.parseIdentifiedAgentEvents(
+            line: #"{"type":"item.completed","item":{"id":"c1","type":"command_execution","command":"sleep 60","exit_code":130,"status":"cancelled","aggregated_output":""}}"#
+        )
+        #expect(command.first == .operation(.finished(operationID: "c1", outcome: .cancelled, exitCode: 130, providerStatus: "cancelled")))
+        guard case .toolResult("c1", _, true)? = command.last else {
+            Issue.record("a cancelled command is still an error result, got \(command)")
+            return
+        }
+        let tool = CodexStreamEventParser.parseIdentifiedAgentEvents(
+            line: #"{"type":"item.completed","item":{"id":"t1","type":"mcp_tool_call","tool":"search","status":"canceled"}}"#
+        )
+        #expect(tool[1] == .operation(.finished(operationID: "t1", outcome: .cancelled, exitCode: nil, providerStatus: "canceled")))
+    }
+
     @Test("A successful Codex command reports exit code zero as success")
     func codexSuccessfulCommandReportsSuccess() {
         let line = #"{"type":"item.completed","item":{"id":"cmd-2","type":"command_execution","command":"true","exit_code":0,"status":"completed","aggregated_output":""}}"#

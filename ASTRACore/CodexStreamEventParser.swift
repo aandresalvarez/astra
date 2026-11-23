@@ -148,7 +148,10 @@ public enum CodexStreamEventParser {
             // The exit code and status as fields, so nothing downstream has
             // to read them back out of the summary's `exit_code=` text.
             guard exitCode != nil || status != nil else { return [result] }
-            let outcome: AgentOperationOutcome = failed ? .failed : AgentOperationOutcome(providerStatus: status, exitCode: exitCode)
+            // A cancelled command is a cancellation, not a failure, though its
+            // result is still an error for everything that reads `isError`.
+            let reported = AgentOperationOutcome(providerStatus: status, exitCode: exitCode)
+            let outcome: AgentOperationOutcome = reported == .cancelled ? .cancelled : (failed ? .failed : reported)
             return [.operation(.finished(operationID: id, outcome: outcome, exitCode: exitCode, providerStatus: status)), result]
         }
         if itemType == "file_change" {
@@ -195,7 +198,8 @@ public enum CodexStreamEventParser {
             guard !id.isEmpty else { return [use] }
             let status = string(in: item, keys: ["status"])
             let failed = status.map { failedItemStatuses.contains($0.lowercased()) } == true
-            let outcome: AgentOperationOutcome = failed ? .failed : AgentOperationOutcome(providerStatus: status, exitCode: nil)
+            let reported = AgentOperationOutcome(providerStatus: status, exitCode: nil)
+            let outcome: AgentOperationOutcome = reported == .cancelled ? .cancelled : (failed ? .failed : reported)
             return [
                 use,
                 .operation(.finished(operationID: id, outcome: outcome, exitCode: nil, providerStatus: status)),

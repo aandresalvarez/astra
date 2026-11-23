@@ -35,6 +35,8 @@ final class AgentEventRecordingState {
     private var openToolUseEvents: [String: [TaskEvent]] = [:]
     /// Ids two open calls have shared since their list was last empty.
     private var ambiguousOpenKeys: Set<String> = []
+    /// Every call opened under an id since its list was last empty.
+    private var openGroupMembers: [String: [UUID]] = [:]
     private var pendingOperationStatuses: [String: PendingOperationStatus] = [:]
     private var openOperationBatches: [UUID: TaskEvent] = [:]
 
@@ -192,6 +194,7 @@ final class AgentEventRecordingState {
     func openToolUse(_ event: TaskEvent, id: String, run: TaskRun) {
         let key = "\(run.id.uuidString)#\(id)"
         openToolUseEvents[key, default: []].append(event)
+        openGroupMembers[key, default: []].append(event.id)
         if openToolUseEvents[key, default: []].count > 1 { ambiguousOpenKeys.insert(key) }
     }
 
@@ -222,18 +225,27 @@ final class AgentEventRecordingState {
     /// reported for it. The id may be used again by a later call. When the id
     /// is held by several open calls, one of them finished and which is
     /// unknown: the open count drops, and no call is named.
-    func finishToolOperation(id: String, run: TaskRun) -> (use: TaskEvent?, tool: String?, status: PendingOperationStatus?) {
+    func finishToolOperation(
+        id: String,
+        run: TaskRun
+    ) -> (use: TaskEvent?, tool: String?, status: PendingOperationStatus?, candidates: [UUID]?) {
         let key = "\(run.id.uuidString)#\(id)"
         let status = id.isEmpty ? nil : pendingOperationStatuses.removeValue(forKey: key)
         let tool = id.isEmpty ? nil : toolNamesByRunAndID[key]
-        guard var open = openToolUseEvents[key], !open.isEmpty else { return (nil, tool, status) }
+        guard var open = openToolUseEvents[key], !open.isEmpty else { return (nil, tool, status, nil) }
         // Once two calls shared the id, which ones are still open is unknown
-        // until all of them have finished, so none is named meanwhile.
-        let use = ambiguousOpenKeys.contains(key) ? nil : open[0]
+        // until all of them have finished, so none is named meanwhile: the
+        // record lists every call it may have been instead.
+        let ambiguous = ambiguousOpenKeys.contains(key)
+        let use = ambiguous ? nil : open[0]
+        let candidates = ambiguous ? openGroupMembers[key] : nil
         open.removeFirst()
         openToolUseEvents[key] = open.isEmpty ? nil : open
-        if open.isEmpty { ambiguousOpenKeys.remove(key) }
-        return (use, tool, status)
+        if open.isEmpty {
+            ambiguousOpenKeys.remove(key)
+            openGroupMembers[key] = nil
+        }
+        return (use, tool, status, candidates)
     }
 
     func toolUseFullEvidence(id: String, run: TaskRun) -> String? {

@@ -61,7 +61,10 @@ enum AgentToolOperationRecording {
         recordingState: AgentEventRecordingState?
     ) {
         let finished = recordingState?.finishToolOperation(id: callID, run: run)
-        let outcome: AgentOperationOutcome = isError ? .failed : (finished?.status?.outcome ?? .succeeded)
+        // An error result is a failure whatever the status said, except a call
+        // the provider says was cancelled: that stays a cancellation.
+        let reported = finished?.status?.outcome
+        let outcome: AgentOperationOutcome = reported == .cancelled ? .cancelled : (isError ? .failed : (reported ?? .succeeded))
         let record = ToolOperationRecord(
             callID: callID,
             tool: finished?.tool,
@@ -71,7 +74,8 @@ enum AgentToolOperationRecording {
             hasOutput: resultEvent != nil,
             useEventID: finished?.use?.id,
             resultEventID: resultEvent?.id,
-            finishedAt: Date()
+            finishedAt: Date(),
+            candidateUseEventIDs: finished?.candidates
         )
         // The run's open batch takes the record in place; a full one, or a
         // recording with no state to remember it in, starts a new row.

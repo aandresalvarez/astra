@@ -555,8 +555,8 @@ enum TaskLaunchResourceResolver {
         controlPlaneResources: inout [RuntimeControlPlaneResource],
         diagnostics: inout [RuntimeResourceDiagnostic]
     ) {
-        guard let workspace = task.workspace else { return }
-        let connections = SSHConnectionManager.load(workspacePath: workspace.primaryPath)
+        guard task.workspace != nil else { return }
+        let connections = LaunchSSHConnectionSnapshot.connections(for: task)
         guard !connections.isEmpty else { return }
 
         providerRequirements.append(RuntimeProviderRequirement(

@@ -38,6 +38,11 @@ with the login's own permissions.
 - If the connections file names a remote folder the admitted lease does not
   cover when the launch starts, the run stops with the workspace-drift error,
   as for a changed mount.
+- A launch reads the connections once (`LaunchSSHConnectionSnapshot`), before
+  its remote-workspace preflight, and its drift check, launch grants, SSH
+  route, remote job helper and prompt all use that one read until the run
+  ends. A change to the file after that read does not reach the launch; the
+  next launch reads it again.
 - The same folder, a folder containing it and a folder inside it conflict,
   read-only or not.
 - Where two folders cannot be compared locally (`~/app` against `/srv/app`, or

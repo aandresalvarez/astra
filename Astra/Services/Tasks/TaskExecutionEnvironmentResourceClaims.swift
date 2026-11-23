@@ -36,7 +36,9 @@ extension TaskExecutionResourceClaimResolver {
         guard let workspace = task.workspace, !workspace.primaryPath.isEmpty else { return [] }
         var seen = Set<String>()
         // `workspaceAccess` is deliberately not used: see the type comment.
-        return SSHConnectionManager.loadForExport(workspacePath: workspace.primaryPath).compactMap { connection in
+        // During a launch this is the set the launch pinned, so its drift
+        // check judges exactly the connections the launch goes on to use.
+        return LaunchSSHConnectionSnapshot.connectionsWithoutMigrating(for: task).compactMap { connection in
             guard let key = RemoteDirectoryClaimKey.key(for: connection), seen.insert(key).inserted else { return nil }
             return TaskExecutionResourceClaim(kind: .remoteDirectory, key: key, access: .exclusive)
         }

@@ -112,6 +112,13 @@ public struct ToolOperationRecord: Codable, Sendable, Equatable {
     /// When the result arrived. A call that printed nothing has no result
     /// row to take the time from.
     public let finishedAt: Date?
+    /// Set when several open calls shared the result's id, so which one
+    /// finished is unknown: the `tool.use` rows of those calls. `useEventID`
+    /// is then nil. A record with neither finished a call that was never
+    /// recorded as open (Codex reports a `file_change` only by its result).
+    public let candidateUseEventIDs: [UUID]?
+    /// Candidates kept per record, so one record stays a bounded size.
+    public static let candidateLimit = 16
 
     public init(
         callID: String,
@@ -122,7 +129,8 @@ public struct ToolOperationRecord: Codable, Sendable, Equatable {
         hasOutput: Bool,
         useEventID: UUID? = nil,
         resultEventID: UUID? = nil,
-        finishedAt: Date? = nil
+        finishedAt: Date? = nil,
+        candidateUseEventIDs: [UUID]? = nil
     ) {
         self.callID = callID
         self.tool = tool
@@ -133,11 +141,13 @@ public struct ToolOperationRecord: Codable, Sendable, Equatable {
         self.useEventID = useEventID
         self.resultEventID = resultEventID
         self.finishedAt = finishedAt
+        self.candidateUseEventIDs = candidateUseEventIDs.map { Array($0.prefix(Self.candidateLimit)) }
     }
 
     private enum CodingKeys: String, CodingKey {
         case callID = "id", tool, outcome, exitCode, providerStatus = "status"
         case hasOutput = "output", useEventID = "use", resultEventID = "result", finishedAt = "at"
+        case candidateUseEventIDs = "candidates"
     }
 
     /// What a failed operation is called where only a line is shown.

@@ -240,6 +240,36 @@ struct TaskExecutionEnvironmentClaimTests {
 
     // MARK: - Remote folders
 
+    @Test("A launch judges and uses one read of the connections, whatever the file says later")
+    func launchUsesOneConnectionsSnapshot() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let task = try fixture.remoteTask("a", connection(path: "/srv/service-a"))
+        let request = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 1,
+                                      resourceClaims: TaskExecutionResourceClaimResolver.claims(for: task))
+        let lease = fixture.lease(task, request: request)
+        let path = try #require(task.workspace?.primaryPath)
+
+        LaunchSSHConnectionSnapshot.pin(for: task)
+        defer { LaunchSSHConnectionSnapshot.release(taskID: task.id) }
+        // The file changes after the launch read it.
+        SSHConnectionManager.save([connection(path: "/srv/service-b")], workspacePath: path)
+
+        // The drift check and every launch reader see the pinned set, so the
+        // check passes for exactly what the launch goes on to use.
+        #expect(!TaskExecutionResourceClaimResolver.hasWorkspacePathDrift(
+            request: request, task: task, lease: lease, workspaceAccess: .exclusive))
+        #expect(LaunchSSHConnectionSnapshot.connections(for: task).map(\.remotePath) == ["/srv/service-a"])
+        #expect(RemoteWorkspaceJobShim.offeredConnections(task: task, targets: ["deploy@release.example.com"]).count == 1)
+
+        // Released, readers see the file again, and the next launch's check
+        // stops on the folder its lease does not cover.
+        LaunchSSHConnectionSnapshot.release(taskID: task.id)
+        #expect(LaunchSSHConnectionSnapshot.connections(for: task).map(\.remotePath) == ["/srv/service-b"])
+        #expect(TaskExecutionResourceClaimResolver.hasWorkspacePathDrift(
+            request: request, task: task, lease: lease, workspaceAccess: .exclusive))
+    }
+
     @Test("A launch stops when the connections name a remote folder its lease does not cover")
     func unadmittedRemoteFolderIsDrift() throws {
         let fixture = try Fixture()

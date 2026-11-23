@@ -334,7 +334,7 @@ enum AgentPromptBuilder {
     private static func appendSSHContext(for task: AgentTask, to sections: inout [PromptContextSection]) {
         guard let ws = task.workspace,
               let sshBlock = RemoteWorkspacePromptGuidance.connectionBlock(
-                connections: SSHConnectionManager.load(workspacePath: ws.primaryPath)
+                connections: LaunchSSHConnectionSnapshot.connections(for: task)
               ) else { return }
         appendSection(sshBlock, kind: .supportingContext, to: &sections, sourcePointers: sshSourcePointers(workspace: ws))
     }
@@ -1421,7 +1421,7 @@ enum AgentPromptBuilder {
         var contextParts: [String] = []
 
         if let ws = task.workspace {
-            let connections = SSHConnectionManager.load(workspacePath: ws.primaryPath)
+            let connections = LaunchSSHConnectionSnapshot.connections(for: task)
             if let conn = connections.first, !conn.remotePath.isEmpty {
                 contextParts.append("Remote server: ssh \(conn.configAlias.isEmpty ? conn.sshTarget : conn.configAlias) — remote path: \(conn.remotePath)")
             }

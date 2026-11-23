@@ -66,13 +66,17 @@ public struct RunOperationProjection: Sendable, Equatable {
     public let resultsWithOutput: Int
     public let lastOperationEventAt: Date?
     public let lastAgentMessageAt: Date?
-    /// Records with no call id: each finished one of the calls above, which
+    /// Records that finished one of several calls that shared an id, which
     /// one being unknown.
     public let unattributedFinishedCount: Int
     public let unattributedFailedCount: Int
-    /// Calls counted as no longer open because an id-less record finished
-    /// one of them.
-    private let closedByUnattributedRecords: Set<UUID>
+    /// Calls that shared an id with another open call. Their outcomes are
+    /// counted, never pinned on one of them, so none is listed as open.
+    private let ambiguousCalls: Set<UUID>
+    /// How many of those calls are still open, without saying which.
+    public let unidentifiedOpenCount: Int
+    /// Finished calls of such a group whose rows are not among the events.
+    private let unloadedFinishedCount: Int
 
     public static let empty = RunOperationProjection(
         operations: [], milestones: [], resultsWithOutput: 0, lastOperationEventAt: nil, lastAgentMessageAt: nil
@@ -84,18 +88,23 @@ public struct RunOperationProjection: Sendable, Equatable {
             && lhs.lastOperationEventAt == rhs.lastOperationEventAt && lhs.lastAgentMessageAt == rhs.lastAgentMessageAt
             && lhs.unattributedFinishedCount == rhs.unattributedFinishedCount
             && lhs.unattributedFailedCount == rhs.unattributedFailedCount
-            && lhs.closedByUnattributedRecords == rhs.closedByUnattributedRecords
+            && lhs.ambiguousCalls == rhs.ambiguousCalls
+            && lhs.unidentifiedOpenCount == rhs.unidentifiedOpenCount
+            && lhs.unloadedFinishedCount == rhs.unloadedFinishedCount
     }
 
     /// Operations between two agent messages before they earn a summary line.
     public static let workSummaryThreshold = 5
 
+    /// Every call this history shows: its rows, plus finished calls of a
+    /// shared-id group whose rows lie outside it.
+    public var totalCount: Int { operations.count + unloadedFinishedCount }
     public var finishedCount: Int { operations.filter { $0.outcome != nil }.count + unattributedFinishedCount }
     public var failedCount: Int { operations.filter { $0.outcome == .failed }.count + unattributedFailedCount }
     /// Calls with no terminal evidence. In a run that is still going these
     /// are in flight; in one that ended, how they ended was never recorded.
     public var openOperations: [Operation] {
-        operations.filter { $0.outcome == nil && $0.isCorrelated && !closedByUnattributedRecords.contains($0.id) }
+        operations.filter { $0.outcome == nil && $0.isCorrelated && !ambiguousCalls.contains($0.id) }
     }
     public var failedUseEventIDs: Set<UUID> { Set(operations.filter { $0.outcome == .failed }.map(\.id)) }
     /// Whether this run's results are tied to their calls by record.
@@ -234,24 +243,15 @@ public struct RunOperationProjection: Sendable, Equatable {
             orphanRecords.append((entry.value.record, entry.value.at, entry.key, index))
         }
 
-        // A record that names no call finishes one the recorder could not tell
-        // apart (no id, or one several open calls shared). That call's row is
-        // already counted above, so the record adds its outcome and failure,
-        // not a second operation.
-        for orphan in orphanRecords where orphan.record.useEventID == nil {
-            unattributedFinished += 1
-            if orphan.record.outcome == .failed { unattributedFailed += 1 }
-            if let summary = orphan.record.failureSummary {
-                milestones.append(Milestone(
-                    id: Self.derivedID(from: orphan.eventID, salt: UInt8(truncatingIfNeeded: 96 &+ orphan.index)),
-                    timestamp: orphan.at,
-                    kind: .operationFailed,
-                    text: summary,
-                    evidenceEventID: orphan.record.resultEventID ?? orphan.eventID
-                ))
+        // A record that names a call and lists no candidates is an operation
+        // of its own: its call lies outside these rows, or was never recorded
+        // as open at all.
+        var ambiguousGroups: [Set<UUID>: [(record: ToolOperationRecord, at: Date, eventID: UUID, index: Int)]] = [:]
+        for orphan in orphanRecords {
+            if orphan.record.useEventID == nil, let candidates = orphan.record.candidateUseEventIDs {
+                ambiguousGroups[Set(candidates), default: []].append(orphan)
+                continue
             }
-        }
-        for orphan in orphanRecords where orphan.record.useEventID != nil {
             let id = Self.derivedID(from: orphan.eventID, salt: UInt8(truncatingIfNeeded: 16 &+ orphan.index))
             operations.append(Operation(
                 id: id,
@@ -275,24 +275,41 @@ public struct RunOperationProjection: Sendable, Equatable {
             }
         }
 
-        // The calls those id-less records finished are the oldest open ones
-        // with no record. Which exact call each one finished is unknown, so
-        // they leave the open set without being given an outcome.
-        var closedByUnattributed = Set<UUID>()
-        if unattributedFinished > 0 {
-            for operation in operations where operation.outcome == nil && operation.isCorrelated {
-                guard closedByUnattributed.count < unattributedFinished else { break }
-                closedByUnattributed.insert(operation.id)
+        // Records of calls that shared an id finish members of their own
+        // group, and only of it. Which members is unknown, so the group's
+        // calls are counted, never listed as open one by one.
+        var ambiguousCalls = Set<UUID>()
+        var unidentifiedOpen = 0
+        var unloadedFinished = 0
+        for (members, records) in ambiguousGroups {
+            let loaded = members.intersection(seenUses).subtracting(recordOfUse.keys)
+            ambiguousCalls.formUnion(loaded)
+            unidentifiedOpen += max(0, loaded.count - records.count)
+            unloadedFinished += max(0, records.count - loaded.count)
+            for orphan in records {
+                unattributedFinished += 1
+                if orphan.record.outcome == .failed { unattributedFailed += 1 }
+                if let summary = orphan.record.failureSummary {
+                    milestones.append(Milestone(
+                        id: Self.derivedID(from: orphan.eventID, salt: UInt8(truncatingIfNeeded: 96 &+ orphan.index)),
+                        timestamp: orphan.at,
+                        kind: .operationFailed,
+                        text: summary,
+                        evidenceEventID: orphan.record.resultEventID ?? orphan.eventID
+                    ))
+                }
             }
         }
         self.unattributedFinishedCount = unattributedFinished
         self.unattributedFailedCount = unattributedFailed
-        self.closedByUnattributedRecords = closedByUnattributed
+        self.ambiguousCalls = ambiguousCalls
+        self.unidentifiedOpenCount = unidentifiedOpen
+        self.unloadedFinishedCount = unloadedFinished
         self.operations = operations
         self.milestones = milestones.sorted { $0.timestamp < $1.timestamp }
         resultsWithOutput = hasRecords
             ? operations.filter { $0.resultEventID != nil }.count
-                + orphanRecords.filter { $0.record.useEventID == nil && $0.record.resultEventID != nil }.count
+                + ambiguousGroups.values.joined().filter { $0.record.resultEventID != nil }.count
             : resultTimestamps.count
         self.lastOperationEventAt = [lastOperationEventAt, lastRecordedCompletionAt].compactMap { $0 }.max()
         self.lastAgentMessageAt = lastAgentMessageAt
@@ -312,7 +329,9 @@ public struct RunOperationProjection: Sendable, Equatable {
         self.lastAgentMessageAt = lastAgentMessageAt
         unattributedFinishedCount = 0
         unattributedFailedCount = 0
-        closedByUnattributedRecords = []
+        ambiguousCalls = []
+        unidentifiedOpenCount = 0
+        unloadedFinishedCount = 0
     }
 
     // MARK: - Text

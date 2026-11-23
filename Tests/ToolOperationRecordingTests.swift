@@ -268,6 +268,39 @@ struct ToolOperationRecordingTests {
         #expect(record.failureSummary == "command_execution failed · exit code 1")
     }
 
+    @Test("A cancelled call stays a cancellation, though its result is an error")
+    func cancelledCallStaysCancelled() throws {
+        let fixture = try Fixture()
+        let line = #"{"type":"item.completed","item":{"id":"cmd-9","type":"command_execution","command":"swift test","exit_code":130,"status":"cancelled","aggregated_output":""}}"#
+
+        fixture.record(.toolUse(name: "command_execution", id: "cmd-9", inputSummary: "swift test"))
+        for event in CodexStreamEventParser.parseIdentifiedAgentEvents(line: line) { fixture.record(event) }
+
+        let record = try #require(fixture.operations.first)
+        #expect(record.outcome == .cancelled)
+        #expect(record.failureSummary == "command_execution was cancelled · exit code 130")
+    }
+
+    @Test("A result for a call never recorded as open lists no candidates and names no call")
+    func unmatchedResultIsItsOwnOperation() throws {
+        let fixture = try Fixture()
+        fixture.run.status = .running
+
+        fixture.record(
+            .toolUse(name: "command_execution", id: "cmd-1", inputSummary: "swift test"),
+            .toolResult(id: "item_6", content: "", isError: false)
+        )
+
+        let record = try #require(fixture.operations.first)
+        #expect(record.useEventID == nil)
+        #expect(record.candidateUseEventIDs == nil)
+        try fixture.context.save()
+        let operations = TaskThreadSnapshot(task: fixture.task).activityPresentation(for: fixture.run).operations
+        #expect(operations.totalCount == 2)
+        #expect(operations.finishedCount == 1)
+        #expect(operations.inFlight.map(\.tool) == ["command_execution"])
+    }
+
     @Test("A status the provider reported as unknown is not recorded as success")
     func unknownProviderStatusStaysUnknown() throws {
         let fixture = try Fixture()
@@ -309,6 +342,9 @@ struct ToolOperationRecordingTests {
         )
 
         #expect(fixture.operations.first?.useEventID == nil)
+        // The record lists the calls it may have been, so a reader can count
+        // it against them and nothing else.
+        #expect(Set(fixture.operations.first?.candidateUseEventIDs ?? []) == Set(fixture.events(TaskEventTypes.Tool.use).map(\.id)))
         try fixture.context.save()
         let operations = TaskThreadSnapshot(task: fixture.task).activityPresentation(for: fixture.run).operations
         // Two calls, one of which finished; never three operations.

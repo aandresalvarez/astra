@@ -36,7 +36,8 @@ struct RunOperationProjectionTests {
             tool: String? = nil,
             output: String? = "ok",
             outcome: AgentOperationOutcome = .succeeded,
-            exitCode: Int? = nil
+            exitCode: Int? = nil,
+            candidates: [UUID]? = nil
         ) {
             var result: UUID?
             if let output {
@@ -46,7 +47,8 @@ struct RunOperationProjectionTests {
             }
             let record = ToolOperationRecord(
                 callID: "call", tool: tool, outcome: outcome, exitCode: exitCode,
-                hasOutput: output != nil, useEventID: use, resultEventID: result, finishedAt: clock
+                hasOutput: output != nil, useEventID: use, resultEventID: result, finishedAt: clock,
+                candidateUseEventIDs: candidates
             )
             add(ToolOperationRecord.eventType, TaskEvent.payloadString(ToolOperationBatch(operations: [record])))
         }
@@ -62,7 +64,8 @@ struct RunOperationProjectionTests {
                     ToolOperationRecord(
                         callID: "", tool: $0.tool, outcome: $0.outcome, exitCode: $0.exitCode,
                         providerStatus: $0.providerStatus, hasOutput: $0.hasOutput, useEventID: $0.useEventID,
-                        resultEventID: $0.resultEventID, finishedAt: $0.finishedAt
+                        resultEventID: $0.resultEventID, finishedAt: $0.finishedAt,
+                        candidateUseEventIDs: $0.candidateUseEventIDs
                     )
                 }
                 return Event(id: event.id, type: event.type,
@@ -205,16 +208,36 @@ struct RunOperationProjectionTests {
     @Test("A record naming no call adds its outcome to a call already counted")
     func unattributedRecordIsNotASecondOperation() {
         var history = History()
-        history.use("bash", "make a")
-        history.use("bash", "make b")
-        // Two calls shared the id, so the record could name neither.
-        history.finish(nil, tool: "bash", output: "ok")
+        let first = history.use("bash", "make a")
+        let second = history.use("bash", "make b")
+        let unrelated = history.use("Read", "notes.md")
+        // Two calls shared the id, so the record names its candidates instead.
+        history.finish(nil, tool: "bash", output: "ok", candidates: [first, second])
 
         let projection = RunOperationProjection(events: history.events)
 
-        #expect(projection.operations.count == 2)
+        #expect(projection.totalCount == 3)
         #expect(projection.finishedCount == 1)
-        #expect(projection.openOperations.count == 1)
+        // One of the pair is still open, which one is unknown: counted, not
+        // listed. The unrelated call is untouched.
+        #expect(projection.unidentifiedOpenCount == 1)
+        #expect(projection.openOperations.map(\.id) == [unrelated])
+    }
+
+    @Test("A group's results never finish more calls than the group had")
+    func groupClosuresAreBounded() {
+        var history = History()
+        let first = history.use("bash", "a")
+        let second = history.use("bash", "b")
+        history.finish(nil, tool: "bash", candidates: [first, second])
+        history.finish(nil, tool: "bash", candidates: [first, second])
+
+        let projection = RunOperationProjection(events: history.events)
+
+        #expect(projection.totalCount == 2)
+        #expect(projection.finishedCount == 2)
+        #expect(projection.unidentifiedOpenCount == 0)
+        #expect(projection.openOperations.isEmpty)
     }
 
     @Test("A call that finished without output moves the last recorded activity to its finish")
@@ -230,21 +253,23 @@ struct RunOperationProjectionTests {
         #expect(projection.lastOperationEventAt.map { $0 > history.events[0].timestamp } == true)
     }
 
-    @Test("A record without a call id finishes a call already counted, and is not a second operation")
+    @Test("A result with no recorded call is an operation of its own, and closes no other call")
     func idLessRecordIsNotASecondOperation() {
+        // Codex reports a `file_change` only by its result: no call was ever
+        // open for it. It must not close the command that is still running.
         var history = History()
-        history.use("tool", "x")
-        history.finish(nil, tool: nil, output: "failed", outcome: .failed, exitCode: 2)
-        // `finish` gives every record the id "call"; an id-less provider gives none.
+        let command = history.use("command_execution", "swift test")
+        history.finish(nil, tool: "file_change", output: "failed", outcome: .failed, exitCode: 2)
         history.clearRecordCallIDs()
 
         let projection = RunOperationProjection(events: history.events)
 
-        #expect(projection.operations.count == 1)
+        #expect(projection.totalCount == 2)
         #expect(projection.finishedCount == 1)
         #expect(projection.failedCount == 1)
-        #expect(projection.openOperations.isEmpty)
-        #expect(projection.milestones.map(\.text) == ["Tool failed · exit code 2"])
+        #expect(projection.finishedCount <= projection.totalCount)
+        #expect(projection.openOperations.map(\.id) == [command])
+        #expect(projection.milestones.map(\.text) == ["file_change failed · exit code 2"])
     }
 
     @Test("The same history always yields the same milestone ids")

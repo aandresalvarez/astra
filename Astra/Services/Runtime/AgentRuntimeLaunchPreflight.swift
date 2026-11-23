@@ -599,7 +599,7 @@ enum AgentRuntimeLaunchPreflight {
             )
         }
 
-        let connections = SSHConnectionManager.load(workspacePath: workspace.primaryPath)
+        let connections = LaunchSSHConnectionSnapshot.connections(for: task)
         let names = connections.map { displayName(for: $0) }
         let aliasNames = connections
             .map(\.configAlias)

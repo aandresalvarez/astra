@@ -65,14 +65,15 @@ struct RunOperationsPresentation: Hashable, Sendable {
     init(run: TaskRunSnapshot, projection: RunOperationProjection) {
         runID = run.id
         isRunning = run.status == .running
-        totalCount = projection.operations.count
+        totalCount = projection.totalCount
         finishedCount = projection.finishedCount
         failedCount = projection.failedCount
         hasOperationRecords = projection.hasOperationRecords
         // Only a run that is still going has calls in flight. Once it has
         // ended, a call with no result is one whose ending was never seen.
         let open = isRunning ? projection.openOperations : []
-        inFlightCount = open.count
+        // Calls that shared an id are counted without being named.
+        inFlightCount = open.count + (isRunning ? projection.unidentifiedOpenCount : 0)
         inFlight = open.suffix(Self.inFlightDisplayLimit).reversed().map {
             InFlightOperation(id: $0.id, tool: $0.tool, detail: $0.detail, startedAt: $0.startedAt)
         }
