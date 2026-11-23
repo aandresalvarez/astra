@@ -221,6 +221,42 @@ struct TaskExecutionEnvironmentClaimTests {
             == "not a claim set")
     }
 
+    @Test("Admission keeps an attached folder the launch mounts read-only as a reader's claim")
+    func admissionUsesTheRequestsOwnInputs() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let container = try ModelContainer(
+            for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = container.mainContext
+        let dataset = try fixture.directory("dataset")
+        // The environment declares the folder writable; this request attached
+        // it, so the launch mounts it read-only.
+        let task = try fixture.dockerTask("workspace", mounts: [mount(dataset, .readWrite)])
+        context.insert(task)
+        let message = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.userMessage, payload: "Read the dataset")
+        context.insert(message)
+        if let attachments = TaskEvent.attachmentsEvent(for: message, paths: [dataset]) { context.insert(attachments) }
+        try context.save()
+        let request = TaskTurnRequest(task: task, messageEventID: message.id, sequence: 1,
+                                      resourceClaims: TaskExecutionResourceClaimResolver.claims(
+                                          for: task, readOnlyInputPaths: [dataset]))
+        let datasetKey = TaskExecutionResourceBroker.canonicalKey(kind: .docker, key: dataset)
+        func access(_ lease: [TaskResourceLockClaim]) -> [TaskResourceAccessMode] {
+            lease.filter { $0.resourceKind == .docker
+                && TaskExecutionResourceBroker.canonicalKey(kind: .docker, key: $0.resourceKey) == datasetKey }.map(\.accessMode)
+        }
+
+        #expect(TaskExecutionResourceClaimResolver.requestInputPaths(for: request, task: task) == [dataset])
+        #expect(access(fixture.lease(task, request: request)) == [.readOnly])
+
+        // Without the attachment the same folder is a writer's mount.
+        let plain = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 2,
+                                    resourceClaims: TaskExecutionResourceClaimResolver.claims(for: task))
+        #expect(access(fixture.lease(task, request: plain)) == [.write])
+    }
+
     @Test("A launch stops when its environment gained a writable mount after admission")
     func unadmittedWritableMountIsDrift() throws {
         let fixture = try Fixture()

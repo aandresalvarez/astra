@@ -35,13 +35,16 @@ enum TaskExecutionResourceAdmissionPolicy {
         claims += unenforcedGitMetadataClaims(existing: claims, sandboxEnforcement: sandboxEnforcement)
         // Docker mounts and the remote folder are derived again from the
         // access this lease ends up with, which is what the launch is granted
-        // (`workspaceAccess(from:)`). The broker merges them with the frozen
-        // ones and the stronger access wins.
+        // (`workspaceAccess(from:)`), and from the request's own read-only
+        // inputs, which the launch mounts read-only even where the
+        // environment declares a writable mount. The broker merges them with
+        // the frozen ones and the stronger access wins.
         let workspaceClaims = claims.filter { $0.kind == .workspace }
         claims += TaskExecutionResourceClaimResolver.environmentClaims(
             for: task,
             workspaceAccess: workspaceClaims.allSatisfy { $0.access == .shared } && !workspaceClaims.isEmpty
-                ? .shared : .exclusive
+                ? .shared : .exclusive,
+            readOnlyInputPaths: TaskExecutionResourceClaimResolver.requestInputPaths(for: request, task: task)
         )
         return TaskExecutionResourceBroker.lockClaims(
             for: claims,

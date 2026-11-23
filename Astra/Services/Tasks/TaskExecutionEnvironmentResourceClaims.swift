@@ -174,6 +174,28 @@ extension TaskExecutionResourceClaimResolver {
         }
     }
 
+    /// What a request's launch mounts read-only beyond the task's own inputs:
+    /// the files attached to its message and the sandbox paths approved for
+    /// it, read back from its stored events. Only a containerized launch
+    /// mounts them, so nothing is read otherwise.
+    static func requestInputPaths(
+        for request: TaskTurnRequest?,
+        task: AgentTask,
+        homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path
+    ) -> [String] {
+        guard let request, launchEnvironment(for: task).isContainerized else { return [] }
+        let messageID = request.sourceEventID
+        let attachments = TaskHistoryRead.events(for: task, ofTypes: [TaskEventTypes.Conversation.attachments.rawValue])
+            .compactMap { TaskAttachmentsPayloadV1.decoded(from: $0.payload) }
+            .filter { $0.messageEventID == messageID }
+            .flatMap { $0.items.map(\.path) }
+        let grants = TaskHistoryRead.event(id: messageID, in: task)
+            .flatMap(ExecutionRequestSubmissionService.decodeSourcePayload)?
+            .executionPolicyOverride?.permissionGrants ?? []
+        return attachments + TaskLaunchResourceResolver.approvedSandboxReadablePaths(
+            from: grants, homeDirectoryPath: homeDirectoryPath)
+    }
+
     /// A resumed turn keeps the claims its originating turn accepted, plus
     /// what it mounts that the origin never did: a sandbox path approved for
     /// this retry, or this message's attachments. Claims the origin already
