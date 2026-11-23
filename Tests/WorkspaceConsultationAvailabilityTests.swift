@@ -92,7 +92,7 @@ struct WorkspaceConsultationAvailabilityTests {
         let items = TaskThreadSnapshot(goal: task.goal, createdAt: Date(timeIntervalSince1970: 1),
             events: [first, retried, inRun], runs: []).conversationItems
         let failures = items.compactMap { item -> (UUID, String, Int)? in
-            guard case let .launchFailure(id, text, _, count) = item else { return nil }
+            guard case let .systemError(id, text, _, count) = item else { return nil }
             return (id, text, count)
         }
         let only = try #require(failures.first)

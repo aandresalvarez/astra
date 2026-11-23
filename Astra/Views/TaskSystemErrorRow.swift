@@ -1,9 +1,10 @@
 import SwiftUI
 
-/// A turn ASTRA refused before any run existed. With no run there is no run
-/// activity to carry the reason, so it is a line of the conversation itself.
-/// Same quiet layout as the other system lines, with the failure icon.
-struct TaskLaunchFailureRow: View {
+/// An error ASTRA recorded with no run attached: a turn refused before it
+/// launched, or a check that ran after the provider finished. No run's
+/// activity carries it, so it is a line of the conversation itself. Same
+/// quiet layout as the other system lines, with the failure icon.
+struct TaskSystemErrorRow: View {
     let text: String
     var count: Int = 1
 
@@ -37,7 +38,7 @@ struct TaskLaunchFailureRow: View {
         .padding(.vertical, 2)
         .frame(maxWidth: Stanford.chatParagraphMaxWidth, alignment: .leading)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(count > 1 ? "Could not start, \(count) times: \(text)" : "Could not start: \(text)")
-        .accessibilityIdentifier("TaskLaunchFailureRow")
+        .accessibilityLabel(count > 1 ? "ASTRA error, \(count) times: \(text)" : "ASTRA error: \(text)")
+        .accessibilityIdentifier("TaskSystemErrorRow")
     }
 }

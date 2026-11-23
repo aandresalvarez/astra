@@ -1374,7 +1374,7 @@ struct TaskMainView: View {
                 return item.systemContextLine
             case .recapResult(let text, _):
                 return "Recap: \(text)"
-            case .userMessage, .agentResponse, .launchFailure:
+            case .userMessage, .agentResponse, .systemError:
                 return nil
             }
         }.joined(separator: "\n\n")
@@ -1407,7 +1407,7 @@ struct TaskMainView: View {
                 if includePlanningAndSystem {
                     lines.append("Routine result: \(text)")
                 }
-            case .systemInfo, .externalAction, .launchFailure:
+            case .systemInfo, .externalAction, .systemError:
                 if includePlanningAndSystem, let line = item.systemContextLine {
                     lines.append(line)
                 }
@@ -1779,7 +1779,7 @@ struct TaskMainView: View {
             recapBubble(text: text, timestamp: timestamp)
         case .externalAction(let record):
             ExternalActionRecordRow(record: record)
-        case .launchFailure(_, let text, _, let count): TaskLaunchFailureRow(text: text, count: count)
+        case .systemError(_, let text, _, let count): TaskSystemErrorRow(text: text, count: count)
         }
     }
 
@@ -5018,7 +5018,7 @@ struct TaskMainView: View {
                     return (role: "user", content: text)
                 case .planAssistantMessage(let text, _):
                     return (role: "assistant", content: text)
-                case .userMessage, .agentResponse, .scheduleResult, .systemInfo, .recapResult, .externalAction, .launchFailure:
+                case .userMessage, .agentResponse, .scheduleResult, .systemInfo, .recapResult, .externalAction, .systemError:
                     return nil
                 }
             })
@@ -5040,7 +5040,7 @@ struct TaskMainView: View {
                     ? currentThreadSnapshot.protocolState(for: run).completionSummary
                     : run.output
                 return response.map { (role: "assistant", content: String($0.prefix(2000))) }
-            case .scheduleResult, .systemInfo, .recapResult, .externalAction, .launchFailure:
+            case .scheduleResult, .systemInfo, .recapResult, .externalAction, .systemError:
                 return nil
             }
         })

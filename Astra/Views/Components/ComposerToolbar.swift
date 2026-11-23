@@ -147,6 +147,9 @@ struct ComposerToolbar: View {
     @AppStorage(AppStorageKeys.copilotAvailableModels) private var copilotAvailableModels = ""
     @AppStorage(AppStorageKeys.runtimeModelCacheRevision) private var runtimeModelCacheRevision = 0
     @AppStorage(AppStorageKeys.defaultAgentPolicyLevel) private var globalDefaultPolicyLevelRaw = AgentPolicyLevel.review.rawValue
+    /// Read the way admission reads it, and kept current below: the menu must
+    /// follow a change made in Settings without waiting for another redraw.
+    @State private var sandboxEnforcement = TaskWorkspaceConsultationAvailability.storedSandboxEnforcement()
     @State private var isPlusHovered = false
     @State private var isPolicySheetPresented = false
     @State private var isModelSelectorPresented = false
@@ -168,11 +171,9 @@ struct ComposerToolbar: View {
     }
 
     /// Scalar settings only (sandbox mode, branch, tests, hooks), so it is
-    /// cheap enough for `body`. Read from the same source as admission.
+    /// cheap enough for `body`.
     private var consultationAvailability: TaskWorkspaceConsultationAvailability {
-        TaskWorkspaceConsultationAvailability.resolve(
-            sandboxEnforcement: TaskWorkspaceConsultationAvailability.storedSandboxEnforcement(),
-            task: consultationTask)
+        TaskWorkspaceConsultationAvailability.resolve(sandboxEnforcement: sandboxEnforcement, task: consultationTask)
     }
 
     private var toolbarContent: some View {
@@ -234,6 +235,13 @@ struct ComposerToolbar: View {
             )
         }
         .runtimeSensitiveDataSwitchAlert(sensitiveDataSwitchPrompt)
+        // On the toolbar, which is always present, so the Work/Consult
+        // control follows a Settings change without waiting for a redraw.
+        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
+            .receive(on: RunLoop.main)) { _ in
+            let stored = TaskWorkspaceConsultationAvailability.storedSandboxEnforcement()
+            if stored != sandboxEnforcement { sandboxEnforcement = stored }
+        }
     }
 
     // MARK: - Plus Menu
