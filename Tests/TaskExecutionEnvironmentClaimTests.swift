@@ -195,6 +195,32 @@ struct TaskExecutionEnvironmentClaimTests {
         #expect(TaskExecutionResourceBroker.canAcquire(fixture.lease(otherReader), active: fixture.lease(reader)))
     }
 
+    @Test("A resumed turn keeps its origin's claims and adds what it newly mounts")
+    func resumedTurnAddsApprovedInputClaims() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let approved = try fixture.directory("approved-after-denial")
+        let task = try fixture.dockerTask("workspace", mounts: [])
+        let origin = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 1,
+                                     resourceClaims: TaskExecutionResourceClaimResolver.claims(for: task))
+        let approvedKey = TaskExecutionResourceBroker.canonicalKey(kind: .docker, key: approved)
+
+        let merged = TaskExecutionResourceClaimSet.decode(TaskExecutionResourceClaimResolver.mergingInputClaims(
+            into: origin, for: task, readOnlyInputPaths: [approved]))?.claims ?? []
+
+        // Everything the origin held, plus a reader's claim on the new path.
+        #expect(Set(origin.resourceClaims).isSubset(of: Set(merged)))
+        #expect(merged.contains { $0.kind == .docker && TaskExecutionResourceBroker.canonicalKey(for: $0) == approvedKey && $0.access == .shared })
+
+        // Nothing new to mount, or an origin whose claims cannot be read,
+        // leaves the origin's claims exactly as they were.
+        #expect(TaskExecutionResourceClaimResolver.mergingInputClaims(into: origin, for: task, readOnlyInputPaths: [])
+            == origin.resourceClaimsJSON)
+        origin.resourceClaimsJSON = "not a claim set"
+        #expect(TaskExecutionResourceClaimResolver.mergingInputClaims(into: origin, for: task, readOnlyInputPaths: [approved])
+            == "not a claim set")
+    }
+
     @Test("A launch stops when its environment gained a writable mount after admission")
     func unadmittedWritableMountIsDrift() throws {
         let fixture = try Fixture()

@@ -174,6 +174,27 @@ extension TaskExecutionResourceClaimResolver {
         }
     }
 
+    /// A resumed turn keeps the claims its originating turn accepted, plus
+    /// what it mounts that the origin never did: a sandbox path approved for
+    /// this retry, or this message's attachments. Claims the origin already
+    /// holds are left as they were; unreadable origin claims are kept as they
+    /// are, so admission still rejects them.
+    static func mergingInputClaims(
+        into origin: TaskTurnRequest,
+        for task: AgentTask,
+        readOnlyInputPaths: [String]
+    ) -> String {
+        guard !readOnlyInputPaths.isEmpty, let originClaims = origin.decodedResourceClaims else {
+            return origin.resourceClaimsJSON
+        }
+        let held = Set(originClaims.filter { $0.kind == .docker }.map(TaskExecutionResourceBroker.canonicalKey(for:)))
+        let added = dockerMountClaims(
+            for: task, workspaceAccess: workspaceAccess(for: origin), readOnlyInputPaths: readOnlyInputPaths
+        ).filter { !held.contains(TaskExecutionResourceBroker.canonicalKey(for: $0)) }
+        guard !added.isEmpty else { return origin.resourceClaimsJSON }
+        return TaskExecutionResourceClaimSet(claims: originClaims + added).encodedJSON() ?? origin.resourceClaimsJSON
+    }
+
     /// The host gcloud folder the launch preflight would add as a read-only
     /// projection: host credentials exist and the environment projects none.
     static func anticipatedCredentialMount(

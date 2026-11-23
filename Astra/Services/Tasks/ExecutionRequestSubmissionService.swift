@@ -454,6 +454,12 @@ enum ExecutionRequestSubmissionService {
             includeTaskInputs: kind == .initial || kind == .scheduled,
             authorship: authorship(forSourceEventType: sourceEventType)
         )
+        // What the launch mounts read-only for this request: its attachments,
+        // and sandbox paths approved for its retry.
+        let requestInputPaths = attachmentPaths + TaskLaunchResourceResolver.approvedSandboxReadablePaths(
+            from: decodeSourcePayload(event)?.executionPolicyOverride?.permissionGrants ?? [],
+            homeDirectoryPath: FileManager.default.homeDirectoryForCurrentUser.path
+        )
         let request = TaskTurnRequest(
             task: task,
             messageEventID: event.id,
@@ -463,12 +469,7 @@ enum ExecutionRequestSubmissionService {
                 for: task,
                 acceptedTurn: acceptedTurn,
                 approvedPlan: approvedPlan,
-                // What the launch mounts read-only for this request: its
-                // attachments, and sandbox paths approved for its retry.
-                readOnlyInputPaths: attachmentPaths + TaskLaunchResourceResolver.approvedSandboxReadablePaths(
-                    from: decodeSourcePayload(event)?.executionPolicyOverride?.permissionGrants ?? [],
-                    homeDirectoryPath: FileManager.default.homeDirectoryForCurrentUser.path
-                )
+                readOnlyInputPaths: requestInputPaths
             ),
             turnIntentSnapshot: turnIntentSnapshot,
             pluginDefinitions: TaskExecutionLaunchSnapshotApplicator.pluginDefinitions(for: task),
@@ -489,7 +490,8 @@ enum ExecutionRequestSubmissionService {
                 task: frozenTask, turnIntentSnapshot: turnIntentSnapshot,
                 pluginDefinitions: TaskExecutionLaunchSnapshotApplicator.pluginDefinitions(for: frozenTask),
                 accountInventory: TaskExecutionLaunchSnapshotApplicator.accountInventory(for: frozenTask)))
-            request.resourceClaimsJSON = origin.resourceClaimsJSON
+            request.resourceClaimsJSON = TaskExecutionResourceClaimResolver.mergingInputClaims(
+                into: origin, for: frozenTask, readOnlyInputPaths: requestInputPaths)
         }
         if let binding = permissionContinuation, let run = task.runs.first(where: { $0.id == binding.runID }),
            let runtime = run.runtimeID, AgentRuntimeID(rawValue: runtime) != nil {
