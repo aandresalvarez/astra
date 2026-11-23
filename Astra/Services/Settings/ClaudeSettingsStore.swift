@@ -30,6 +30,15 @@ enum ClaudeSettingsStore {
         for (key, value) in permissions {
             mergedPermissions[key] = value
         }
+        // Every Claude launch in a checkout reaches this file, and read-only
+        // runs share the checkout. One whose permissions the file already
+        // carries leaves it alone, so sibling launches with the same policy
+        // never rewrite it under each other.
+        if settings[astraMetadataKey] != nil,
+           let existing = settings["permissions"] as? NSDictionary,
+           existing.isEqual(to: mergedPermissions) {
+            return true
+        }
         settings["permissions"] = mergedPermissions
         settings[astraMetadataKey] = [
             "version": 1,
@@ -246,7 +255,10 @@ enum ClaudeSettingsStore {
             return false
         }
         do {
-            try data.write(to: URL(fileURLWithPath: path))
+            // Replaced in one step, so a provider that starts while a sibling
+            // launch rewrites the file reads the old or the new settings,
+            // never a partial one. A symlinked settings file keeps its link.
+            try data.write(to: URL(fileURLWithPath: path).resolvingSymlinksInPath(), options: .atomic)
             return true
         } catch {
             return false

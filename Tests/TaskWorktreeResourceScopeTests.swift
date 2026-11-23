@@ -185,7 +185,26 @@ struct TaskWorktreeResourceScopeTests {
         preClaim.goal = "Update the parser, then git push the result."
         #expect(TaskExecutionResourceClaimResolver.admittedWritableGitMetadataRoots(
             for: TaskTurnRequest(task: preClaim, messageEventID: UUID(), sequence: 1), task: preClaim) == [])
-        #expect(TaskExecutionResourceClaimResolver.admittedWritableGitMetadataRoots(for: nil, task: preClaim) == nil)
+        // A launch with no request at all is admitted the same way, so it
+        // projects the same set instead of keeping every detected Git write.
+        #expect(TaskExecutionResourceClaimResolver.admittedWritableGitMetadataRoots(for: nil, task: preClaim) == [])
+        let direct = TaskLaunchResourceResolver.resolve(
+            task: preClaim, runID: UUID(), runtime: .claudeCode, phase: "run",
+            prompt: preClaim.goal, contextText: "", workspacePath: fixture.path("wt-a"),
+            admittedWritableGitMetadataRoots: TaskExecutionResourceClaimResolver
+                .admittedWritableGitMetadataRoots(for: nil, task: preClaim),
+            gitCredentialContextProvider: { _, _, _, _ in detected }
+        )
+        let directAdmin = URL(fileURLWithPath: adminDirectory).standardizedFileURL.path
+        #expect(!direct.hostWritablePaths.contains(directAdmin))
+        #expect(direct.hostReadablePaths.contains(directAdmin))
+        #expect(direct.gitCredential?.diagnostics.contains("git_metadata_write_not_admitted") == true)
+        // A main checkout's own Git directory is claimed exclusively by the
+        // fallback, so a direct launch there keeps its Git writes.
+        let mainCheckout = AgentTask(title: "Main", goal: "Commit the change.",
+                                     workspace: Workspace(name: "Main", primaryPath: fixture.checkout.path))
+        #expect(TaskExecutionResourceClaimResolver.admittedWritableGitMetadataRoots(for: nil, task: mainCheckout)
+            == [commonDirectory])
         for (goal, admitted) in [("Update the parser, then git push the result.", true), ("Update the parser.", false)] {
             let task = fixture.task("Ship feature A", pinnedTo: "wt-a", in: workspace)
             task.goal = goal

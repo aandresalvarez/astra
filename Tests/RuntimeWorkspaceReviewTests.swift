@@ -639,6 +639,39 @@ struct RuntimeWorkspaceReviewTests {
         #expect(try RuntimeExecutionOwner.existing(task: a, context: h.context) == original && reconciliations(h).isEmpty)
     }
 
+    @Test("A remote folder and a Docker-mounted folder are folders: a holder of one is decided about like any other",
+          arguments: [TaskExecutionResourceKind.remoteDirectory, .docker])
+    func remoteAndMountedFoldersAreReviewed(kind: TaskExecutionResourceKind) throws {
+        let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }
+        let elsewhere = FileManager.default.temporaryDirectory.appendingPathComponent("astra-review-elsewhere-\(UUID().uuidString)")
+        let key = kind == .remoteDirectory ? "release.example.com:22 /srv/service"
+            : FileManager.default.temporaryDirectory.appendingPathComponent("astra-review-mount-\(UUID().uuidString)").path
+        // A holder in another local folder, which also holds the remote or mounted folder.
+        let (a, _) = try holder(h) { record, _ in
+            record.resourceClaims = [
+                .init(taskID: record.taskID, resourceKey: elsewhere.path, accessMode: .write, runMode: "previous"),
+                .init(taskID: record.taskID, resourceKey: key, accessMode: .write, runMode: "previous", resourceKind: kind)]
+        }
+        let (b, request) = try next(h, after: a)
+        try claims(request, TaskExecutionResourceClaimResolver.admissionClaims(for: request, task: b)
+            + [TaskExecutionResourceClaim(kind: kind, key: key, access: .exclusive)], h)
+        let queue = TaskQueue(poolSize: 0)
+        queue.refreshResourceOwnership(in: h.context)
+        let wanted = queue.resourceLockClaims(for: request, task: b, runMode: "request", sandboxEnforcement: .off)
+        #expect(!queue.canAcquireResourceLocks(wanted, task: b, context: h.context))
+
+        // The only thing in the way is that folder, and it is reviewed.
+        let review = try #require(try preview(h, b, request))
+        #expect(review.holders.map(\.taskID) == [a.id])
+        let waitedFor = review.holders.first?.claims ?? []
+        #expect(waitedFor.map(\.resourceKind) == [kind])
+        #expect(!RuntimeWorkspaceReviewWording.folders(waitedFor).isEmpty)
+
+        try start(h, review, b, request)
+        queue.refreshResourceOwnership(in: h.context)
+        #expect(queue.canAcquireResourceLocks(wanted, task: b, context: h.context))
+    }
+
     @Test("Two copies of one task that both hold the folder are released by one decision")
     func copiesOfOneHolderAreReleasedTogether() throws {
         let h = try HeadlessChatHarness(persistentStore: true); defer { h.cleanup() }

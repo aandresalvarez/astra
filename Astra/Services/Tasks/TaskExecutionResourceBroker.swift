@@ -80,7 +80,21 @@ enum TaskExecutionResourceBroker {
     static func conflicts(_ existing: TaskResourceLockClaim, _ requested: TaskResourceLockClaim) -> Bool {
         guard identitiesOverlap(existing, requested) else { return false }
         if existing.isLiveWorkspaceReader || requested.isLiveWorkspaceReader { return false }
+        if existing.resourceKind != requested.resourceKind {
+            // A Docker mount against a workspace folder. A container that can
+            // write the folder competes with every task that claims it. A
+            // read-only mount does not wait for workspace writers, as a
+            // read-only workspace folder outside a prepared worktree does not;
+            // it still waits for a container that writes the same mount.
+            return (existing.resourceKind == .docker ? existing : requested).accessMode == .write
+        }
         return existing.accessMode == .write || requested.accessMode == .write
+    }
+
+    /// Kinds that name a folder: on this Mac, or on a remote host. Waiting
+    /// for one is something "Review workspace" can decide about.
+    static func isFolderKind(_ kind: TaskExecutionResourceKind) -> Bool {
+        isFilesystemKind(kind) || kind == .remoteDirectory
     }
 
     /// Whether a request that names `requested` also names `held`'s resource:
@@ -94,9 +108,7 @@ enum TaskExecutionResourceBroker {
     }
 
     static func claimsCompete(_ earlier: TaskResourceLockClaim, _ later: TaskResourceLockClaim) -> Bool {
-        guard identitiesOverlap(earlier, later) else { return false }
-        if earlier.isLiveWorkspaceReader || later.isLiveWorkspaceReader { return false }
-        return earlier.accessMode == .write || later.accessMode == .write
+        conflicts(earlier, later)
     }
 
     static func canonicalKey(for claim: TaskExecutionResourceClaim) -> String {
@@ -148,27 +160,44 @@ enum TaskExecutionResourceBroker {
     }
 
     static func displayName(_ claim: TaskResourceLockClaim) -> String {
-        claim.resourceKind.rawValue.replacingOccurrences(of: "_", with: " ") + " resource"
+        switch claim.resourceKind {
+        case .docker:
+            "Docker mount \(canonicalKey(kind: .docker, key: claim.resourceKey))"
+        case .remoteDirectory:
+            "remote folder \(RemoteDirectoryClaimKey.displayName(claim.resourceKey))"
+        case .workspace, .gitCommonDirectory, .browserSession, .accountSession, .nativeSession:
+            claim.resourceKind.rawValue.replacingOccurrences(of: "_", with: " ") + " resource"
+        }
     }
 
     private static func identitiesOverlap(
         _ lhs: TaskResourceLockClaim,
         _ rhs: TaskResourceLockClaim
     ) -> Bool {
-        guard lhs.resourceKind == rhs.resourceKind else { return false }
+        guard lhs.resourceKind == rhs.resourceKind || sharesHostFolders(lhs.resourceKind, rhs.resourceKind) else {
+            return false
+        }
         let left = canonicalKey(kind: lhs.resourceKind, key: lhs.resourceKey)
         let right = canonicalKey(kind: rhs.resourceKind, key: rhs.resourceKey)
         if isFilesystemKind(lhs.resourceKind) {
             return left == right || isPath(left, ancestorOf: right) || isPath(right, ancestorOf: left)
         }
+        if lhs.resourceKind == .remoteDirectory { return RemoteDirectoryClaimKey.overlap(left, right) }
         return left == right
+    }
+
+    /// A Docker mount and a workspace folder are the same host folders under
+    /// two kinds. Git metadata keeps its own kind so it never collides with
+    /// a workspace root that merely contains it.
+    private static func sharesHostFolders(_ lhs: TaskExecutionResourceKind, _ rhs: TaskExecutionResourceKind) -> Bool {
+        Set([lhs, rhs]) == [.workspace, .docker]
     }
 
     private static func isFilesystemKind(_ kind: TaskExecutionResourceKind) -> Bool {
         switch kind {
-        case .workspace, .gitCommonDirectory:
+        case .workspace, .gitCommonDirectory, .docker:
             true
-        case .browserSession, .docker, .remoteDirectory, .accountSession, .nativeSession:
+        case .browserSession, .remoteDirectory, .accountSession, .nativeSession:
             false
         }
     }

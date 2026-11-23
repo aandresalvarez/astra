@@ -21,9 +21,9 @@ enum TaskLaunchResourceResolver {
         permissionPolicy: PermissionPolicy = .autonomous,
         workspaceAccess: TaskExecutionResourceAccess = .exclusive,
         requiresWorkspaceConsultation: Bool = false,
-        // Git common directories the admitted request claimed exclusively.
-        // `nil` is a direct launch with no durable request; see
-        // `restrictingGitWrites`.
+        // Git common directories admission claimed exclusively. Both launch
+        // paths pass them, with or without a durable request; `nil` is left
+        // for callers that only preview a plan. See `restrictingGitWrites`.
         admittedWritableGitMetadataRoots: [String]? = nil,
         homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
         fileManager: FileManager = .default,
@@ -477,8 +477,10 @@ enum TaskLaunchResourceResolver {
     /// context also reads runtime context; without this projection a Git
     /// operation mentioned only at launch, or a shared read-only request,
     /// would write metadata that no claim serializes. Disallowed paths stay
-    /// readable so inspection still works. A direct launch (`nil`) has no
-    /// claim set to project and keeps the detected context.
+    /// readable so inspection still works. A launch always passes its roots,
+    /// derived from the fallback claim when it has no request
+    /// (`TaskExecutionResourceClaimResolver.admittedWritableGitMetadataRoots`);
+    /// `nil` keeps the detected context and is for plan previews only.
     static func restrictingGitWrites(
         _ context: GitCredentialSandboxContext,
         workspaceAccess: TaskExecutionResourceAccess,
