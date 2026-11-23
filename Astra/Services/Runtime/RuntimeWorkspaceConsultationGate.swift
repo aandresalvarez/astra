@@ -38,7 +38,7 @@ enum RuntimeWorkspaceConsultationGate {
         let reason = commandAssertions ? "consultation_plan_commands" : "consultation_requires_read_only_workspace"
         let message = commandAssertions
             ? "Consult cannot execute a plan with command assertions. Switch to Work to execute and validate this plan."
-            : "Consult cannot start with writable workspace access. Enable sandbox enforcement and disable branch changes, automatic tests, and template hooks, or switch to Work."
+            : "Consult cannot start with writable workspace access. Turn on the Execution Sandbox (Settings → Runtime) and turn off branch changes, automatic tests, and template hooks, or switch to Work."
         TaskStateMachine.failFromRuntime(task, modelContext: modelContext)
         modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: message))
         if let request {

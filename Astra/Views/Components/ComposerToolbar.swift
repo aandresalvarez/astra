@@ -126,6 +126,9 @@ struct ComposerToolbar: View {
     var onPolicyLevelChange: ((AgentPolicyLevel) -> Void)?
     var consultationMode: Binding<Bool>?
     var consultationModeDisabled = false
+    /// The task or saved draft this composer sends for; decides whether
+    /// Consult can start. Nil for a new composer with no draft yet.
+    var consultationTask: AgentTask?
 
     // MARK: - Submit button style
 
@@ -144,6 +147,9 @@ struct ComposerToolbar: View {
     @AppStorage(AppStorageKeys.copilotAvailableModels) private var copilotAvailableModels = ""
     @AppStorage(AppStorageKeys.runtimeModelCacheRevision) private var runtimeModelCacheRevision = 0
     @AppStorage(AppStorageKeys.defaultAgentPolicyLevel) private var globalDefaultPolicyLevelRaw = AgentPolicyLevel.review.rawValue
+    /// Read the way admission reads it, and kept current below: the menu must
+    /// follow a change made in Settings without waiting for another redraw.
+    @State private var sandboxEnforcement = TaskWorkspaceConsultationAvailability.storedSandboxEnforcement()
     @State private var isPlusHovered = false
     @State private var isPolicySheetPresented = false
     @State private var isModelSelectorPresented = false
@@ -164,6 +170,12 @@ struct ComposerToolbar: View {
         }
     }
 
+    /// Scalar settings only (sandbox mode, branch, tests, hooks), so it is
+    /// cheap enough for `body`.
+    private var consultationAvailability: TaskWorkspaceConsultationAvailability {
+        TaskWorkspaceConsultationAvailability.resolve(sandboxEnforcement: sandboxEnforcement, task: consultationTask)
+    }
+
     private var toolbarContent: some View {
         HStack(spacing: ComposerToolbarPresentation.controlSpacing) {
             plusMenu
@@ -173,22 +185,30 @@ struct ComposerToolbar: View {
             }
 
             if let consultationMode, workspace != nil {
+                let consultation = ComposerConsultationMenuPresentation(
+                    isConsult: consultationMode.wrappedValue, availability: consultationAvailability)
                 Menu {
-                    Picker("Workspace access", selection: consultationMode) {
-                        Text("Work").tag(false)
-                        Text("Consult").tag(true)
+                    // Toggles, not a Picker: a menu disables a toggle item,
+                    // and an unavailable Consult must not be choosable.
+                    Toggle("Work", isOn: Binding(get: { !consultationMode.wrappedValue },
+                        set: { if $0 { consultationMode.wrappedValue = false } }))
+                    Toggle("Consult", isOn: Binding(get: { consultationMode.wrappedValue },
+                        set: { if $0 { consultationMode.wrappedValue = true } }))
+                        .disabled(consultation.consultChoiceDisabled)
+                    if let note = consultation.menuNote {
+                        Divider()
+                        Text(note)
                     }
                 } label: {
-                    Label(consultationMode.wrappedValue ? "Consult" : "Work",
-                        systemImage: consultationMode.wrappedValue ? "text.bubble" : "hammer")
+                    Label(consultation.title, systemImage: consultation.systemImage)
                         .font(Stanford.ui(13))
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
                 .disabled(isRunning || consultationModeDisabled || isPlanMode)
-                .help("Consult reads workspace files while other tasks work. Files may change during the answer. Switch to Work to change workspace files.")
+                .help(consultation.help)
                 .accessibilityLabel("Workspace access")
-                .accessibilityValue(consultationMode.wrappedValue ? "Consult" : "Work")
+                .accessibilityValue(consultation.accessibilityValue)
                 .accessibilityIdentifier("WorkspaceConsultationMode")
             }
 
@@ -215,6 +235,13 @@ struct ComposerToolbar: View {
             )
         }
         .runtimeSensitiveDataSwitchAlert(sensitiveDataSwitchPrompt)
+        // On the toolbar, which is always present, so the Work/Consult
+        // control follows a Settings change without waiting for a redraw.
+        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
+            .receive(on: RunLoop.main)) { _ in
+            let stored = TaskWorkspaceConsultationAvailability.storedSandboxEnforcement()
+            if stored != sandboxEnforcement { sandboxEnforcement = stored }
+        }
     }
 
     // MARK: - Plus Menu

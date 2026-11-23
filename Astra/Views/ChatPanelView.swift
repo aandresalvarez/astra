@@ -1082,7 +1082,7 @@ struct ChatPanelView: View {
                             recordPolicySelection(on: draftTask, level: level, source: "new_task_composer")
                         }
                     },
-                    consultationMode: consultationModeBinding,
+                    consultationMode: consultationModeBinding, consultationTask: composerDraft,
                     submitIcon: submitButtonIcon,
                     submitTitle: submitButtonTitle,
                     submitColor: submitButtonColor,

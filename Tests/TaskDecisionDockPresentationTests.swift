@@ -983,6 +983,21 @@ struct TaskDecisionDockPresentationTests {
         )
     }
 
+    @Test("Run details name why a failed run stopped; the generic fallback adds no row")
+    func failedRunDetailsCarryTheReason() throws {
+        var input = context(status: .failed)
+        input.failureReason = "Consult cannot start with writable workspace access."
+        let dock = try #require(TaskDecisionDockPresentation.build(input))
+        let reason = try #require(dock.details.first { $0.id == "failure-reason" })
+        #expect(reason.title == "Why it stopped" && reason.summary == input.failureReason && reason.tone == .failed)
+
+        input.failureReason = TaskFailureReasonPresentation.unknownReason
+        #expect(try #require(TaskDecisionDockPresentation.build(input)).details.allSatisfy { $0.id != "failure-reason" })
+        input.status = .budgetExceeded
+        input.failureReason = "Budget"
+        #expect(try #require(TaskDecisionDockPresentation.build(input)).details.allSatisfy { $0.id != "failure-reason" })
+    }
+
     @Test("A run stopped for an expired plugin sign-in leads with the sign-in, then Resume")
     func repairRequiredLeadsWithSignInThenResume() throws {
         let repair = CLISessionExpiryClassifier.googleCloud.repair
