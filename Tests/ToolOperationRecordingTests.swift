@@ -115,8 +115,9 @@ struct ToolOperationRecordingTests {
     func repeatedOpenCallIsOneOperation() throws {
         let fixture = try Fixture()
 
+        fixture.record(.toolUse(name: "bash", id: "part-1", inputSummary: nil))
+        let startedAt = try #require(fixture.events(TaskEventTypes.Tool.use).first?.timestamp)
         fixture.record(
-            .toolUse(name: "bash", id: "part-1", inputSummary: nil),
             .toolUse(name: "bash", id: "part-1", inputSummary: "sleep 1"),
             .toolUse(name: "bash", id: "part-1", inputSummary: "sleep 1"),
             .toolResult(id: "part-1", content: "", isError: false)
@@ -125,6 +126,8 @@ struct ToolOperationRecordingTests {
         let uses = fixture.events(TaskEventTypes.Tool.use)
         #expect(uses.count == 1)
         #expect(uses.first?.payload == "Using tool: bash: sleep 1")
+        // The row keeps the time the call started.
+        #expect(uses.first?.timestamp == startedAt)
         #expect(fixture.operations.count == 1)
     }
 
@@ -142,6 +145,20 @@ struct ToolOperationRecordingTests {
         #expect(fixture.events(TaskEventTypes.Tool.use).map(\.payload).sorted() == [
             "Using tool: shellToolCall: make a", "Using tool: shellToolCall: make b"
         ])
+
+        // Their results cannot say which call finished, so neither is named,
+        // and neither outcome is pinned on the wrong call.
+        fixture.record(
+            .toolResult(id: "shellToolCall", content: "a failed", isError: true),
+            .toolResult(id: "shellToolCall", content: "b done", isError: false)
+        )
+        #expect(fixture.operations.count == 2)
+        #expect(fixture.operations.allSatisfy { $0.useEventID == nil })
+        try fixture.context.save()
+        let operations = TaskThreadSnapshot(task: fixture.task).activityPresentation(for: fixture.run).operations
+        #expect(operations.totalCount == 2)
+        #expect(operations.finishedCount == 2)
+        #expect(operations.failedCount == 1)
     }
 
     @Test("A denied call is closed by its denial, once, and is not left in flight")

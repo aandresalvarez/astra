@@ -187,17 +187,34 @@ struct RunOperationProjectionTests {
         #expect(projection.failedCount == 0)
     }
 
-    @Test("A record whose call is not among the rows is still a finished operation")
+    @Test("A record naming a call outside the loaded rows is still a finished operation")
     func orphanRecordIsCounted() throws {
         var history = History()
-        history.finish(nil, tool: "Bash", output: "boom", outcome: .failed, exitCode: 3)
+        // The call's row lies outside the loaded window, or an export left it out.
+        history.finish(UUID(), tool: "Bash", output: "boom", outcome: .failed, exitCode: 3)
 
         let projection = RunOperationProjection(events: history.events)
 
         #expect(projection.operations.count == 1)
         #expect(projection.operations.first?.startedAt == nil)
         #expect(projection.failedCount == 1)
+        #expect(projection.resultsWithOutput == 1)
         #expect(projection.milestones.map(\.text) == ["Bash failed · exit code 3"])
+    }
+
+    @Test("A record naming no call adds its outcome to a call already counted")
+    func unattributedRecordIsNotASecondOperation() {
+        var history = History()
+        history.use("bash", "make a")
+        history.use("bash", "make b")
+        // Two calls shared the id, so the record could name neither.
+        history.finish(nil, tool: "bash", output: "ok")
+
+        let projection = RunOperationProjection(events: history.events)
+
+        #expect(projection.operations.count == 2)
+        #expect(projection.finishedCount == 1)
+        #expect(projection.openOperations.count == 1)
     }
 
     @Test("A call that finished without output moves the last recorded activity to its finish")

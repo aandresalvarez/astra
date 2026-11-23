@@ -32,10 +32,11 @@ final class AgentEventRecordingState {
     /// Runs that also recorded unkeyed `.text`, whose output is append-only.
     private var runsWithUnkeyedText: Set<UUID> = []
 
-    private var openToolUseEvents: [String: TaskEvent] = [:]
+    private var openToolUseEvents: [String: [TaskEvent]] = [:]
+    /// Ids two open calls have shared since their list was last empty.
+    private var ambiguousOpenKeys: Set<String> = []
     private var pendingOperationStatuses: [String: PendingOperationStatus] = [:]
     private var openOperationBatches: [UUID: TaskEvent] = [:]
-    private var openUnnamedToolUses: [UUID: [TaskEvent]] = [:]
 
     struct PendingOperationStatus: Equatable {
         let outcome: AgentOperationOutcome
@@ -173,43 +174,37 @@ final class AgentEventRecordingState {
         toolUseCommandByRunAndID["\(run.id.uuidString)#\(id)"] = fullEvidence ?? evidence
     }
 
-    /// The `tool.use` row of a call that has not finished yet. A provider that
-    /// reports one call's state as several frames repeats the call; while it
-    /// is open that is one operation, not a new one.
+    /// The `tool.use` row of a call that has not finished yet, when exactly
+    /// one open call carries this id. A provider that reports one call's
+    /// state as several frames repeats the call; while it is open that is
+    /// one operation, not a new one.
     func openToolUseEvent(id: String, run: TaskRun) -> TaskEvent? {
-        guard !id.isEmpty else { return nil }
-        return openToolUseEvents["\(run.id.uuidString)#\(id)"]
-    }
-
-    func openToolUse(_ event: TaskEvent, id: String, run: TaskRun) {
-        guard !id.isEmpty else {
-            openUnnamedToolUses[run.id, default: []].append(event)
-            return
-        }
-        openToolUseEvents["\(run.id.uuidString)#\(id)"] = event
-    }
-
-    /// The one call a result without an id can only belong to: the run's
-    /// single open call that had no id either. With two or more open, which
-    /// one finished is unknown, and none is named.
-    func finishUnnamedToolUse(run: TaskRun) -> TaskEvent? {
-        guard let open = openUnnamedToolUses[run.id], !open.isEmpty else { return nil }
-        guard open.count == 1 else {
-            // One of them finished; which is unknown. The count still drops.
-            openUnnamedToolUses[run.id]?.removeFirst()
+        let key = "\(run.id.uuidString)#\(id)"
+        guard !id.isEmpty, !ambiguousOpenKeys.contains(key), let open = openToolUseEvents[key], open.count == 1 else {
             return nil
         }
-        openUnnamedToolUses[run.id] = []
         return open[0]
+    }
+
+    /// Open calls are kept per id as a list. An id that does not tell calls
+    /// apart — none at all, or a parser's stand-in such as the tool's name —
+    /// can be held by several open calls at once.
+    func openToolUse(_ event: TaskEvent, id: String, run: TaskRun) {
+        let key = "\(run.id.uuidString)#\(id)"
+        openToolUseEvents[key, default: []].append(event)
+        if openToolUseEvents[key, default: []].count > 1 { ambiguousOpenKeys.insert(key) }
     }
 
     /// The open call a permission denial names: by id, or by tool name when
     /// exactly one open call of this run used that tool.
     func openOperationID(deniedTool tool: String, run: TaskRun) -> String? {
         let prefix = "\(run.id.uuidString)#"
-        if openToolUseEvents[prefix + tool] != nil { return tool }
-        let named = openToolUseEvents.keys.filter { $0.hasPrefix(prefix) && toolNamesByRunAndID[$0] == tool }
-        return named.count == 1 ? named.first.map { String($0.dropFirst(prefix.count)) } : nil
+        if openToolUseEvents[prefix + tool]?.isEmpty == false { return tool }
+        let named = openToolUseEvents.filter {
+            $0.key.hasPrefix(prefix) && !$0.value.isEmpty && toolNamesByRunAndID[$0.key] == tool
+        }
+        return named.count == 1 && named.first?.value.count == 1 && named.first.map({ !ambiguousOpenKeys.contains($0.key) }) == true
+            ? named.first.map { String($0.key.dropFirst(prefix.count)) } : nil
     }
 
     /// The `tool.operation` row still taking this run's records.
@@ -224,11 +219,21 @@ final class AgentEventRecordingState {
     }
 
     /// Closes a call: its open row, its name and any status the provider
-    /// reported for it. The id may be used again by a later call.
+    /// reported for it. The id may be used again by a later call. When the id
+    /// is held by several open calls, one of them finished and which is
+    /// unknown: the open count drops, and no call is named.
     func finishToolOperation(id: String, run: TaskRun) -> (use: TaskEvent?, tool: String?, status: PendingOperationStatus?) {
-        guard !id.isEmpty else { return (nil, nil, nil) }
         let key = "\(run.id.uuidString)#\(id)"
-        return (openToolUseEvents.removeValue(forKey: key), toolNamesByRunAndID[key], pendingOperationStatuses.removeValue(forKey: key))
+        let status = id.isEmpty ? nil : pendingOperationStatuses.removeValue(forKey: key)
+        let tool = id.isEmpty ? nil : toolNamesByRunAndID[key]
+        guard var open = openToolUseEvents[key], !open.isEmpty else { return (nil, tool, status) }
+        // Once two calls shared the id, which ones are still open is unknown
+        // until all of them have finished, so none is named meanwhile.
+        let use = ambiguousOpenKeys.contains(key) ? nil : open[0]
+        open.removeFirst()
+        openToolUseEvents[key] = open.isEmpty ? nil : open
+        if open.isEmpty { ambiguousOpenKeys.remove(key) }
+        return (use, tool, status)
     }
 
     func toolUseFullEvidence(id: String, run: TaskRun) -> String? {

@@ -81,11 +81,12 @@ enum TaskExecutionResourceBroker {
         guard identitiesOverlap(existing, requested) else { return false }
         if existing.isLiveWorkspaceReader || requested.isLiveWorkspaceReader { return false }
         if existing.resourceKind != requested.resourceKind {
-            // A Docker mount against a workspace folder. A container that can
-            // write the folder competes with every task that claims it. A
-            // read-only mount does not wait for workspace writers, as a
-            // read-only workspace folder outside a prepared worktree does not;
-            // it still waits for a container that writes the same mount.
+            // A Docker mount against a workspace folder or Git metadata. A
+            // container that can write the folder competes with every task
+            // that claims it. A read-only mount does not wait for other
+            // writers, as a read-only workspace folder outside a prepared
+            // worktree does not; it still waits for a container that writes
+            // the same mount.
             return (existing.resourceKind == .docker ? existing : requested).accessMode == .write
         }
         return existing.accessMode == .write || requested.accessMode == .write
@@ -186,11 +187,14 @@ enum TaskExecutionResourceBroker {
         return left == right
     }
 
-    /// A Docker mount and a workspace folder are the same host folders under
-    /// two kinds. Git metadata keeps its own kind so it never collides with
-    /// a workspace root that merely contains it.
+    /// A Docker mount is host folders under another kind, so it meets both
+    /// workspace folders and Git metadata: a container that mounts a
+    /// repository writes its `.git` like any other folder in it. A workspace
+    /// claim never meets Git metadata: Git keeps its own kind so a workspace
+    /// root that merely contains it does not collide with it.
     private static func sharesHostFolders(_ lhs: TaskExecutionResourceKind, _ rhs: TaskExecutionResourceKind) -> Bool {
-        Set([lhs, rhs]) == [.workspace, .docker]
+        let kinds = Set([lhs, rhs])
+        return kinds == [.workspace, .docker] || kinds == [.gitCommonDirectory, .docker]
     }
 
     private static func isFilesystemKind(_ kind: TaskExecutionResourceKind) -> Bool {

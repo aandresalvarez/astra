@@ -156,6 +156,7 @@ public struct RunOperationProjection: Sendable, Equatable {
             ))
         }
 
+        var seenUses = Set<UUID>()
         for event in events {
             switch event.type {
             case "agent.response":
@@ -168,6 +169,7 @@ public struct RunOperationProjection: Sendable, Equatable {
                 // validation). Only a row in the recorder's form is a call a
                 // provider made, and so one that can finish.
                 guard let call = Self.toolCall(fromUsePayload: event.payload) else { continue }
+                seenUses.insert(event.id)
                 let finished = recordOfUse[event.id]
                 let operation = Operation(
                     id: event.id,
@@ -224,12 +226,19 @@ public struct RunOperationProjection: Sendable, Equatable {
         }
         closeStretch()
 
-        // A record whose call lies outside the loaded history is still a
-        // finished operation, and still a failure worth a line. One with no
-        // call id at all finishes a call whose row is already counted above
-        // (its use could not be named), so it adds its failure, not a second
-        // operation.
-        for orphan in orphanRecords where orphan.record.callID.isEmpty {
+        // A record that names a call these rows do not hold — it lies outside
+        // the loaded window, or an export left it out — is still a finished
+        // operation, and its failure still a line.
+        for (index, entry) in recordOfUse.filter({ !seenUses.contains($0.key) })
+            .sorted(by: { $0.value.at < $1.value.at }).enumerated() {
+            orphanRecords.append((entry.value.record, entry.value.at, entry.key, index))
+        }
+
+        // A record that names no call finishes one the recorder could not tell
+        // apart (no id, or one several open calls shared). That call's row is
+        // already counted above, so the record adds its outcome and failure,
+        // not a second operation.
+        for orphan in orphanRecords where orphan.record.useEventID == nil {
             unattributedFinished += 1
             if orphan.record.outcome == .failed { unattributedFailed += 1 }
             if let summary = orphan.record.failureSummary {
@@ -242,7 +251,7 @@ public struct RunOperationProjection: Sendable, Equatable {
                 ))
             }
         }
-        for orphan in orphanRecords where !orphan.record.callID.isEmpty {
+        for orphan in orphanRecords where orphan.record.useEventID != nil {
             let id = Self.derivedID(from: orphan.eventID, salt: UInt8(truncatingIfNeeded: 16 &+ orphan.index))
             operations.append(Operation(
                 id: id,
@@ -283,7 +292,7 @@ public struct RunOperationProjection: Sendable, Equatable {
         self.milestones = milestones.sorted { $0.timestamp < $1.timestamp }
         resultsWithOutput = hasRecords
             ? operations.filter { $0.resultEventID != nil }.count
-                + orphanRecords.filter { $0.record.callID.isEmpty && $0.record.resultEventID != nil }.count
+                + orphanRecords.filter { $0.record.useEventID == nil && $0.record.resultEventID != nil }.count
             : resultTimestamps.count
         self.lastOperationEventAt = [lastOperationEventAt, lastRecordedCompletionAt].compactMap { $0 }.max()
         self.lastAgentMessageAt = lastAgentMessageAt

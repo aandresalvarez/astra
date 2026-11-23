@@ -11,16 +11,18 @@ import ASTRAModels
 enum AgentToolOperationRecording {
     /// A provider repeating an open call — OpenCode sends one frame per state
     /// change — updates the row it already has, so one call stays one row and
-    /// the row ends up with the input the call ran with.
+    /// the row ends up with the input the call ran with. Only an id that tells
+    /// calls apart reaches here (see the recorder's `tool.use` case).
     static func updateOpenUse(_ open: TaskEvent, payload: String, task: AgentTask) {
         let redacted = RunSecretRedactionScope.redact(payload, taskID: task.id)
         guard open.payload != redacted else { return }
         open.payload = redacted
-        // The incremental transcript read only refetches rows at or after its
-        // cursor; the bump is what makes an in-place change visible to it.
-        let changedAt = Date()
-        open.timestamp = changedAt
-        task.updatedAt = changedAt
+        // The row keeps its timestamp: it is when the call started, and the
+        // order operations, narration and answer selection read. The
+        // incremental reader only refetches rows at or after its cursor, so it
+        // is told to read again in full instead.
+        task.updatedAt = Date()
+        TaskThreadHistoryInvalidation.invalidate(taskID: task.id)
         TaskThreadChangeNotifier.post(taskID: task.id, source: "tool_use_updated")
     }
 
@@ -58,10 +60,7 @@ enum AgentToolOperationRecording {
         modelContext: ModelContext,
         recordingState: AgentEventRecordingState?
     ) {
-        var finished = recordingState?.finishToolOperation(id: callID, run: run)
-        if callID.isEmpty, let use = recordingState?.finishUnnamedToolUse(run: run) {
-            finished = (use, finished?.tool, finished?.status)
-        }
+        let finished = recordingState?.finishToolOperation(id: callID, run: run)
         let outcome: AgentOperationOutcome = isError ? .failed : (finished?.status?.outcome ?? .succeeded)
         let record = ToolOperationRecord(
             callID: callID,
