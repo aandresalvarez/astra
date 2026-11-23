@@ -652,8 +652,8 @@ final class AgentRuntimeWorker {
 
         let codeDir = TaskWorkspaceAccess(task: launchTask).codeWorkingDirectory
         if TaskExecutionResourceClaimResolver.hasWorkspacePathDrift(
-            request: turnBegin.request,
-            task: launchTask
+            request: turnBegin.request, task: launchTask,
+            lease: executionPolicy.admittedResourceClaims, workspaceAccess: executionWorkspaceAccess
         ) {
             let claimedPath = turnBegin.request?.resourceClaims.first {
                 $0.kind == .workspace

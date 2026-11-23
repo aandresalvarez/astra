@@ -34,6 +34,12 @@ enum RuntimeWorkspaceReviewWording {
             if url.lastPathComponent == ".git" { url.deleteLastPathComponent() }
             add(url.lastPathComponent)
         }
+        for claim in claims where claim.resourceKind == .docker {
+            add(URL(fileURLWithPath: claim.resourceKey).lastPathComponent)
+        }
+        for claim in claims where claim.resourceKind == .remoteDirectory {
+            add(RemoteDirectoryClaimKey.displayName(claim.resourceKey))
+        }
         return names
     }
 

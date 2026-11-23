@@ -50,12 +50,15 @@ enum TaskExecutionResourceClaimResolver {
         let worktreeKeys = worktreeGitMetadataKeys(for: task)
         let sharedKeys = Set(worktreeKeys)
         var seen = Set<String>()
-        return workspaceClaims + readOnlyClaims + (worktreeKeys + credentialKeys).compactMap { rawKey in
+        let gitClaims: [TaskExecutionResourceClaim] = (worktreeKeys + credentialKeys).compactMap { rawKey in
             guard let key = standardizedPath(rawKey), seen.insert(key).inserted else { return nil }
             return TaskExecutionResourceClaim(
                 kind: .gitCommonDirectory, key: key, access: sharedKeys.contains(key) ? .shared : access
             )
         }
+        // Docker mounts and the remote folder follow the workspace access:
+        // see `environmentClaims`.
+        return workspaceClaims + readOnlyClaims + gitClaims + environmentClaims(for: task, workspaceAccess: access)
     }
 
     /// The verified shared Git directory of a prepared worktree, as claim
@@ -146,7 +149,17 @@ enum TaskExecutionResourceClaimResolver {
     /// launch would write a root the request never claimed; a live root equal
     /// to or beneath a claimed one is still covered by the held lease, as the
     /// broker's own path-overlap rule treats it.
-    static func hasWorkspacePathDrift(request: TaskTurnRequest?, task: AgentTask) -> Bool {
+    static func hasWorkspacePathDrift(
+        request: TaskTurnRequest?,
+        task: AgentTask,
+        lease: [TaskResourceLockClaim]? = nil,
+        workspaceAccess: TaskExecutionResourceAccess = .exclusive
+    ) -> Bool {
+        // A Docker mount the launch would write that the admitted lease does
+        // not hold is drift too, with or without a durable request.
+        if !unadmittedWritableMounts(lease: lease, task: task, workspaceAccess: workspaceAccess).isEmpty {
+            return true
+        }
         guard let request else { return false }
         let readOnlyKeys = Set(readOnlyWorkspaceKeys(for: task))
         // A shared claim on a folder the task only reads never covers a root
@@ -218,6 +231,8 @@ enum TaskExecutionResourceClaimResolver {
     /// Every path a runtime may write must participate in admission. The
     /// primary execution root stays first because legacy drift and runtime
     /// access checks use it as the task's canonical workspace boundary.
+    static func workspaceClaimKeys(for task: AgentTask) -> [String] { workspaceKeys(for: task) }
+
     private static func workspaceKeys(for task: AgentTask) -> [String] {
         let access = TaskWorkspaceAccess(task: task)
         let primary = access.codeWorkingDirectory.isEmpty
