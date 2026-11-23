@@ -260,6 +260,10 @@ struct RunOperationProjectionTests {
         #expect(projection.finishedCount == 2)
         #expect(projection.unidentifiedOpenCount == 0)
         #expect(projection.openOperations.isEmpty)
+        // Their records are evidence, so the summary states what finished.
+        #expect(projection.hasOperationRecords)
+        #expect(RunOperationsPresentation(run: Self.run(status: .completed), projection: projection).summaryLine
+            == "2 operations · 2 finished")
     }
 
     @Test("A call that finished without output moves the last recorded activity to its finish")

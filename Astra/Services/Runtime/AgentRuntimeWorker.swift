@@ -710,7 +710,7 @@ final class AgentRuntimeWorker {
             run: run,
             modelContext: modelContext,
             phase: auditPhase,
-            codeDirectory: codeDir, lease: executionPolicy.admittedResourceClaims, workspaceAccess: executionWorkspaceAccess
+            codeDirectory: codeDir, lease: executionPolicy.admittedResourceClaims, workspaceAccess: executionWorkspaceAccess, request: turnBegin.request
         ) else {
             return
         }

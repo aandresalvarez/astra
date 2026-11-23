@@ -763,6 +763,7 @@ enum AgentRuntimeLaunchPreflight {
         codeDirectory: String,
         lease: [TaskResourceLockClaim]? = nil,
         workspaceAccess: TaskExecutionResourceAccess = .exclusive,
+        request: TaskTurnRequest? = nil,
         homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
         fileManager: FileManager = .default
     ) -> AgentRuntimeLaunchPreflightResult {
@@ -808,7 +809,8 @@ enum AgentRuntimeLaunchPreflight {
             // Admission anticipates it; if the lease still does not cover it,
             // the launch stops rather than mount a folder nothing serializes.
             let unadmitted = TaskExecutionResourceClaimResolver.unadmittedMounts(
-                lease: lease, task: task, workspaceAccess: workspaceAccess, homeDirectoryPath: homeDirectoryPath)
+                lease: lease, task: task, workspaceAccess: workspaceAccess, request: request,
+                homeDirectoryPath: homeDirectoryPath)
             if !unadmitted.isEmpty {
                 fields["result"] = "auto_projected_mount_not_admitted"
                 AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: fields, level: .error, fieldMaxLength: 240)
@@ -1060,7 +1062,8 @@ enum AgentRuntimeLaunchPreflight {
         phase: RunPhase,
         codeDirectory: String,
         lease: [TaskResourceLockClaim]? = nil,
-        workspaceAccess: TaskExecutionResourceAccess = .exclusive
+        workspaceAccess: TaskExecutionResourceAccess = .exclusive,
+        request: TaskTurnRequest? = nil
     ) -> Bool {
         preflightCredentialProjectionBeforeLaunchResult(
             task: task,
@@ -1069,7 +1072,8 @@ enum AgentRuntimeLaunchPreflight {
             phase: phase,
             codeDirectory: codeDirectory,
             lease: lease,
-            workspaceAccess: workspaceAccess
+            workspaceAccess: workspaceAccess,
+            request: request
         ).didPass
     }
 

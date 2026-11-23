@@ -249,7 +249,12 @@ struct TaskExecutionEnvironmentClaimTests {
         }
 
         #expect(TaskExecutionResourceClaimResolver.requestInputPaths(for: request, task: task) == [dataset])
-        #expect(access(fixture.lease(task, request: request)) == [.readOnly])
+        let lease = fixture.lease(task, request: request)
+        #expect(access(lease) == [.readOnly])
+        // The launch checks that same lease with the same inputs, so the
+        // unchanged request is not stopped as drift.
+        #expect(!TaskExecutionResourceClaimResolver.hasWorkspacePathDrift(
+            request: request, task: task, lease: lease, workspaceAccess: .exclusive))
 
         // Without the attachment the same folder is a writer's mount.
         let plain = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 2,
@@ -343,8 +348,8 @@ struct TaskExecutionEnvironmentClaimTests {
 
         LaunchSSHConnectionSnapshot.pin(for: task)
         defer { LaunchSSHConnectionSnapshot.release(taskID: task.id) }
-        // The file changes after the launch read it.
-        SSHConnectionManager.save([connection(path: "/srv/service-b")], workspacePath: path)
+        // The file changes after the launch read it: another machine.
+        SSHConnectionManager.save([connection(host: "other.example.com", path: "/srv/service-b")], workspacePath: path)
 
         // The drift check and every launch reader see the pinned set, so the
         // check passes for exactly what the launch goes on to use.
@@ -356,12 +361,12 @@ struct TaskExecutionEnvironmentClaimTests {
         // Released, readers see the file again, and the next launch's check
         // stops on the folder its lease does not cover.
         LaunchSSHConnectionSnapshot.release(taskID: task.id)
-        #expect(LaunchSSHConnectionSnapshot.connections(for: task).map(\.remotePath) == ["/srv/service-b"])
+        #expect(LaunchSSHConnectionSnapshot.connections(for: task).map(\.host) == ["other.example.com"])
         #expect(TaskExecutionResourceClaimResolver.hasWorkspacePathDrift(
             request: request, task: task, lease: lease, workspaceAccess: .exclusive))
     }
 
-    @Test("A launch stops when the connections name a remote folder its lease does not cover")
+    @Test("A launch stops when the connections name a remote machine its lease does not cover")
     func unadmittedRemoteFolderIsDrift() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -375,16 +380,16 @@ struct TaskExecutionEnvironmentClaimTests {
             request: request, task: task, lease: lease, workspaceAccess: .exclusive))
 
         // The connections file changed between admission and launch.
-        SSHConnectionManager.save([connection(path: "/srv/service-b")], workspacePath: path)
+        SSHConnectionManager.save([connection(host: "other.example.com", path: "/srv/service-b")], workspacePath: path)
         #expect(TaskExecutionResourceClaimResolver.unadmittedRemoteDirectories(
-            lease: lease, task: task, workspaceAccess: .exclusive) == ["release.example.com:22 /srv/service-b"])
+            lease: lease, task: task, workspaceAccess: .exclusive) == ["other.example.com:22 /"])
         #expect(TaskExecutionResourceClaimResolver.hasWorkspacePathDrift(
             request: request, task: task, lease: lease, workspaceAccess: .exclusive))
         #expect(TaskExecutionResourceClaimResolver.hasWorkspacePathDrift(
             request: nil, task: task, lease: lease, workspaceAccess: .exclusive))
 
-        // A folder inside the one the lease writes is covered by it.
-        SSHConnectionManager.save([connection(path: "/srv/service-a/releases")], workspacePath: path)
+        // Another folder on the machine the lease holds is covered by it.
+        SSHConnectionManager.save([connection(path: "/srv/service-b")], workspacePath: path)
         #expect(!TaskExecutionResourceClaimResolver.hasWorkspacePathDrift(
             request: request, task: task, lease: lease, workspaceAccess: .exclusive))
 
@@ -399,17 +404,19 @@ struct TaskExecutionEnvironmentClaimTests {
             request: request, task: task, lease: readerLease, workspaceAccess: .exclusive))
     }
 
-    @Test("Independent remote folders and hosts run together")
-    func independentRemoteFoldersRunTogether() throws {
+    @Test("Remote tasks on one machine wait for each other; different machines run together")
+    func remoteMachinesAreTheClaimScope() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
         let first = try fixture.remoteTask("a", connection(path: "/srv/service-a"))
         let second = try fixture.remoteTask("b", connection(path: "/srv/service-b"))
         let otherHost = try fixture.remoteTask("c", connection(host: "other.example.com", path: "/srv/service-a"))
 
+        // The claim is the whole machine: neither the SSH shell nor the remote
+        // job helper keeps a run inside its connection's folder.
         #expect(TaskExecutionResourceClaimResolver.claims(for: first).contains(TaskExecutionResourceClaim(
-            kind: .remoteDirectory, key: "release.example.com:22 /srv/service-a", access: .exclusive)))
-        #expect(TaskExecutionResourceBroker.canAcquire(fixture.lease(second), active: fixture.lease(first)))
+            kind: .remoteDirectory, key: "release.example.com:22 /", access: .exclusive)))
+        #expect(!TaskExecutionResourceBroker.canAcquire(fixture.lease(second), active: fixture.lease(first)))
         #expect(TaskExecutionResourceBroker.canAcquire(fixture.lease(otherHost), active: fixture.lease(first)))
     }
 
@@ -524,7 +531,8 @@ struct TaskExecutionEnvironmentClaimTests {
         try "release.example.com ssh-ed25519 AAAA\n".write(
             to: ssh.appendingPathComponent("known_hosts"), atomically: true, encoding: .utf8)
         let first = try fixture.remoteTask("a", connection(path: "/srv/service-a"))
-        let second = try fixture.remoteTask("b", connection(path: "/srv/service-b"))
+        // Another machine, so only local SSH state could make them wait.
+        let second = try fixture.remoteTask("b", connection(host: "other.example.com", path: "/srv/service-b"))
 
         let plan = TaskLaunchResourceResolver.resolve(
             task: first, runID: UUID(), runtime: .claudeCode, phase: "run", prompt: first.goal, contextText: "",
@@ -539,8 +547,8 @@ struct TaskExecutionEnvironmentClaimTests {
         #expect(plan.hostPathGrants.contains {
             $0.source == .remoteWorkspace && $0.access == .write && $0.path == ssh.standardizedFileURL.path
         })
-        // No claim names it, so two remote-workspace tasks on separate folders
-        // are not serialized on ~/.ssh.
+        // No claim names it, so two remote-workspace tasks on separate
+        // machines are not serialized on ~/.ssh.
         for lease in [fixture.lease(first), fixture.lease(second)] {
             #expect(!lease.contains { $0.resourceKey.contains("/.ssh") || $0.resourceKey.contains("gcloud") })
         }

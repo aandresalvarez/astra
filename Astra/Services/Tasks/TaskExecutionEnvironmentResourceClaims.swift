@@ -43,7 +43,8 @@ extension TaskExecutionResourceClaimResolver {
         // During a launch this is the set the launch pinned, so its drift
         // check judges exactly the connections the launch goes on to use.
         return LaunchSSHConnectionSnapshot.connectionsWithoutMigrating(for: task).compactMap { connection in
-            guard let key = RemoteDirectoryClaimKey.key(for: connection), seen.insert(key).inserted else { return nil }
+            // The machine, not the connection's folder: see `machineKey`.
+            guard let key = RemoteDirectoryClaimKey.machineKey(for: connection), seen.insert(key).inserted else { return nil }
             return TaskExecutionResourceClaim(kind: .remoteDirectory, key: key, access: .exclusive)
         }
     }
@@ -136,17 +137,23 @@ extension TaskExecutionResourceClaimResolver {
     /// launch with no lease to compare against. Anything here means the
     /// environment changed after admission; the launch must stop rather than
     /// use a folder nothing serializes.
+    /// `request` supplies its own read-only inputs, which the launch mounts
+    /// read-only even over a writable declared mount, as admission did.
     static func unadmittedMounts(
         lease: [TaskResourceLockClaim]?,
         task: AgentTask,
         workspaceAccess: TaskExecutionResourceAccess,
+        request: TaskTurnRequest? = nil,
         homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path
     ) -> [String] {
         guard let lease else { return [] }
         let held = lease.filter { $0.resourceKind == .docker }.map {
             (key: TaskExecutionResourceBroker.canonicalKey(kind: .docker, key: $0.resourceKey), writes: $0.accessMode == .write)
         }
-        return dockerMountClaims(for: task, workspaceAccess: workspaceAccess, homeDirectoryPath: homeDirectoryPath).compactMap { claim in
+        let inputs = requestInputPaths(for: request, task: task, homeDirectoryPath: homeDirectoryPath)
+        return dockerMountClaims(
+            for: task, workspaceAccess: workspaceAccess, readOnlyInputPaths: inputs, homeDirectoryPath: homeDirectoryPath
+        ).compactMap { claim in
             let path = TaskExecutionResourceBroker.canonicalKey(for: claim)
             let needsWrite = claim.access == .exclusive
             let covered = held.contains { (path == $0.key || path.hasPrefix($0.key + "/")) && ($0.writes || !needsWrite) }

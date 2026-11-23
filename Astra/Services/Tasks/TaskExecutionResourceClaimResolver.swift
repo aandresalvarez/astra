@@ -160,7 +160,7 @@ enum TaskExecutionResourceClaimResolver {
         // A Docker mount or remote folder the launch would use that the
         // admitted lease does not cover is drift too, with or without a
         // durable request.
-        if !unadmittedMounts(lease: lease, task: task, workspaceAccess: workspaceAccess).isEmpty
+        if !unadmittedMounts(lease: lease, task: task, workspaceAccess: workspaceAccess, request: request).isEmpty
             || !unadmittedRemoteDirectories(lease: lease, task: task, workspaceAccess: workspaceAccess).isEmpty {
             return true
         }

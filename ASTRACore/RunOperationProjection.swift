@@ -108,7 +108,11 @@ public struct RunOperationProjection: Sendable, Equatable {
     }
     public var failedUseEventIDs: Set<UUID> { Set(operations.filter { $0.outcome == .failed }.map(\.id)) }
     /// Whether this run's results are tied to their calls by record.
-    public var hasOperationRecords: Bool { operations.contains { $0.outcome != nil && $0.isCorrelated } }
+    /// A record that finished one of several calls sharing an id is
+    /// evidence too, though no single call carries its outcome.
+    public var hasOperationRecords: Bool {
+        unattributedFinishedCount > 0 || operations.contains { $0.outcome != nil && $0.isCorrelated }
+    }
 
     public init(events: [Event]) {
         var recordOfUse: [UUID: (record: ToolOperationRecord, at: Date)] = [:]

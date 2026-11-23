@@ -31,11 +31,12 @@ folder the other mounts.
   claim there), the run stops with the workspace-drift error instead of
   starting.
 
-**Remote folders.** A task in a workspace with SSH connections claims each
-connection's remote folder: host and port, then the folder, normalized without
-contacting the host. The claim is always a writer's, even for a run declared
-read-only: nothing enforces read-only access over SSH, where a run gets a shell
-with the login's own permissions.
+**Remote machines.** A task in a workspace with SSH connections claims each
+machine its connections reach, as a whole: neither the SSH shell a run gets
+nor the remote job helper is confined to the connection's folder (jobs start in
+the login's home), so a run can write anywhere the login can. The claim is
+always a writer's, even for a run declared read-only. Until remote execution
+enforces a folder boundary, the machine is the scope.
 
 - The machine is the route `ssh` takes: a connection with an SSH config alias
   is keyed by the alias, whatever its host fields say.
@@ -53,9 +54,8 @@ with the login's own permissions.
 - Where two folders cannot be compared locally (`~/app` against `/srv/app`, or
   a path that climbs out of a home), they are treated as overlapping.
 
-This is new waiting a person can notice: write-capable tasks in separate local
-worktrees, or separate workspaces, that point at the same remote folder now run
-one after another. "Review workspace" covers these waits as it does local
+This is new waiting a person can notice: tasks in separate local worktrees, or separate
+workspaces, that reach the same remote machine now run one after another. "Review workspace" covers these waits as it does local
 folders.
 
 **Local SSH state. The decision is a concurrency contract, not a claim and not

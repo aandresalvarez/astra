@@ -22,6 +22,15 @@ import ASTRAPersistence
 enum RemoteDirectoryClaimKey {
     private static let separator: Character = " "
 
+    /// The whole machine a connection reaches: `/` under its route. Neither
+    /// the SSH shell a run gets nor the remote job helper is confined to the
+    /// connection's folder (jobs start in the login's home), so a run can
+    /// write anywhere the login can. Until remote execution enforces a folder
+    /// boundary, that is the scope a claim has to hold.
+    static func machineKey(for connection: SSHConnection) -> String? {
+        machine(for: connection).map { $0 + String(separator) + "/" }
+    }
+
     static func key(for connection: SSHConnection) -> String? {
         guard let machine = machine(for: connection) else { return nil }
         // Through an alias the login user is the alias's, not the `user`
