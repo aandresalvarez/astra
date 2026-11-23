@@ -133,9 +133,10 @@ None. No container, SSH connection or provider was started for this change.
   because ASTRA's sandbox limits what a run writes on this Mac, not what it
   does over SSH. Two read-only tasks on one remote folder therefore wait for
   each other.
-- A credential projection ASTRA adds at launch (gcloud application-default
-  credentials, read-only) is mounted after admission, so its shared claim is
-  not held for that first run.
+- A gcloud credential projection the launch preflight adds (when the host has
+  application-default credentials the environment does not project yet) is
+  claimed as a reader at admission, before it exists. The preflight checks the
+  lease again after projecting and stops the launch if it is not covered.
 - A legacy pinned worktree with Git intent still holds its repository's Git
   directory exclusively for the turn. Giving it the shared claim prepared
   worktrees have needs the same narrowed metadata grants, and those grants

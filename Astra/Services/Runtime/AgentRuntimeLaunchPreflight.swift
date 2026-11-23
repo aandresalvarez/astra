@@ -761,6 +761,8 @@ enum AgentRuntimeLaunchPreflight {
         modelContext: ModelContext,
         phase: RunPhase,
         codeDirectory: String,
+        lease: [TaskResourceLockClaim]? = nil,
+        workspaceAccess: TaskExecutionResourceAccess = .exclusive,
         homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
         fileManager: FileManager = .default
     ) -> AgentRuntimeLaunchPreflightResult {
@@ -802,6 +804,24 @@ enum AgentRuntimeLaunchPreflight {
                 ? AgentRuntimeLaunchPreflightResult.Status.credentialProjectionFailed.rawValue
                 : AgentRuntimeLaunchPreflightResult.Status.credentialProjectionPassed.rawValue
             fields["result"] = report.shouldBlockLaunch ? "blocked_after_auto_projection" : "auto_projected_and_passed"
+            // The projection added a mount after the workspace-drift check ran.
+            // Admission anticipates it; if the lease still does not cover it,
+            // the launch stops rather than mount a folder nothing serializes.
+            let unadmitted = TaskExecutionResourceClaimResolver.unadmittedMounts(
+                lease: lease, task: task, workspaceAccess: workspaceAccess, homeDirectoryPath: homeDirectoryPath)
+            if !unadmitted.isEmpty {
+                fields["result"] = "auto_projected_mount_not_admitted"
+                AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: fields, level: .error, fieldMaxLength: 240)
+                finishPreLaunchFailure(
+                    task: task, run: run, modelContext: modelContext,
+                    reason: "execution_request_workspace_drift",
+                    payload: "The task workspace changed after this run was submitted. Start a new run so ASTRA can acquire the correct workspace lock."
+                )
+                return AgentRuntimeLaunchPreflightResult(
+                    status: .credentialProjectionFailed, phase: phase, reason: "execution_request_workspace_drift",
+                    detail: unadmitted.joined(separator: ", "), auditFields: fields
+                )
+            }
         }
 
         guard !report.shouldBlockLaunch else {
@@ -1038,14 +1058,18 @@ enum AgentRuntimeLaunchPreflight {
         run: TaskRun,
         modelContext: ModelContext,
         phase: RunPhase,
-        codeDirectory: String
+        codeDirectory: String,
+        lease: [TaskResourceLockClaim]? = nil,
+        workspaceAccess: TaskExecutionResourceAccess = .exclusive
     ) -> Bool {
         preflightCredentialProjectionBeforeLaunchResult(
             task: task,
             run: run,
             modelContext: modelContext,
             phase: phase,
-            codeDirectory: codeDirectory
+            codeDirectory: codeDirectory,
+            lease: lease,
+            workspaceAccess: workspaceAccess
         ).didPass
     }
 

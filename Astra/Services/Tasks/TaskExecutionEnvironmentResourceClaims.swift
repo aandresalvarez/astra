@@ -69,13 +69,15 @@ extension TaskExecutionResourceClaimResolver {
     /// mount needs.
     static func dockerMountClaims(
         for task: AgentTask,
-        workspaceAccess: TaskExecutionResourceAccess
+        workspaceAccess: TaskExecutionResourceAccess,
+        homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path
     ) -> [TaskExecutionResourceClaim] {
         let environment = launchEnvironment(for: task)
         guard environment.isContainerized else { return [] }
         let declared = Set((environment.mounts.map(\.hostPath)
             + environment.effectiveCredentialProjections.map(\.hostPath)).map(mountIdentity))
-        guard !declared.isEmpty else { return [] }
+        let anticipated = anticipatedCredentialMount(for: environment, task: task, homeDirectoryPath: homeDirectoryPath)
+        guard !declared.isEmpty || anticipated != nil else { return [] }
         let access = TaskWorkspaceAccess(task: task)
         let currentDirectory = access.codeWorkingDirectory.isEmpty
             ? access.effectiveWorkspacePath : access.codeWorkingDirectory
@@ -99,6 +101,15 @@ extension TaskExecutionResourceClaimResolver {
             guard !isAtOrInside(host, writable ? heldWritable : heldReadable) else { continue }
             needed[host] = writable || needed[host] == .exclusive ? .exclusive : .shared
         }
+        // The gcloud credentials folder a launch's preflight may project
+        // (`AgentRuntimeLaunchPreflight.autoProjectRequiredDockerCredentialsIfPossible`)
+        // after this claim set is admitted. When the host has credentials the
+        // environment does not project yet, it is claimed as a reader up front,
+        // so that first run waits for a container writing it like any other.
+        if let anticipated {
+            let host = mountIdentity(anticipated)
+            if !isAtOrInside(host, heldReadable), needed[host] == nil { needed[host] = .shared }
+        }
         // Keyed the way the broker compares host folders, so one folder has
         // one spelling in a persisted claim set.
         return needed.sorted { $0.key < $1.key }.map {
@@ -118,13 +129,14 @@ extension TaskExecutionResourceClaimResolver {
     static func unadmittedMounts(
         lease: [TaskResourceLockClaim]?,
         task: AgentTask,
-        workspaceAccess: TaskExecutionResourceAccess
+        workspaceAccess: TaskExecutionResourceAccess,
+        homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path
     ) -> [String] {
         guard let lease else { return [] }
         let held = lease.filter { $0.resourceKind == .docker }.map {
             (key: TaskExecutionResourceBroker.canonicalKey(kind: .docker, key: $0.resourceKey), writes: $0.accessMode == .write)
         }
-        return dockerMountClaims(for: task, workspaceAccess: workspaceAccess).compactMap { claim in
+        return dockerMountClaims(for: task, workspaceAccess: workspaceAccess, homeDirectoryPath: homeDirectoryPath).compactMap { claim in
             let path = TaskExecutionResourceBroker.canonicalKey(for: claim)
             let needsWrite = claim.access == .exclusive
             let covered = held.contains { (path == $0.key || path.hasPrefix($0.key + "/")) && ($0.writes || !needsWrite) }
@@ -150,6 +162,22 @@ extension TaskExecutionResourceClaimResolver {
             }
             return covered ? nil : claim.key
         }
+    }
+
+    /// The host gcloud folder the launch preflight would add as a read-only
+    /// projection: host credentials exist and the environment projects none.
+    static func anticipatedCredentialMount(
+        for environment: WorkspaceExecutionEnvironment,
+        task: AgentTask,
+        homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
+        fileManager: FileManager = .default
+    ) -> String? {
+        guard environment.isContainerized,
+              !environment.effectiveCredentialProjections.contains(where: { $0.id == ExecutionEnvironmentCredentialProjection.gcpADCID })
+        else { return nil }
+        let folder = ExecutionEnvironmentCredentialProjection.defaultGCPADCHostPath(homeDirectory: homeDirectoryPath)
+        let file = (folder as NSString).appendingPathComponent(ExecutionEnvironmentCredentialProjection.gcpADCFileName)
+        return fileManager.fileExists(atPath: file) ? folder : nil
     }
 
     private static func mountIdentity(_ path: String) -> String {

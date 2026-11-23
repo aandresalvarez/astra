@@ -870,6 +870,56 @@ struct ExecutionEnvironmentTests {
     }
 
     @MainActor
+    @Test("Admission anticipates the credentials a launch will project, and a launch without that claim stops")
+    func autoProjectedCredentialsAreAdmittedFirst() throws {
+        let root = try makeTempDir("docker-credential-admission")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try writeBigQueryDBTProfile(in: root)
+        let home = try makeTempDir("docker-credential-admission-home")
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let gcloudDirectory = try writeADCFile(inHome: home)
+        let container = try makeContainer()
+        let context = container.mainContext
+        func makeTask() -> (AgentTask, TaskRun) {
+            let workspace = Workspace(name: "Docker", primaryPath: root)
+            workspace.activeExecutionEnvironmentJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+                id: "image:test", kind: .dockerImage, displayName: "Test Image", sourcePath: root, image: "astra/test:latest"
+            ))
+            let task = AgentTask(title: "Run dbt", goal: "Check BigQuery", workspace: workspace)
+            let run = TaskRun(task: task)
+            context.insert(workspace)
+            context.insert(task)
+            context.insert(run)
+            return (task, run)
+        }
+
+        // Admission claims the folder the preflight will project, as a reader.
+        let (task, run) = makeTask()
+        let admitted = TaskExecutionResourceClaimResolver.dockerMountClaims(
+            for: task, workspaceAccess: .exclusive, homeDirectoryPath: home)
+        let anticipated = TaskExecutionResourceBroker.canonicalKey(kind: .docker, key: gcloudDirectory)
+        #expect(admitted.contains { TaskExecutionResourceBroker.canonicalKey(for: $0) == anticipated && $0.access == .shared })
+        let lease = TaskExecutionResourceBroker.lockClaims(
+            for: admitted, taskID: task.id, requestID: UUID(), runMode: "test")
+
+        let passed = AgentRuntimeLaunchPreflight.preflightCredentialProjectionBeforeLaunchResult(
+            task: task, run: run, modelContext: context, phase: "test", codeDirectory: root,
+            lease: lease, workspaceAccess: .exclusive, homeDirectoryPath: home
+        )
+        #expect(passed.didPass)
+
+        // A lease that never claimed it stops the launch instead of mounting it.
+        let (other, otherRun) = makeTask()
+        let refused = AgentRuntimeLaunchPreflight.preflightCredentialProjectionBeforeLaunchResult(
+            task: other, run: otherRun, modelContext: context, phase: "test", codeDirectory: root,
+            lease: [], workspaceAccess: .exclusive, homeDirectoryPath: home
+        )
+        #expect(!refused.didPass)
+        #expect(refused.reason == "execution_request_workspace_drift")
+        #expect(otherRun.status == .failed)
+    }
+
+    @MainActor
     @Test("Credential projection preflight auto-projects local ADC for Docker retries")
     func credentialProjectionPreflightAutoProjectsLocalADCForDockerRetries() throws {
         let root = try makeTempDir("docker-credential-auto-project")
