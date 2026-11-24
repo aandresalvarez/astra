@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 
 /// Retires workspace activations of former built-in plugins this build no
 /// longer ships, through the normal Remove for a missing plugin
@@ -23,7 +24,7 @@ import ASTRAModels
 enum RetiredBuiltInActivationCleanup {
     /// Former built-ins: the five archived in `capabilities/archived/`, and
     /// two removed from the catalog earlier whose activations were left behind.
-    static let retiredBuiltInIDs: [String] = [
+    nonisolated static let retiredBuiltInIDs: [String] = [
         "code-reviewer",
         "google-drive-browser",
         "google-workspace",
@@ -38,11 +39,12 @@ enum RetiredBuiltInActivationCleanup {
         var failed: [String] = []
     }
 
-    /// The listed IDs with no definition that Remove would still touch: an
-    /// activation row, or a plugin held only in legacy state after a deferred
-    /// activation migration, as `PluginRemovalScope` reads them. A store that
-    /// can't be read counts every listed ID as pending, so the pass tries
-    /// them and reports why.
+    /// The listed IDs with no definition that still hold something in a
+    /// workspace: what Remove acts on (an activation row, or a plugin held only
+    /// in legacy state after a deferred activation migration, as
+    /// `PluginRemovalScope` reads them), or rows a V20 store's migration kept
+    /// as the plugin's pending overrides. A store that can't be read counts
+    /// every listed ID as pending, so the pass tries them and reports why.
     ///
     /// Startup recovery asks for a mirror scan while any is pending, as it does
     /// for other pending cleanup: the cleanup chain that runs this pass only
@@ -54,24 +56,13 @@ enum RetiredBuiltInActivationCleanup {
         builtInIDs: Set<String> = Set(PluginCatalog.builtInPackages.map(\.id)),
         ids: [String] = retiredBuiltInIDs
     ) -> [String] {
-        let defined = builtInIDs.union(library.installedPackages().map(\.id))
-        // A package stored under the ID that failed to decode (a local import
-        // reusing the ID, briefly unreadable) is not missing: leave it be.
-        let stored = { (id: String) in
-            [library.packageURL(for: id), library.packageManifestURL(for: id)]
-                .contains { FileManager.default.fileExists(atPath: $0.path) }
-        }
-        let missing = ids.filter { !defined.contains($0) && !stored($0) }
+        let missing = missingIDs(library: library, builtInIDs: builtInIDs, ids: ids)
         guard !missing.isEmpty else { return [] }
         guard let workspaces = try? modelContext.fetch(FetchDescriptor<Workspace>()).filter({ !$0.isDeleted }) else {
             return missing
         }
         return missing.filter { id in
-            workspaces.contains { workspace in
-                workspace.pluginActivations.contains { !$0.isDeleted && $0.pluginID == id }
-                    || WorkspaceCapabilityActivation.pendingLegacyInstallations(in: workspace).contains { $0.id == id }
-                    || WorkspaceCapabilityActivation.pendingLegacyState(of: workspace).enabledPluginIDs.contains(id)
-            }
+            workspaces.contains { inRemovalScope(id, $0) || holdsPendingOverrides(id, $0) }
         }
     }
 
@@ -90,7 +81,18 @@ enum RetiredBuiltInActivationCleanup {
         var outcome = Outcome()
         for id in pendingIDs(modelContext: modelContext, library: library, builtInIDs: builtInIDs, ids: ids) {
             do {
-                try forget(id, modelContext)
+                let workspaces = try modelContext.fetch(FetchDescriptor<Workspace>()).filter { !$0.isDeleted }
+                if workspaces.contains(where: { inRemovalScope(id, $0) }) {
+                    try forget(id, modelContext)
+                }
+                // Rows a V20 migration kept as the plugin's pending overrides
+                // stay in scope as authored rows; a retired plugin's rows leave
+                // it with its activation, and come back as overrides on Add.
+                for workspace in workspaces where WorkspaceCapabilityActivation.retirePendingOverrides(pluginID: id, in: workspace) {
+                    try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
+                        workspace: workspace, modelContext: modelContext,
+                        auditFields: ["operation": "retired_builtin_cleanup", "plugin_id": id])
+                }
                 outcome.retired.append(id)
                 AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
                     "operation": "retired_builtin_cleanup", "plugin_id": id, "result": "retired"
@@ -104,5 +106,27 @@ enum RetiredBuiltInActivationCleanup {
             }
         }
         return outcome
+    }
+
+    private static func missingIDs(library: CapabilityLibrary, builtInIDs: Set<String>, ids: [String]) -> [String] {
+        let defined = builtInIDs.union(library.installedPackages().map(\.id))
+        // A package stored under the ID that failed to decode (a local import
+        // reusing the ID, briefly unreadable) is not missing: leave it be.
+        let stored = { (id: String) in
+            [library.packageURL(for: id), library.packageManifestURL(for: id)]
+                .contains { FileManager.default.fileExists(atPath: $0.path) }
+        }
+        return ids.filter { !defined.contains($0) && !stored($0) }
+    }
+
+    private static func inRemovalScope(_ id: String, _ workspace: Workspace) -> Bool {
+        workspace.pluginActivations.contains { !$0.isDeleted && $0.pluginID == id }
+            || WorkspaceCapabilityActivation.pendingLegacyInstallations(in: workspace).contains { $0.id == id }
+            || WorkspaceCapabilityActivation.pendingLegacyState(of: workspace).enabledPluginIDs.contains(id)
+    }
+
+    private static func holdsPendingOverrides(_ id: String, _ workspace: Workspace) -> Bool {
+        WorkspaceCapabilityActivation.retiredActivations(of: workspace)
+            .contains { $0.pluginID == id && !($0.pendingOverrides ?? []).isEmpty }
     }
 }

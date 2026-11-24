@@ -34,15 +34,16 @@ struct RetiredBuiltInActivationCleanupTests {
         )
     }
 
-    @Test("A queued launch stops at preflight until the leftover activation is retired, with no manual Remove")
+    @Test("A leftover activation is retired at launch with no manual Remove, and never blocks a queued launch meanwhile")
     func launchContractClearsAfterUpgrade() throws {
         let env = try upgradedWorkspace(id: "stanford-apple-mail")
         defer { try? FileManager.default.removeItem(at: env.root) }
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: "stanford-apple-mail", in: env.workspace))
         #expect(activation.isEnabled)
-        // A request-time copy of the workspace, as a launch reads it.
+        // A request-time copy of the workspace, as a launch reads it: a
+        // launch that lands before the cleanup is not refused for it.
         activation.launchWorkspaceID = env.workspace.id
-        #expect(!PluginQueuedContractValidation.issues(in: env.workspace, packages: env.library.installedPackages()).isEmpty)
+        #expect(PluginQueuedContractValidation.issues(in: env.workspace, packages: env.library.installedPackages()).isEmpty)
         activation.launchWorkspaceID = nil
 
         let outcome = cleanup(env)
@@ -53,6 +54,49 @@ struct RetiredBuiltInActivationCleanupTests {
         #expect(PluginQueuedContractValidation.issues(in: env.workspace, packages: env.library.installedPackages()).isEmpty)
         // Kept for a later Add, as a person's Remove keeps it.
         #expect(WorkspaceCapabilityActivation.retiredActivations(of: env.workspace).map(\.pluginID) == ["stanford-apple-mail"])
+    }
+
+    @Test("A plugin that is merely missing still fails the launch contract")
+    func unlistedMissingPluginStillBlocks() throws {
+        let env = try upgradedWorkspace(id: "local.gone")
+        defer { try? FileManager.default.removeItem(at: env.root) }
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: "local.gone", in: env.workspace))
+        activation.launchWorkspaceID = env.workspace.id
+        #expect(PluginQueuedContractValidation.issues(in: env.workspace, packages: env.library.installedPackages())
+            .map(\.packageID) == ["local.gone"])
+    }
+
+    /// A V20 store's migration keeps a missing plugin's old rows as authored
+    /// rows still in scope (`pendingOverrides`); retiring the plugin takes them
+    /// out with it, and an Add brings them back as its components' overrides.
+    @Test("Rows kept as a retired built-in's pending overrides leave the workspace's scope")
+    func pendingOverridesLeaveScope() throws {
+        let env = try PluginOperationsTests.Environment()
+        defer { try? FileManager.default.removeItem(at: env.root) }
+        let row = Skill(name: "Security Auditor", allowedTools: ["Read"], behaviorInstructions: "Audit.")
+        row.workspace = env.workspace
+        env.context.insert(row)
+        WorkspaceCapabilityActivation.recordPendingOverride(
+            componentID: "skill:security-auditor", rowID: row.id, pluginID: "security-auditor", in: env.workspace)
+        try env.context.save()
+        #expect(!WorkspaceCapabilityActivation.overridingRowIDs(of: env.workspace).contains(row.id))
+        #expect(RetiredBuiltInActivationCleanup.pendingIDs(modelContext: env.context, library: env.library, builtInIDs: [])
+            == ["security-auditor"])
+
+        var forgotten: [String] = []
+        let outcome = cleanup(env) { id, _ in forgotten.append(id) }
+
+        #expect(outcome.retired == ["security-auditor"])
+        #expect(forgotten.isEmpty, "no activation, so nothing for Remove to do")
+        #expect(WorkspaceCapabilityActivation.overridingRowIDs(of: env.workspace).contains(row.id))
+        let record = try #require(WorkspaceCapabilityActivation.retiredActivations(of: env.workspace).first)
+        #expect(record.pendingOverrides == nil)
+        #expect(record.overridingRowIDs == [row.id.uuidString])
+        #expect(record.overriddenComponentIDs == ["skill:security-auditor"])
+        #expect(RetiredBuiltInActivationCleanup.pendingIDs(modelContext: env.context, library: env.library, builtInIDs: []).isEmpty)
+        // Saved, not only staged.
+        let saved = try #require(try ModelContext(env.container).fetch(FetchDescriptor<Workspace>()).first)
+        #expect(WorkspaceCapabilityActivation.retiredActivations(of: saved).first?.pendingOverrides == nil)
     }
 
     @Test("A former built-in held only in legacy state after a deferred migration is retired too")

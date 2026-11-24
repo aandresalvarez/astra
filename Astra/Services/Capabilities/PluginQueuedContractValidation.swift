@@ -12,6 +12,12 @@ enum PluginQueuedContractValidation {
         return WorkspaceCapabilityActivation.activations(of: workspace).compactMap { activation in
             guard activation.isEnabled, activation.launchWorkspaceID != nil else { return nil }
             let package = definitions[activation.pluginID]
+            // A former built-in this build retired: nothing of it can run, and
+            // startup retires the activation (`RetiredBuiltInActivationCleanup`).
+            // Until it has, a launch goes on without it instead of failing.
+            if package == nil, RetiredBuiltInActivationCleanup.retiredBuiltInIDs.contains(activation.pluginID) {
+                return nil
+            }
             guard package.map({ PluginRuntimeProjection.awaitsUpdate(activation, to: $0) }) ?? true else { return nil }
             return CapabilityRuntimeIntegrityIssue(
                 packageID: activation.pluginID,
