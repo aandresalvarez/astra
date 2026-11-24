@@ -15,6 +15,7 @@ struct GitHubHostControlPolicyTests {
         ["api", "--method=head", "repos/example/project"],
         ["api", "-iX", "GET", "repos/example/project"],
         ["api", "repos/{owner}/{repo}/compare/a...b", "--paginate", "--slurp", "--silent"],
+        ["api", "repos/:owner/:repo/branches/:branch"],
         ["api", "repos/example/project/contents/docs/graphql.md"],
         ["api", "user", "--template", "--hostname"],
         ["api", "--hostname", "github.com", "repos/example/project", "-t", "{{.name}}"],
@@ -66,6 +67,8 @@ struct GitHubHostControlPolicyTests {
         ["api", "{branch}", "-H", "Accept: application/vnd.github.v4.idl"],
         ["api", "/{repo}/"],
         ["api", "{owner}/{repo}"],
+        ["api", ":branch", "-H", "Accept: application/vnd.github.v4.idl"],
+        ["api", "/:owner/:repo"],
         // The path gh requests, however the endpoint is spelled.
         ["api", "graphql#ignored", "-H", "Accept: application/vnd.github.v4.idl"],
         ["api", "//GraphQL/?x=1"],
