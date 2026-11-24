@@ -23,7 +23,9 @@ enum PluginQueuedContractValidation {
         in workspace: Workspace, definitions: [String: PluginPackage], library: CapabilityLibrary
     ) -> [CapabilityRuntimeIntegrityIssue] {
         guard workspace.launchPluginDefinitions != nil else { return [] }
-        let live = Set(WorkspaceCapabilityActivation.activations(of: workspace).map(\.pluginID))
+        // An enabled activation of the plugin already raises its own issue; a
+        // disabled one says nothing about rows still in scope.
+        let live = Set(WorkspaceCapabilityActivation.activations(of: workspace).filter(\.isEnabled).map(\.pluginID))
         return RetiredBuiltInActivationCleanup.pendingRowPluginIDs(in: workspace, library: library)
             .filter { definitions[$0] == nil && !live.contains($0) }
             .map { pluginID in

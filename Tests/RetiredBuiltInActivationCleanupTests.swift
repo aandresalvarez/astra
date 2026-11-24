@@ -158,6 +158,23 @@ struct RetiredBuiltInActivationCleanupTests {
         #expect(issues().isEmpty)
     }
 
+    @Test("Pending V20 rows still block a queued launch when the plugin's activation is turned off")
+    func pendingRowsWithDisabledActivationBlockLaunch() throws {
+        let env = try upgradedWorkspace(id: "stanford-apple-mail")
+        defer { try? FileManager.default.removeItem(at: env.root) }
+        let tool = LocalTool(name: "stanford-apple-mail", toolDescription: "Mail", toolType: "cli", command: "stanford-apple-mail")
+        tool.workspace = env.workspace
+        env.context.insert(tool)
+        WorkspaceCapabilityActivation.recordPendingOverride(
+            componentID: "tool:stanford-apple-mail", rowID: tool.id, pluginID: "stanford-apple-mail", in: env.workspace)
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: "stanford-apple-mail", in: env.workspace))
+        activation.isEnabled = false
+        try env.context.save()
+        env.workspace.launchPluginDefinitions = []
+        #expect(PluginQueuedContractValidation.issues(in: env.workspace, packages: [], library: env.library)
+            .map(\.packageID) == ["stanford-apple-mail"])
+    }
+
     @Test("Unsaved edits in the shared context defer the pass instead of being committed with it")
     func unsavedEditsDefer() throws {
         let env = try PluginOperationsTests.Environment()
