@@ -20,6 +20,59 @@ struct CapabilityLibraryTests {
         #expect(prod != beta)
     }
 
+    /// The test binary resolves Application Support to the production folder
+    /// (`AstraDev` under `ASTRA_CHANNEL=dev`), and plugin code opens
+    /// `CapabilityLibrary()` itself. Before the default was redirected, one
+    /// suite left 92 `add-commit-<uuid>.json` fixtures in the real library.
+    @Test("No capability library a test reaches by default is the person's: App Support is never read or written")
+    @MainActor
+    func testsNeverReachTheRealLibrary() throws {
+        let scratch = try #require(CapabilityLibrary.testRunDirectory).standardizedFileURL.path
+        #expect(scratch.hasPrefix(FileManager.default.temporaryDirectory.standardizedFileURL.path))
+        // A recycled PID must not reopen an earlier run's folder.
+        let runFolder = URL(fileURLWithPath: scratch).deletingLastPathComponent().lastPathComponent
+        let runPrefix = "AppSupport-\(ProcessInfo.processInfo.processIdentifier)-"
+        #expect(runFolder.hasPrefix(runPrefix), "\(runFolder)")
+        #expect(UUID(uuidString: String(runFolder.dropFirst(runPrefix.count))) != nil, "\(runFolder)")
+        let appSupport = AppChannelStoragePaths.applicationSupportBaseDirectory().standardizedFileURL.path
+        for directory in [
+            CapabilityLibrary().directory,
+            CapabilityLibrary.defaultDirectory(),
+            CapabilityInstaller().library.directory,
+            CapabilityUninstaller().library.directory,
+            CapabilityPackageCreationService().library.directory,
+            CapabilityCatalogActionService().library.directory
+        ] {
+            let path = directory.standardizedFileURL.path
+            #expect(path == scratch, "\(path)")
+            #expect(!path.hasPrefix(appSupport + "/"), "\(path)")
+        }
+        // Approval records for those libraries' fixtures stay beside them.
+        let approvals = CapabilityLibrary().directory.deletingLastPathComponent()
+            .appendingPathComponent("CapabilityApprovals", isDirectory: true).standardizedFileURL.path
+        for directory in [
+            CapabilityApprovalStore().directory,
+            CapabilityApprovalStore.defaultDirectory(),
+            CapabilityPackageCreationService().approvalStore.directory
+        ] {
+            let path = directory.standardizedFileURL.path
+            #expect(path == approvals, "\(path)")
+            #expect(!path.hasPrefix(appSupport + "/"), "\(path)")
+        }
+        for channel in [AppChannel.production, .development, .beta] {
+            // Each channel's own base: a development override moves only the
+            // development folder, and production and beta ignore it.
+            let channelBase = AppChannelStoragePaths.applicationSupportBaseDirectory(for: channel)
+                .standardizedFileURL.path
+            for real in [CapabilityLibrary.capabilitiesDirectory(for: channel),
+                         CapabilityApprovalStore.approvalsDirectory(for: channel)] {
+                let path = real.standardizedFileURL.path
+                #expect(path.hasPrefix(channelBase + "/"), "\(path)")
+                #expect(path != scratch && path != approvals)
+            }
+        }
+    }
+
     @Test("install writes and reloads capability package")
     func installAndLoadPackage() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())

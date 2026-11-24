@@ -80,23 +80,44 @@ enum TaskExecutionResourceBroker {
     static func conflicts(_ existing: TaskResourceLockClaim, _ requested: TaskResourceLockClaim) -> Bool {
         guard identitiesOverlap(existing, requested) else { return false }
         if existing.isLiveWorkspaceReader || requested.isLiveWorkspaceReader { return false }
+        if existing.resourceKind != requested.resourceKind {
+            // A Docker mount against a workspace folder or Git metadata. A
+            // container that can write the folder competes with every task
+            // that claims it. A read-only mount does not wait for other
+            // writers, as a read-only workspace folder outside a prepared
+            // worktree does not; it still waits for a container that writes
+            // the same mount.
+            return (existing.resourceKind == .docker ? existing : requested).accessMode == .write
+        }
         return existing.accessMode == .write || requested.accessMode == .write
+    }
+
+    /// Kinds that name a folder: on this Mac, or on a remote host. Waiting
+    /// for one is something "Review workspace" can decide about.
+    static func isFolderKind(_ kind: TaskExecutionResourceKind) -> Bool {
+        isFilesystemKind(kind) || kind == .remoteDirectory
     }
 
     /// Whether a request that names `requested` also names `held`'s resource:
     /// the same one, or a folder that contains it, with the same access. The
     /// reverse (a holder of the containing folder) is broader than the request.
+    /// Mirrors what `conflicts` treats as the same folders: a Docker mount
+    /// against a workspace folder or Git metadata, and a remote folder inside
+    /// another on the same machine. Only a certain containment names a
+    /// claim; a remote relation that cannot be known locally never does.
     static func names(_ requested: TaskResourceLockClaim, resourceOf held: TaskResourceLockClaim) -> Bool {
-        guard requested.resourceKind == held.resourceKind, requested.accessMode == held.accessMode else { return false }
+        guard requested.accessMode == held.accessMode,
+              requested.resourceKind == held.resourceKind || sharesHostFolders(requested.resourceKind, held.resourceKind)
+        else { return false }
         let outer = canonicalKey(kind: requested.resourceKind, key: requested.resourceKey)
         let inner = canonicalKey(kind: held.resourceKind, key: held.resourceKey)
-        return outer == inner || (isFilesystemKind(held.resourceKind) && isPath(outer, ancestorOf: inner))
+        if requested.resourceKind == .remoteDirectory { return RemoteDirectoryClaimKey.covers(outer, inner) }
+        return outer == inner
+            || (isFilesystemKind(requested.resourceKind) && isFilesystemKind(held.resourceKind) && isPath(outer, ancestorOf: inner))
     }
 
     static func claimsCompete(_ earlier: TaskResourceLockClaim, _ later: TaskResourceLockClaim) -> Bool {
-        guard identitiesOverlap(earlier, later) else { return false }
-        if earlier.isLiveWorkspaceReader || later.isLiveWorkspaceReader { return false }
-        return earlier.accessMode == .write || later.accessMode == .write
+        conflicts(earlier, later)
     }
 
     static func canonicalKey(for claim: TaskExecutionResourceClaim) -> String {
@@ -148,27 +169,47 @@ enum TaskExecutionResourceBroker {
     }
 
     static func displayName(_ claim: TaskResourceLockClaim) -> String {
-        claim.resourceKind.rawValue.replacingOccurrences(of: "_", with: " ") + " resource"
+        switch claim.resourceKind {
+        case .docker:
+            "Docker mount \(canonicalKey(kind: .docker, key: claim.resourceKey))"
+        case .remoteDirectory:
+            "remote folder \(RemoteDirectoryClaimKey.displayName(claim.resourceKey))"
+        case .workspace, .gitCommonDirectory, .browserSession, .accountSession, .nativeSession:
+            claim.resourceKind.rawValue.replacingOccurrences(of: "_", with: " ") + " resource"
+        }
     }
 
     private static func identitiesOverlap(
         _ lhs: TaskResourceLockClaim,
         _ rhs: TaskResourceLockClaim
     ) -> Bool {
-        guard lhs.resourceKind == rhs.resourceKind else { return false }
+        guard lhs.resourceKind == rhs.resourceKind || sharesHostFolders(lhs.resourceKind, rhs.resourceKind) else {
+            return false
+        }
         let left = canonicalKey(kind: lhs.resourceKind, key: lhs.resourceKey)
         let right = canonicalKey(kind: rhs.resourceKind, key: rhs.resourceKey)
         if isFilesystemKind(lhs.resourceKind) {
             return left == right || isPath(left, ancestorOf: right) || isPath(right, ancestorOf: left)
         }
+        if lhs.resourceKind == .remoteDirectory { return RemoteDirectoryClaimKey.overlap(left, right) }
         return left == right
+    }
+
+    /// A Docker mount is host folders under another kind, so it meets both
+    /// workspace folders and Git metadata: a container that mounts a
+    /// repository writes its `.git` like any other folder in it. A workspace
+    /// claim never meets Git metadata: Git keeps its own kind so a workspace
+    /// root that merely contains it does not collide with it.
+    private static func sharesHostFolders(_ lhs: TaskExecutionResourceKind, _ rhs: TaskExecutionResourceKind) -> Bool {
+        let kinds = Set([lhs, rhs])
+        return kinds == [.workspace, .docker] || kinds == [.gitCommonDirectory, .docker]
     }
 
     private static func isFilesystemKind(_ kind: TaskExecutionResourceKind) -> Bool {
         switch kind {
-        case .workspace, .gitCommonDirectory:
+        case .workspace, .gitCommonDirectory, .docker:
             true
-        case .browserSession, .docker, .remoteDirectory, .accountSession, .nativeSession:
+        case .browserSession, .remoteDirectory, .accountSession, .nativeSession:
             false
         }
     }

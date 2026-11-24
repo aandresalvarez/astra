@@ -507,8 +507,12 @@ struct ExecutionSandboxRunnerTests {
             #expect(plan.readOnlyBoundaryReceipt == nil)
             #expect(plan.sandboxProtectedWriteDenyPaths.contains(gitConfig.path))
             #expect(plan.commandPlannedFields["git_credential_context"] == "true")
-            #expect(plan.commandPlannedFields["git_credential_readable_path_count"] == "2")
-            #expect(plan.commandPlannedFields["git_credential_writable_path_count"] == "1")
+            // A launch that reaches the runner without a plan has no request.
+            // It projects the claims it is admitted under, and nothing there
+            // claims this external Git directory, so it is readable, not writable.
+            #expect(plan.commandPlannedFields["git_credential_readable_path_count"] == "3")
+            #expect(plan.commandPlannedFields["git_credential_writable_path_count"] == "0")
+            #expect(plan.sandboxReadablePaths.contains(gitDirectory.path))
             #expect(plan.commandPlannedFields["git_credential_transports"] == "ssh")
         }
     }

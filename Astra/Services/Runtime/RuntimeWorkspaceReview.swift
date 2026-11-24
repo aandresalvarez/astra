@@ -77,10 +77,11 @@ enum RuntimeWorkspaceReview {
         let requested = TaskExecutionResourceAdmissionPolicy.lockClaims(for: request, task: task,
             runMode: "workspace_review", sandboxEnforcement: sandboxEnforcement)
         let held = try RuntimeResourceOwnership.claims(in: store, context: context, excluding: task.id, excludingOwner: task.persistentModelID)
-        // The review is about folders. A wait for an account, a browser
-        // profile or a container is not decided here. A holder chosen by a
-        // folder still gives up everything it reserves.
-        let conflicts = held.filter { ($0.resourceKind == .workspace || $0.resourceKind == .gitCommonDirectory)
+        // The review is about folders, including one a container mounts and
+        // one on a remote host. A wait for an account or a browser profile is
+        // not decided here. A holder chosen by a folder still gives up
+        // everything it reserves.
+        let conflicts = held.filter { TaskExecutionResourceBroker.isFolderKind($0.resourceKind)
             && !TaskExecutionResourceBroker.canAcquire(requested, active: [$0]) }
         guard !requested.isEmpty, !conflicts.isEmpty else { return nil }
         var holders: [Holder] = []

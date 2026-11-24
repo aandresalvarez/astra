@@ -412,8 +412,9 @@ final class AgentRuntimeWorker {
         isRunning = true
         defer { isRunning = false }
         cancellationRequested = false
-        let hooks = auditPhase == .run ? RuntimeTemplateHookScope(task: launchTask,
-            path: TaskWorkspaceAccess(task: launchTask).codeWorkingDirectory) : nil
+        let hooks = auditPhase == .run ? RuntimeTemplateHookScope(task: launchTask, path: TaskWorkspaceAccess(
+            task: launchTask).codeWorkingDirectory, runtime: selectedRuntime, workspaceAccess: executionWorkspaceAccess,
+            lease: executionPolicy.admittedResourceClaims) : nil
         defer { hooks?.restore() }
 
         // Settle executionEnvironmentSnapshotJSON before resolving
@@ -642,6 +643,8 @@ final class AgentRuntimeWorker {
             workingDirectory: capabilityWorkingDirectory
         )
 
+        let sshPin = LaunchSSHConnectionSnapshot.pin(for: launchTask) // One read of the SSH connections for the whole launch.
+        defer { LaunchSSHConnectionSnapshot.release(sshPin) }
         _ = AgentRuntimeLaunchPreflight.preflightRemoteWorkspaceBeforeLaunch(
             task: task,
             run: run,
@@ -652,8 +655,8 @@ final class AgentRuntimeWorker {
 
         let codeDir = TaskWorkspaceAccess(task: launchTask).codeWorkingDirectory
         if TaskExecutionResourceClaimResolver.hasWorkspacePathDrift(
-            request: turnBegin.request,
-            task: launchTask
+            request: turnBegin.request, task: launchTask,
+            lease: executionPolicy.admittedResourceClaims, workspaceAccess: executionWorkspaceAccess
         ) {
             let claimedPath = turnBegin.request?.resourceClaims.first {
                 $0.kind == .workspace
@@ -707,7 +710,7 @@ final class AgentRuntimeWorker {
             run: run,
             modelContext: modelContext,
             phase: auditPhase,
-            codeDirectory: codeDir
+            codeDirectory: codeDir, lease: executionPolicy.admittedResourceClaims, workspaceAccess: executionWorkspaceAccess, request: turnBegin.request
         ) else {
             return
         }

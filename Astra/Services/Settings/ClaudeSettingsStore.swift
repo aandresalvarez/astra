@@ -30,6 +30,15 @@ enum ClaudeSettingsStore {
         for (key, value) in permissions {
             mergedPermissions[key] = value
         }
+        // Every Claude launch in a checkout reaches this file, and read-only
+        // runs share the checkout. One whose permissions the file already
+        // carries leaves it alone, so sibling launches with the same policy
+        // never rewrite it under each other.
+        if settings[astraMetadataKey] != nil,
+           let existing = settings["permissions"] as? NSDictionary,
+           existing.isEqual(to: mergedPermissions) {
+            return true
+        }
         settings["permissions"] = mergedPermissions
         settings[astraMetadataKey] = [
             "version": 1,
@@ -246,10 +255,49 @@ enum ClaudeSettingsStore {
             return false
         }
         do {
-            try data.write(to: URL(fileURLWithPath: path))
+            // Replaced in one step, so a provider that starts while a sibling
+            // launch rewrites the file reads the old or the new settings,
+            // never a partial one. A symlinked settings file keeps its link.
+            try replaceAtomically(URL(fileURLWithPath: path).resolvingSymlinksInPath(), with: data, fileManager: fileManager)
             return true
         } catch {
             return false
+        }
+    }
+
+    /// Writes `data` beside `target` and swaps it in. An existing file keeps
+    /// its permissions, ACL and extended attributes: a plain atomic write
+    /// replaces the file with a new one in the process's default mode, which
+    /// would loosen a settings file its owner had restricted. The staged copy
+    /// is created owner-only before any byte is written and takes the old
+    /// permissions before the swap, so the settings are never readable more
+    /// widely than the file they replace.
+    private static func replaceAtomically(_ target: URL, with data: Data, fileManager: FileManager) throws {
+        guard fileManager.fileExists(atPath: target.path) else {
+            try data.write(to: target, options: .atomic)
+            return
+        }
+        let staged = target.deletingLastPathComponent()
+            .appendingPathComponent(".\(target.lastPathComponent).astra-\(UUID().uuidString)")
+        let descriptor = open(staged.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+        guard descriptor >= 0 else { throw CocoaError(.fileWriteNoPermission) }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+        do {
+            defer { try? handle.close() }
+            try handle.write(contentsOf: data)
+            if let permissions = try fileManager.attributesOfItem(atPath: target.path)[.posixPermissions] as? NSNumber,
+               fchmod(descriptor, mode_t(permissions.uint16Value)) != 0 {
+                throw CocoaError(.fileWriteNoPermission)
+            }
+        } catch {
+            try? fileManager.removeItem(at: staged)
+            throw error
+        }
+        do {
+            _ = try fileManager.replaceItemAt(target, withItemAt: staged)
+        } catch {
+            try? fileManager.removeItem(at: staged)
+            throw error
         }
     }
 }

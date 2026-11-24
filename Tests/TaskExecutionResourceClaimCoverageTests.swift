@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import Testing
 import ASTRACore
 import ASTRAModels
@@ -14,57 +15,72 @@ import ASTRAPersistence
 /// never emitted, and a reviewer had to find that by reading the diff.
 ///
 /// These tests make the *whole* pattern checkable instead of one instance at a
-/// time. Every declared kind must be either
-///   (a) emitted by the real resolver in a reachable scenario, or
-///   (b) named in `knownUnclaimedKinds` below with a written reason and the
-///       concrete race it leaves open.
-/// A newly added kind belongs to neither set, so it fails until someone makes
-/// a conscious decision. An allowlisted kind that starts being emitted also
-/// fails, so the allowlist cannot rot into a lie.
+/// time. Every declared kind must be exactly one of
+///   (a) emitted by the real resolver in a reachable scenario,
+///   (b) named in `kindsIsolatedWithoutAClaim` with the decision that keeps
+///       tasks apart without a claim, and the document and tests that record
+///       it, or
+///   (c) named in `knownUnclaimedKinds` with a written reason and the concrete
+///       race it leaves open.
+/// A newly added kind belongs to none of them, so it fails until someone makes
+/// a conscious decision. A listed kind that starts being emitted also fails,
+/// so neither list can rot into a lie.
 @Suite("Task execution resource claim coverage")
 @MainActor
 struct TaskExecutionResourceClaimCoverageTests {
-    /// Kinds ASTRA declares but does **not** claim today.
-    ///
-    /// Each entry states why no claim exists and what concurrent runs can
-    /// therefore race on. These are tracked gaps, not approved designs: the
-    /// documenting tests further down pin the current behavior so that fixing
-    /// a gap fails loudly here and forces this list to shrink.
-    private static let knownUnclaimedKinds: Set<TaskExecutionResourceKind> = [
-        // No per-session identity exists to claim: ASTRA's browser bridge is a
-        // single process-wide `ShelfBrowserBridgeRegistry.shared` that holds
-        // one endpoint and one bound `taskID` at a time, and
-        // `TaskLaunchResourceResolver` only records a `browser_bridge`
-        // provider requirement / control-plane resource for a task. Risk: two
-        // concurrent browser tasks are admitted together and fight over one
-        // bridge binding (whichever binds last owns the session).
-        .browserSession,
-        // Per-task Docker state (container name, `DOCKER_CONFIG` directory) is
-        // already task/run scoped, so the unclaimed part is the *environment*:
-        // `WorkspaceExecutionEnvironment.mounts` and `credentialProjections`
-        // project the same host paths into every container using that
-        // environment, `rw` included. Risk: two runs sharing one environment
-        // write the same host directory through their containers with nothing
-        // serializing them (see `dockerEnvironmentMountsAreGrantedWritableWithoutADockerClaim`).
-        .docker,
-        // The remote host, its working directory, and the local SSH state used
-        // to reach it are all keyed outside the workspace, so the
-        // workspace-keyed claim set never covers them. Risk:
-        // `TaskLaunchResourceResolver.appendRemoteWorkspaceGrants` hands every
-        // remote-workspace run read-write `~/.ssh/known_hosts*` plus write on
-        // `~/.ssh` (and, for a gcloud/IAP ProxyCommand, read-write on the
-        // gcloud config directory), and concurrent runs race there and on the
-        // shared remote directory (see
-        // `remoteWorkspaceSSHGrantsAreProcessGlobalWithoutARemoteDirectoryClaim`).
-        .remoteDirectory,
-        // Provider auth/session state lives under one home directory per
-        // runtime, not per task: `AgentRuntimeHomeStateAccess` puts `~/.claude`,
-        // `~/.codex`, and friends on the sandbox write allow-list for every run
-        // of that runtime. Risk: concurrent runs of one runtime rewrite the
-        // credential/configuration files (re-auth, config churn) with nothing
-        // serializing them. Native session IDs are separately reserved at launch (see
-        // `providerAccountStateIsWritableForEveryRunWithoutAnAccountSessionClaim`).
-        .accountSession
+    /// Kinds ASTRA declares but does **not** claim today, each with the race
+    /// that leaves open. These are tracked gaps, not approved designs, so the
+    /// list is meant to stay empty: Docker mounts and remote folders are now
+    /// claimed (`TaskExecutionEnvironmentClaimTests`), and the browser and
+    /// account kinds moved to `kindsIsolatedWithoutAClaim` once their
+    /// isolation was decided and covered.
+    private static let knownUnclaimedKinds: Set<TaskExecutionResourceKind> = []
+
+    /// A kind no claim serializes because something else already keeps tasks
+    /// apart. This is an approved contract, not a gap: each entry says what
+    /// the decision is and where it is written down and tested.
+    struct IsolationContract {
+        let decision: String
+        /// Repository-relative path of the document that records it.
+        let document: String
+        /// Test suites or test functions in `Tests/` that pin it.
+        let tests: [String]
+    }
+
+    private static let kindsIsolatedWithoutAClaim: [TaskExecutionResourceKind: IsolationContract] = [
+        // #552. A browser bridge registration belongs to one session and is
+        // looked up by the persistent task that owns it, so a second browser
+        // task gets its own binding instead of taking the first one's. The one
+        // singleton left, the Controlled Browser's Chromium profile, is
+        // reserved by `ControlledBrowserProfileLease` at the moment it is
+        // opened, not for the length of a turn. A turn-long claim here would
+        // be the provider-wide lock #480 rules out.
+        .browserSession: IsolationContract(
+            decision: "Owner-scoped bridge registrations plus a profile lease taken when Chromium is opened.",
+            document: "docs/qa/2026-10-26-browser-owner-isolation.md",
+            tests: [
+                "ShelfBrowserOwnershipTests",
+                "ShelfBrowserLifetimeTests",
+                "ControlledBrowserProfileLeaseTests",
+                "browserBindingsAreOwnerScopedWithoutAProviderWideLock"
+            ]
+        ),
+        // #480. ASTRA does not serialize a provider or an account. What ASTRA
+        // itself writes to steer a launch is per launch or per task, never in
+        // the provider's home; what the provider keeps there is the CLI's own
+        // state, relied on to tolerate two of its processes as it does in two
+        // terminals. The one piece ASTRA reserves, a native session ID, has
+        // its own emitted kind (`.nativeSession`).
+        .accountSession: IsolationContract(
+            decision: "Run-scoped ASTRA configuration; provider-owned state left to each CLI; native sessions reserved.",
+            document: "docs/qa/2026-11-22-provider-state-concurrency-contract.md",
+            tests: [
+                "providerAccountStateFollowsItsDocumentedContract",
+                "TemplateHookInjectionPolicyTests",
+                "ClaudeSettingsSharedWriteTests",
+                "RuntimeNativeSessionOwnershipTests"
+            ]
+        )
     ]
 
     // MARK: - The ratchet
@@ -74,23 +90,60 @@ struct TaskExecutionResourceClaimCoverageTests {
         let declared = Set(TaskExecutionResourceKind.allCases)
         let emitted = try emittedClaimKinds()
 
+        let contracted = Set(Self.kindsIsolatedWithoutAClaim.keys)
+        let listed = Self.knownUnclaimedKinds.union(contracted)
+
         #expect(
-            emitted.union(Self.knownUnclaimedKinds) == declared,
+            emitted.union(listed) == declared,
             """
             Every TaskExecutionResourceKind must be emitted by \
-            TaskExecutionResourceClaimResolver or listed in knownUnclaimedKinds \
-            with a reason. Declared: \(describe(declared)). Emitted: \(describe(emitted)). \
-            Allowlisted: \(describe(Self.knownUnclaimedKinds)).
+            TaskExecutionResourceClaimResolver, recorded in kindsIsolatedWithoutAClaim, \
+            or listed in knownUnclaimedKinds with a reason. Declared: \(describe(declared)). \
+            Emitted: \(describe(emitted)). Contracted: \(describe(contracted)). \
+            Unclaimed: \(describe(Self.knownUnclaimedKinds)).
             """
         )
         #expect(
-            emitted.isDisjoint(with: Self.knownUnclaimedKinds),
+            emitted.isDisjoint(with: listed),
             """
-            These kinds are now emitted but still listed as unclaimed — remove \
-            them from knownUnclaimedKinds and delete the matching documenting \
-            test: \(describe(emitted.intersection(Self.knownUnclaimedKinds))).
+            These kinds are now emitted but still listed as not claimed — remove \
+            them from the list they are in: \(describe(emitted.intersection(listed))).
             """
         )
+        #expect(
+            Self.knownUnclaimedKinds.isDisjoint(with: contracted),
+            "A kind is either a tracked gap or an approved contract, not both."
+        )
+        #expect(
+            Self.knownUnclaimedKinds.isEmpty,
+            """
+            A kind listed as a gap needs an owner and an issue. Claim it, or record \
+            the contract that makes a claim unnecessary: \(describe(Self.knownUnclaimedKinds)).
+            """
+        )
+    }
+
+    @Test("Every isolation contract points at a document and tests that exist")
+    func isolationContractsPointAtRealEvidence() throws {
+        let repository = try TestRepositoryRoot.resolve()
+        let tests = repository.appendingPathComponent("Tests", isDirectory: true)
+        var testSources = ""
+        for case let url as URL in try #require(FileManager.default.enumerator(at: tests, includingPropertiesForKeys: nil))
+        where url.pathExtension == "swift" && !url.path.contains("/ArchitectureFitnessTests/") {
+            testSources += try String(contentsOf: url, encoding: .utf8)
+        }
+        for (kind, contract) in Self.kindsIsolatedWithoutAClaim {
+            #expect(!contract.decision.isEmpty)
+            let document = repository.appendingPathComponent(contract.document)
+            #expect(FileManager.default.fileExists(atPath: document.path), "\(kind.rawValue): \(contract.document)")
+            #expect(!contract.tests.isEmpty, "\(kind.rawValue) names no tests")
+            for name in contract.tests {
+                #expect(
+                    testSources.contains("struct \(name)") || testSources.contains("func \(name)("),
+                    "\(kind.rawValue): no test named \(name)"
+                )
+            }
+        }
     }
 
     @Test("Production only constructs claim kinds the scenario matrix reaches")
@@ -196,186 +249,119 @@ struct TaskExecutionResourceClaimCoverageTests {
         #expect(gitClaim.key == repository.commonDirectory.standardizedFileURL.path)
     }
 
-    // MARK: - Documenting the uncovered grants
+    // MARK: - Contracts that stand in for a claim
 
-    @Test("Remote-workspace SSH grants are process-global but produce no remote-directory claim")
-    func remoteWorkspaceSSHGrantsAreProcessGlobalWithoutARemoteDirectoryClaim() throws {
-        let fileManager = FileManager.default
-        let root = try makeTempDirectory("claim-coverage-remote-ssh")
-        defer { try? fileManager.removeItem(at: root) }
-        let home = root.appendingPathComponent("home", isDirectory: true)
-        let sshDirectory = home.appendingPathComponent(".ssh", isDirectory: true)
-        let firstWorkspaceRoot = root.appendingPathComponent("workspace-a", isDirectory: true)
-        let secondWorkspaceRoot = root.appendingPathComponent("workspace-b", isDirectory: true)
-        try fileManager.createDirectory(at: sshDirectory, withIntermediateDirectories: true)
-        try fileManager.createDirectory(at: firstWorkspaceRoot, withIntermediateDirectories: true)
-        try fileManager.createDirectory(at: secondWorkspaceRoot, withIntermediateDirectories: true)
-
-        let sshConfig = sshDirectory.appendingPathComponent("config")
-        let identityFile = sshDirectory.appendingPathComponent("id_release")
-        let knownHosts = sshDirectory.appendingPathComponent("known_hosts")
-        try """
-        Host release-box
-          HostName release.example.com
-          User deploy
-        """.write(to: sshConfig, atomically: true, encoding: .utf8)
-        try "private-key-placeholder".write(to: identityFile, atomically: true, encoding: .utf8)
-        try "release-box ssh-ed25519 AAAA\n".write(to: knownHosts, atomically: true, encoding: .utf8)
-
-        let connection = SSHConnection(
-            name: "release-box",
-            host: "release.example.com",
-            user: "deploy",
-            remotePath: "~/service",
-            keyPath: "~/.ssh/id_release",
-            configAlias: "release-box"
+    @Test("Browser bindings are owner-scoped and browser tasks take no provider-wide lock")
+    func browserBindingsAreOwnerScopedWithoutAProviderWideLock() throws {
+        let fixture = try BrowserOwnerFixture(registry: ShelfBrowserBridgeRegistry())
+        let independent = AgentTask(
+            title: "Check the dashboard",
+            goal: "Open the browser and inspect the dashboard.",
+            workspace: Workspace(name: "Browser C", primaryPath: "/tmp/astra-claim-coverage-browser-c")
         )
-        SSHConnectionManager.save([connection], workspacePath: firstWorkspaceRoot.path)
-        SSHConnectionManager.save([connection], workspacePath: secondWorkspaceRoot.path)
+        if let workspace = independent.workspace { fixture.container.mainContext.insert(workspace) }
+        fixture.container.mainContext.insert(independent)
+        try fixture.container.mainContext.save()
+        func publish(_ task: AgentTask, session: UUID, token: String) {
+            fixture.registry.update(
+                endpoint: "http://127.0.0.1:12345", currentURL: token, currentTitle: token,
+                taskID: task.id, taskOwnerID: task.persistentModelID, sessionID: session,
+                accessToken: token, isPresented: true, isEnabled: true
+            )
+        }
+        func token(_ task: AgentTask) -> String? {
+            fixture.registry.environmentVariables(for: task.id, ownerID: ShelfBrowserOwner(task).modelID)["ASTRA_BROWSER_TOKEN"]
+        }
 
-        let first = AgentTask(
-            title: "Update the release script",
-            goal: "Update the deployment script on the remote host.",
-            workspace: Workspace(name: "Release A", primaryPath: firstWorkspaceRoot.path)
-        )
-        let second = AgentTask(
-            title: "Update the rollback script",
-            goal: "Update the rollback script on the remote host.",
-            workspace: Workspace(name: "Release B", primaryPath: secondWorkspaceRoot.path)
-        )
+        // Three browser tasks hold three bindings at once: nothing is
+        // process-wide. `a` and `b` even share a task UUID (an imported copy).
+        let sessions = (a: UUID(), b: UUID(), c: UUID())
+        publish(fixture.a, session: sessions.a, token: "token-a")
+        publish(fixture.b, session: sessions.b, token: "token-b")
+        publish(independent, session: sessions.c, token: "token-c")
+        #expect(token(fixture.a) == "token-a")
+        #expect(token(fixture.b) == "token-b")
+        #expect(token(independent) == "token-c")
 
-        let plan = TaskLaunchResourceResolver.resolve(
-            task: first,
-            runID: UUID(),
-            runtime: .claudeCode,
-            phase: "run",
-            prompt: first.goal,
-            contextText: "",
-            workspacePath: firstWorkspaceRoot.path,
-            homeDirectoryPath: home.path,
-            gitCredentialContextProvider: { _, _, _, _ in .empty }
-        )
+        // One task cannot take another's binding. Publishing again as B, or as
+        // the independent task, moves neither A's endpoint nor its credential…
+        publish(fixture.b, session: sessions.b, token: "token-b-rotated")
+        publish(independent, session: sessions.c, token: "token-c-rotated")
+        #expect(token(fixture.a) == "token-a")
+        // …a lookup that names A's task but not its owner gets nothing…
+        #expect(fixture.registry.environmentVariables(for: fixture.a.id).isEmpty)
+        #expect(fixture.registry.environmentVariables(
+            for: fixture.a.id, ownerID: independent.persistentModelID).isEmpty)
+        // …and tearing down the others leaves A bound.
+        fixture.registry.remove(sessionID: sessions.b)
+        fixture.registry.remove(sessionID: sessions.c)
+        #expect(token(fixture.a) == "token-a")
+        #expect(token(fixture.b) == nil)
 
-        // The launch plan hands this run write access to shared, home-scoped
-        // SSH state — OpenSSH rewrites known-host files through temporary files
-        // in the parent directory, so `~/.ssh` itself is writable.
-        #expect(plan.hostPathGrants.contains {
-            $0.source == .remoteWorkspace
-                && $0.access == .readWrite
-                && $0.path == knownHosts.standardizedFileURL.path
-        })
-        #expect(plan.hostPathGrants.contains {
-            $0.source == .remoteWorkspace
-                && $0.access == .write
-                && $0.path == sshDirectory.standardizedFileURL.path
-        })
-
-        let firstClaims = TaskExecutionResourceClaimResolver.claims(for: first)
-        let secondClaims = TaskExecutionResourceClaimResolver.claims(for: second)
-
-        // …and admission sees none of it. Both runs claim only their own
-        // workspace root, so nothing keeps them from holding write access to
-        // one `~/.ssh` — and to one remote working directory — at the same
-        // time. When `.remoteDirectory` claims land, these expectations must
-        // flip; that is the point of pinning them.
-        #expect(!firstClaims.contains { $0.kind == .remoteDirectory })
-        #expect(firstClaims.allSatisfy { $0.kind == .workspace })
-        #expect(secondClaims.allSatisfy { $0.kind == .workspace })
-        #expect(!firstClaims.contains {
-            $0.key == sshDirectory.standardizedFileURL.path
-                || $0.key == knownHosts.standardizedFileURL.path
-        })
-        #expect(TaskExecutionResourceBroker.canAcquire(
-            lease(for: secondClaims, taskID: second.id),
-            active: lease(for: firstClaims, taskID: first.id)
-        ))
-    }
-
-    @Test("Shared Docker environment mounts are granted read-write with no docker claim")
-    func dockerEnvironmentMountsAreGrantedWritableWithoutADockerClaim() throws {
-        let fileManager = FileManager.default
-        let root = try makeTempDirectory("claim-coverage-docker")
-        defer { try? fileManager.removeItem(at: root) }
-        let workspaceRoot = root.appendingPathComponent("workspace", isDirectory: true)
-        let sharedCache = root.appendingPathComponent("shared-build-cache", isDirectory: true)
-        try fileManager.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
-        try fileManager.createDirectory(at: sharedCache, withIntermediateDirectories: true)
-
-        // A mount declared on the execution environment, not on the workspace:
-        // every task pinned to this environment gets it, and no workspace claim
-        // covers the host path.
-        let mount = ExecutionEnvironmentMount(
-            hostPath: sharedCache.path,
-            containerPath: "/shared-build-cache",
-            access: .readWrite,
-            role: .additionalPath
-        )
-        let environment = WorkspaceExecutionEnvironment(
-            id: "image:astra-coverage",
-            kind: .dockerImage,
-            displayName: "Coverage image",
-            image: "astra/coverage:latest",
-            mounts: [mount]
-        )
-        let task = AgentTask(
-            title: "Rebuild the artifacts",
-            goal: "Update the build outputs.",
-            workspace: Workspace(name: "Containerized", primaryPath: workspaceRoot.path)
-        )
-
-        let plan = TaskLaunchResourceResolver.resolve(
-            task: task,
-            runID: UUID(),
-            runtime: .claudeCode,
-            phase: "run",
-            prompt: task.goal,
-            contextText: "",
-            workspacePath: workspaceRoot.path,
-            executionEnvironment: environment,
-            gitCredentialContextProvider: { _, _, _, _ in .empty }
-        )
-        let claims = TaskExecutionResourceClaimResolver.claims(for: task)
-
-        #expect(plan.containerMounts.contains {
-            $0.hostPath == mount.hostPath && $0.access == ExecutionEnvironmentMountAccess.readWrite.rawValue
-        })
-        #expect(!claims.contains { $0.kind == .docker })
-        #expect(!claims.contains { $0.key == mount.hostPath })
-    }
-
-    @Test("Provider account state is writable for every run without an account-session claim")
-    func providerAccountStateIsWritableForEveryRunWithoutAnAccountSessionClaim() throws {
-        // One home-relative state directory per runtime, shared by every task
-        // that uses it; `ExecutionSandbox` puts these on the run's write
-        // allow-list.
-        #expect(AgentRuntimeHomeStateAccess.claudeCode.explicitHomeWritableRelativePaths.contains(".claude"))
-        #expect(AgentRuntimeHomeStateAccess.codexCLI.explicitHomeWritableRelativePaths.contains(".codex"))
-
-        let first = AgentTask(
-            title: "Update the parser",
-            goal: "Update the parser implementation.",
-            workspace: Workspace(name: "Account A", primaryPath: "/tmp/astra-claim-coverage-account-a"),
+        // Admission agrees: browser tasks in separate folders claim only
+        // their folders, on the same runtime or on different ones.
+        let sameProvider = AgentTask(
+            title: "Check the report", goal: "Open the browser and inspect the report.",
+            workspace: Workspace(name: "Browser D", primaryPath: "/tmp/astra-claim-coverage-browser-d"),
             runtime: .claudeCode
         )
-        let second = AgentTask(
-            title: "Update the renderer",
-            goal: "Update the renderer implementation.",
-            workspace: Workspace(name: "Account B", primaryPath: "/tmp/astra-claim-coverage-account-b"),
-            runtime: .claudeCode
+        let otherProvider = AgentTask(
+            title: "Check the queue", goal: "Open the browser and inspect the queue.",
+            workspace: Workspace(name: "Browser E", primaryPath: "/tmp/astra-claim-coverage-browser-e"),
+            runtime: .codexCLI
         )
+        let holder = lease(for: TaskExecutionResourceClaimResolver.claims(for: independent), taskID: independent.id)
+        for task in [sameProvider, otherProvider] {
+            let claims = TaskExecutionResourceClaimResolver.claims(for: task)
+            #expect(claims.allSatisfy { $0.kind == .workspace })
+            #expect(TaskExecutionResourceBroker.canAcquire(lease(for: claims, taskID: task.id), active: holder))
+        }
+    }
 
-        let firstClaims = TaskExecutionResourceClaimResolver.claims(for: first)
-        let secondClaims = TaskExecutionResourceClaimResolver.claims(for: second)
+    @Test("Provider account state follows its documented contract instead of a claim")
+    func providerAccountStateFollowsItsDocumentedContract() throws {
+        // The state the contract is about: one home-relative folder per
+        // runtime, writable to every run of that runtime.
+        let providerState: [(runtime: AgentRuntimeID, access: AgentRuntimeHomeStateAccess, folder: String)] = [
+            (.claudeCode, .claudeCode, ".claude"),
+            (.copilotCLI, .copilotCLI, ".copilot"),
+            (.codexCLI, .codexCLI, ".codex"),
+            (.cursorCLI, .cursorCLI, ".cursor"),
+            (.antigravityCLI, .antigravityCLI, ".gemini"),
+            (.openCodeCLI, .openCodeCLI, ".local/share/opencode")
+        ]
+        let document = try String(contentsOf: TestRepositoryRoot.resolve().appendingPathComponent(
+            try #require(Self.kindsIsolatedWithoutAClaim[.accountSession]).document), encoding: .utf8)
 
-        // Nothing identifies the provider account, so two concurrent runs of
-        // one runtime are admitted together while both may rewrite the same
-        // `~/.claude` session state.
-        #expect(!firstClaims.contains { $0.kind == .accountSession })
-        #expect(!secondClaims.contains { $0.kind == .accountSession })
-        #expect(TaskExecutionResourceBroker.canAcquire(
-            lease(for: secondClaims, taskID: second.id),
-            active: lease(for: firstClaims, taskID: first.id)
-        ))
+        for state in providerState {
+            #expect(state.access.inheritedHomeWritableRelativePaths.contains(state.folder), "\(state.runtime.rawValue)")
+            // Every built-in CLI has its row in the written contract.
+            #expect(document.contains("`\(state.runtime.rawValue)`"), "\(state.runtime.rawValue) is not documented")
+            #expect(document.contains(state.folder), "\(state.folder) is not documented")
+
+            // The decision: two tasks on one runtime, in separate folders,
+            // start together. Nothing serializes the provider or the account.
+            let first = AgentTask(
+                title: "Update the parser", goal: "Update the parser implementation.",
+                workspace: Workspace(name: "Account A", primaryPath: "/tmp/astra-claim-coverage-account-a"),
+                runtime: state.runtime
+            )
+            let second = AgentTask(
+                title: "Update the renderer", goal: "Update the renderer implementation.",
+                workspace: Workspace(name: "Account B", primaryPath: "/tmp/astra-claim-coverage-account-b"),
+                runtime: state.runtime
+            )
+            let firstClaims = TaskExecutionResourceClaimResolver.claims(for: first)
+            let secondClaims = TaskExecutionResourceClaimResolver.claims(for: second)
+            #expect(!(firstClaims + secondClaims).contains { $0.kind == .accountSession })
+            #expect(TaskExecutionResourceBroker.canAcquire(
+                lease(for: secondClaims, taskID: second.id),
+                active: lease(for: firstClaims, taskID: first.id)
+            ), "\(state.runtime.rawValue)")
+        }
+        // The document states its own evidence limit rather than claiming a
+        // provider's behaviour was verified.
+        #expect(document.contains("not what was verified"))
     }
 
     // MARK: - Scenario matrix
@@ -383,8 +369,8 @@ struct TaskExecutionResourceClaimCoverageTests {
     /// Every claim kind the real resolver produces across the reachable task
     /// shapes ASTRA supports today. Scenarios that cannot currently emit a new
     /// kind are still listed: they are the trip-wire that makes a future
-    /// `.remoteDirectory` / `.docker` / `.browserSession` claim show up here
-    /// instead of silently satisfying nothing.
+    /// `.browserSession` claim show up here instead of silently satisfying
+    /// nothing.
     private func emittedClaimKinds() throws -> Set<TaskExecutionResourceKind> {
         let fileManager = FileManager.default
         let root = try makeTempDirectory("claim-coverage-matrix")
@@ -396,8 +382,10 @@ struct TaskExecutionResourceClaimCoverageTests {
         )
         let remoteWorkspaceRoot = root.appendingPathComponent("remote-workspace", isDirectory: true)
         let containerWorkspaceRoot = root.appendingPathComponent("container-workspace", isDirectory: true)
+        let sharedCache = root.appendingPathComponent("shared-build-cache", isDirectory: true)
         try fileManager.createDirectory(at: remoteWorkspaceRoot, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: containerWorkspaceRoot, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: sharedCache, withIntermediateDirectories: true)
         SSHConnectionManager.save([
             SSHConnection(
                 name: "release-box",
@@ -444,7 +432,15 @@ struct TaskExecutionResourceClaimCoverageTests {
                 id: "image:astra-coverage",
                 kind: .dockerImage,
                 displayName: "Coverage image",
-                image: "astra/coverage:latest"
+                image: "astra/coverage:latest",
+                // A mount declared on the environment, not on the workspace:
+                // every task on this environment gets it.
+                mounts: [ExecutionEnvironmentMount(
+                    hostPath: sharedCache.path,
+                    containerPath: "/shared-build-cache",
+                    access: .readWrite,
+                    role: .additionalPath
+                )]
             )
         )
         let browsing = AgentTask(

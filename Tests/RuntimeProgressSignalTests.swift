@@ -140,7 +140,13 @@ struct RuntimeProgressClassificationTests {
                 let events = CodexCLIRuntime.parseAgentEvents(line: line, parsesJSONLines: true)
                 #expect(!events.contains { if case .fileChange = $0 { true } else { false } })
                 if !idField.isEmpty {
-                    #expect(events == [.toolResult(id: "patch-1", content: "file_change \(status)", isError: true)])
+                    // A cancellation is still an error result, so its changes
+                    // are dropped, but its outcome stays a cancellation.
+                    let outcome: AgentOperationOutcome = ["cancelled", "canceled"].contains(status) ? .cancelled : .failed
+                    #expect(events == [
+                        .operation(.finished(operationID: "patch-1", outcome: outcome, exitCode: nil, providerStatus: status)),
+                        .toolResult(id: "patch-1", content: "file_change \(status)", isError: true)
+                    ])
                 }
                 let parsed = CodexCLIRuntimeAdapter().parseProcessEvents(line: line, parsesJSONLines: true)
                 #expect(!parsed.isEmpty)
