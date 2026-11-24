@@ -50,7 +50,7 @@ extension HostControlToolSupportTests {
         #expect(!query.contains("mutation"))
     }
 
-    @Test("Invalid review reads and raw API calls never reach gh")
+    @Test("Invalid review reads and raw API writes never reach gh")
     func validatesBeforeLaunch() throws {
         let runner = ReviewReadRunner()
         let server = server(runner)
@@ -73,7 +73,7 @@ extension HostControlToolSupportTests {
             ["pr", "thread-comments", "PRRT_example", "--repo", "example/project"],
             ["pr", "thread-comments", "PRRT_example", "--hostname", "untrusted.test"],
             ["api", "graphql", "-f", "query=mutation {}"],
-            ["api", "--method", "GET", "repos/example/project/pulls/7/comments"]
+            ["api", "--method", "POST", "repos/example/project/pulls/7/comments", "-f", "body=x"]
         ]
         for arguments in invalid {
             #expect(try call(server, arguments: arguments)["error"] != nil, "\(arguments)")

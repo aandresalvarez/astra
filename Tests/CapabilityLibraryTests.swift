@@ -909,7 +909,7 @@ struct CapabilityLibraryTests {
         #expect(packages.first { $0.id == "github-workflow" }?.localTools.isEmpty == true)
         #expect(packages.first { $0.id == "github-workflow" }?.prerequisites.map(\.binary) == ["gh", "gh"])
         let github = packages.first { $0.id == "github-workflow" }
-        #expect(github?.version == "2.4.0")
+        #expect(github?.version == "2.4.1")
         #expect(github?.skills.first?.allowedTools.contains("Write") == false)
         #expect(github?.skills.first?.disallowedTools.contains("Write") == false)
         #expect(github?.skills.first?.behaviorInstructions.contains(
@@ -925,7 +925,8 @@ struct CapabilityLibraryTests {
         #expect(github?.skills.first?.behaviorInstructions.contains("gh search prs --author \"@me\"") == false)
         #expect(github?.skills.first?.behaviorInstructions.contains("Do not pipe JSON into `python3 - <<'PY'`") == true)
         #expect(github?.skills.first?.behaviorInstructions.contains("gh api /search/issues") == false)
-        #expect(github?.skills.first?.behaviorInstructions.contains("do not use `--jq` or `-q`") == true)
+        #expect(github?.skills.first?.behaviorInstructions.contains("do not use `--jq` or `-q`") == false)
+        #expect(github?.skills.first?.behaviorInstructions.contains("may not reference `env` or `$ENV`") == true)
         #expect(github?.skills.first?.behaviorInstructions.contains("Prefer `--json` with `--jq`") == false)
         #expect(github?.skills.first?.behaviorInstructions.contains("The host-control capability is read-only") == true)
         #expect(github?.skills.first?.behaviorInstructions.contains("In Ask, GitHub writes require ASTRA's confirmed typed publication workflow") == true)
