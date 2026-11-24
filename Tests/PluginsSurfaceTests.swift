@@ -867,10 +867,14 @@ struct PluginsSurfaceTests {
         )
     }
 
+    /// A shipped package, or an archived one still used as a fixture.
     private func builtIn(_ id: String) throws -> PluginPackage {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Astra/Resources/Capabilities/\(id).json")
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return try ArchivedCapabilityFixtures.package(id)
+        }
         return try JSONDecoder().decode(PluginPackage.self, from: Data(contentsOf: url))
     }
 

@@ -46,7 +46,6 @@ struct PluginCatalogPresentationTests {
         let ids = [
             "gcloud-workflow",
             "github-workflow",
-            "google-drive-browser",
             "jira-workflow"
         ]
 
@@ -60,11 +59,9 @@ struct PluginCatalogPresentationTests {
     @Test("capability icon presentation resolves curated brand marks")
     func capabilityIconPresentationResolvesCuratedBrandMarks() throws {
         let jira = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
-        let drive = try #require(PluginCatalog.builtInPackages.first { $0.id == "google-drive-browser" })
         let gcloud = try #require(PluginCatalog.builtInPackages.first { $0.id == "gcloud-workflow" })
 
         assertIconPresentation(CapabilityIconPresentation.make(for: jira), resolvesTo: .jira, assetName: "jira.svg")
-        assertIconPresentation(CapabilityIconPresentation.make(for: drive), resolvesTo: .googleDrive, assetName: "google-drive.svg")
         assertIconPresentation(CapabilityIconPresentation.make(for: gcloud), resolvesTo: .googleCloud, assetName: "google-cloud.svg")
     }
 

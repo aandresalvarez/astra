@@ -926,6 +926,9 @@ public struct ASTRAApp: App {
                 || connectorCleanup
                 || ConnectorCredentialGenerationJournal.requiresRecoveryScan(modelContext: modelContext)
                 || SkillCredentialGenerationJournal.requiresRecoveryScan(modelContext: modelContext)
+                // A former built-in's leftover activation is retired by the
+                // cleanup chain, which only runs after a trusted recovery.
+                || !RetiredBuiltInActivationCleanup.pendingIDs(modelContext: modelContext).isEmpty
             // Every folder a mirror was written into is probed too, wherever
             // it is. The store's own workspaces are recorded first, so ones
             // imported before the registry existed are covered from now on.
@@ -1015,6 +1018,14 @@ public struct ASTRAApp: App {
                         guard !Task.isCancelled, WorkspaceRecoveryTrust.allowsCleanup else { return }
                         MainThreadPhase.tracking("startup_cleanup_connector_outbox") {
                             ConnectorCredentialCleanup.resumePending(modelContext: modelContext)
+                        }
+                        guard !Task.isCancelled, WorkspaceRecoveryTrust.allowsCleanup else { return }
+                        // A former built-in's leftover activation would stop every
+                        // launch in its workspace at preflight. Its Remove rewrites
+                        // workspace mirrors, which the preflight above has touched
+                        // off the main actor; the outbox below cleans its secrets.
+                        _ = MainThreadPhase.tracking("startup_cleanup_retired_builtins") {
+                            RetiredBuiltInActivationCleanup.retireActivations(modelContext: modelContext)
                         }
                         await PluginSecretCleanupOutbox.resumePendingAsync(modelContext: modelContext)
                         guard !Task.isCancelled, WorkspaceRecoveryTrust.allowsCleanup else { return }

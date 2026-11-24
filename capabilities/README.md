@@ -37,7 +37,11 @@ capabilities/
   examples/       Sample packages that should stay small and safe.
   local/          User-authored packages for this checkout.
   community/      Shared packages proposed for broader use.
+  archived/       Former built-ins kept for later; never installed.
 ```
+
+`validate-dir` and `install-dev-dir` skip `archived/`. See
+`archived/README.md` to bring a package back into the app.
 
 External packages can define skills, connector profiles, local tool commands,
 MCP server declarations, prerequisites, templates, and known ASTRA browser

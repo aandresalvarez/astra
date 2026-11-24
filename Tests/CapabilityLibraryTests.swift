@@ -933,20 +933,15 @@ struct CapabilityLibraryTests {
         let expectedIDs: Set<String> = [
             "gcloud-workflow",
             "github-workflow",
-            "google-drive-browser",
-            "google-workspace",
             "jira-workflow",
             "mcp-smoke-test",
-            "redcap-workflow",
-            "security-auditor",
-            "stanford-apple-mail",
-            "stanford-healthcare-graph-mail"
+            "redcap-workflow"
         ]
 
         #expect(ApprovedCapabilityBundle.bundledDirectory()?.lastPathComponent == "Capabilities")
         #expect(Set(packages.map(\.id)) == expectedIDs)
         #expect(packages.allSatisfy { $0.sourceMetadata?.kind == "built-in" })
-        for id in ["gcloud-workflow", "github-workflow", "google-drive-browser", "jira-workflow"] {
+        for id in ["gcloud-workflow", "github-workflow", "jira-workflow"] {
             let package = try #require(packages.first { $0.id == id })
             #expect(package.iconDescriptor.kind == .asset)
             #expect(package.sourceMetadata?.url?.lastPathComponent.hasSuffix(".json") == true)
@@ -985,13 +980,12 @@ struct CapabilityLibraryTests {
         #expect(github?.skills.first?.behaviorInstructions.contains("In Auto, native developer tools may perform") == true)
         #expect(github?.skills.first?.behaviorInstructions.contains("gh issue create") == false)
         #expect(github?.skills.first?.behaviorInstructions.contains("gh pr comment") == false)
-        #expect(packages.first { $0.id == "google-drive-browser" }?.browserAdapters == [BrowserSiteAdapterID.googleDrive])
         #expect(packages.first { $0.id == "redcap-workflow" }?.connectors.map(\.baseURL) == ["https://redcap.stanford.edu/api/"])
         #expect(packages.first { $0.id == "redcap-workflow" }?.connectors.first?.credentialHints.map(\.key) == ["REDCAP_API_TOKEN"])
-        #expect(packages.first { $0.id == "stanford-apple-mail" }?.connectors.isEmpty == true)
-        #expect(packages.first { $0.id == "stanford-apple-mail" }?.localTools.map(\.command) == ["stanford-apple-mail"])
-        #expect(packages.first { $0.id == "stanford-healthcare-graph-mail" }?.connectors.isEmpty == true)
-        #expect(packages.first { $0.id == "stanford-healthcare-graph-mail" }?.localTools.map(\.command) == ["stanford-graph-mail"])
+        for archived in ["google-drive-browser", "google-workspace", "security-auditor",
+                         "stanford-apple-mail", "stanford-healthcare-graph-mail"] {
+            #expect(!packages.contains { $0.id == archived }, "\(archived) is archived in capabilities/archived")
+        }
     }
 
     @Test("seed approved packages copies bundled icon assets")

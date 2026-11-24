@@ -219,6 +219,25 @@ extension WorkspaceCapabilityActivation {
         setRetired(retired, on: workspace)
     }
 
+    /// Takes the rows recorded as `pluginID`'s pending overrides out of the
+    /// workspace's ambient scope, for a plugin that is retired rather than
+    /// merely missing: they become its retired activation's overrides, which
+    /// stay out of scope until the plugin is added back and then override its
+    /// components, as pending ones would have. Returns whether anything moved.
+    @discardableResult
+    public static func retirePendingOverrides(pluginID: String, in workspace: Workspace) -> Bool {
+        var all = retentionRecords(of: workspace)
+        guard let index = all.firstIndex(where: { $0.pluginID == pluginID }),
+              let pending = all[index].pendingOverrides, !pending.isEmpty else { return false }
+        for entry in pending where !all[index].overridingRowIDs.contains(entry.rowID) {
+            all[index].overriddenComponentIDs.append(entry.componentID)
+            all[index].overridingRowIDs.append(entry.rowID)
+        }
+        all[index].pendingOverrides = nil
+        setRetired(all, on: workspace)
+        return true
+    }
+
     /// Records that the authored row `rowID` came from `componentID` of a
     /// plugin whose definition is missing (`pendingOverrides`).
     public static func recordPendingOverride(componentID: String, rowID: UUID, pluginID: String, in workspace: Workspace) {

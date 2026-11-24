@@ -125,7 +125,7 @@ struct PluginCatalogLoadTests {
         let catalog = PluginCatalog()
 
         catalog.loadApprovedCapabilities(library: library)
-        #expect(catalog.packages.map(\.id).contains("security-auditor"))
+        #expect(catalog.packages.map(\.id).contains("github-workflow"))
 
         try library.install(package)
         catalog.loadApprovedCapabilities(library: library)
@@ -292,13 +292,6 @@ struct PluginCatalogBuiltInTests {
         #expect(!package.description.localizedCaseInsensitiveContains("manage"))
     }
 
-    @Test("Security auditor bundled capability version matches fallback catalog")
-    func securityAuditorVersionMatchesFallbackCatalog() throws {
-        let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "security-auditor" })
-
-        #expect(package.version == "2.0.1")
-    }
-
     @Test("Shipped GitHub capability can prepare review proposals for app approval")
     func githubCapabilityOffersReviewProposal() throws {
         let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "github-workflow" })
@@ -332,35 +325,6 @@ struct PluginCatalogBuiltInTests {
         #expect(prerequisite.binary == "astra-mcp-smoke-server")
         #expect(package.governance.approvalStatus == .approved)
         #expect(package.governance.visibility == .hidden)
-    }
-
-    @Test("Google Workspace bundled capability is a normal setup-gated integration")
-    func googleWorkspaceCapabilityIsNormalSetupGatedIntegration() throws {
-        let package = try #require(PluginCatalog.builtInPackages.first { $0.id == GoogleWorkspaceCapability.packageID })
-
-        #expect(package.name == "Google Workspace")
-        #expect(package.category == "Integrations")
-        #expect(package.connectors.isEmpty)
-        #expect(package.requiresSetup)
-        #expect(package.setupRequirements == [
-            PluginSetupRequirement(
-                id: GoogleWorkspaceCapability.setupRequirementID,
-                kind: .oauthAccount,
-                displayName: "Google Workspace OAuth account",
-                provider: GoogleWorkspaceCapability.connectorBinding,
-                required: true,
-                notes: "Connect with ASTRA managed OAuth when provisioned, or configure an admin custom OAuth client with a loopback redirect before enabling the capability."
-            )
-        ])
-        #expect(GoogleWorkspaceCapability.usesGoogleWorkspaceOAuthSetup(package))
-        #expect(package.mcpServers.map(\.id) == [
-            "google_workspace_gmail",
-            "google_workspace_drive",
-            "google_workspace_calendar"
-        ])
-        #expect(package.mcpServers.allSatisfy { $0.transport == .http })
-        #expect(package.mcpServers.allSatisfy { $0.connectorBindings == [GoogleWorkspaceCapability.connectorBinding] })
-        #expect(package.mcpServers.allSatisfy { $0.environmentKeys.isEmpty })
     }
 
     @Test("DevOps pack references only known capability packages")

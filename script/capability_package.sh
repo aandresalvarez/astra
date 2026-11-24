@@ -130,6 +130,17 @@ def discover_package_paths(path):
             relative_parts = candidate.relative_to(path).parts
             if any(part.startswith(".") for part in relative_parts):
                 continue
+            # Archived packages (capabilities/archived/, in any casing: the macOS
+            # filesystem ignores case) are kept for later, not installed, also
+            # when the input is the archive or a folder inside it. Only that
+            # pair counts, so an unrelated "archived" folder above the
+            # checkout doesn't hide a whole library.
+            # Both the path as given (a symlinked root keeps its own name) and
+            # the resolved one (a symlink pointing into the archive).
+            ancestors = list(candidate.absolute().parents) + list(candidate.resolve().parents)
+            if any(folder.name.casefold() == "archived" and folder.parent.name.casefold() == "capabilities"
+                   for folder in ancestors):
+                continue
             files.append(candidate)
         if not files:
             print(f"BLOCKER emptyLibrary: no capability JSON files found in {path}", file=sys.stderr)

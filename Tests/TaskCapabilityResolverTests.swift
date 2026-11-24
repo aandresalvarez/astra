@@ -1183,9 +1183,11 @@ struct TaskCapabilityResolverTests {
     func enabledPackageUsesMatchedLocalToolOwnerWhenPackageSkillNameChanged() throws {
         let container = try makeTaskCapabilityResolverContainer()
         let context = container.mainContext
-        let graphPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "stanford-healthcare-graph-mail" })
+        // Archived from the catalog; the workspace resolves its frozen copy.
+        let graphPackage = try ArchivedCapabilityFixtures.package("stanford-healthcare-graph-mail")
 
         let workspace = Workspace(name: "Graph Mail Rename", primaryPath: "/tmp/graph-mail-rename")
+        workspace.launchPluginDefinitions = [graphPackage]
         workspace.testEnabledCapabilityIDs = [graphPackage.id]
         context.insert(workspace)
 

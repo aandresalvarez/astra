@@ -207,17 +207,19 @@ struct BuiltInGovernanceFromDefinitionTests {
         let library = CapabilityLibrary(directory: root)
         try library.syncApprovedPackages(PluginCatalog.builtInPackages)
 
-        // Tamper: rewrite security-auditor's on-disk governance to restricted
+        // Tamper: rewrite github-workflow's on-disk governance to restricted
         // draft requiring consent — the load must restore curated governance.
-        let url = library.packageURL(for: "security-auditor")
-        var tampered = try #require(library.installedPackage(id: "security-auditor"))
+        // An asset icon makes this a directory package: tamper its real manifest.
+        let url = library.packageManifestURL(for: "github-workflow")
+        #expect(FileManager.default.fileExists(atPath: url.path))
+        var tampered = try #require(library.installedPackage(id: "github-workflow"))
         tampered.governance = .localDraft()
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         try encoder.encode(tampered).write(to: url)
 
-        let loaded = try #require(library.installedPackage(id: "security-auditor"))
-        let curated = try #require(PluginCatalog.builtInPackages.first { $0.id == "security-auditor" })
+        let loaded = try #require(library.installedPackage(id: "github-workflow"))
+        let curated = try #require(PluginCatalog.builtInPackages.first { $0.id == "github-workflow" })
         #expect(loaded.governance.approvalStatus == curated.governance.approvalStatus)
         #expect(loaded.governance.requiresAdminApproval == curated.governance.requiresAdminApproval)
     }
@@ -231,8 +233,10 @@ struct BuiltInGovernanceFromDefinitionTests {
 
         // Tamper the on-disk source metadata to claim local content, which
         // would bypass a kind-based removal guard.
-        let url = library.packageURL(for: "security-auditor")
-        var tampered = try #require(library.installedPackage(id: "security-auditor"))
+        // An asset icon makes this a directory package: tamper its real manifest.
+        let url = library.packageManifestURL(for: "github-workflow")
+        #expect(FileManager.default.fileExists(atPath: url.path))
+        var tampered = try #require(library.installedPackage(id: "github-workflow"))
         tampered.sourceMetadata = .localLibrary()
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -240,7 +244,7 @@ struct BuiltInGovernanceFromDefinitionTests {
 
         // Removal is gated on the curated ID set, not disk metadata.
         #expect(throws: CapabilityLibrary.RemovalError.self) {
-            try library.removePackage(id: "security-auditor")
+            try library.removePackage(id: "github-workflow")
         }
         #expect(FileManager.default.fileExists(atPath: url.path))
     }

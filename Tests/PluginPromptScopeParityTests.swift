@@ -27,7 +27,7 @@ struct PluginPromptScopeParityTests {
                 continue
             }
         }
-        #expect(scopes.count >= 8)
+        #expect(scopes.count >= 4)
 
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

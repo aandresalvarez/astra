@@ -341,11 +341,13 @@ struct PluginManifestTests {
 
     // MARK: - Fixtures
 
+    /// Shipped and archived built-in definitions: both are real manifests.
     private func builtInFiles() throws -> [URL] {
         let directory = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Astra/Resources/Capabilities")
-        return try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        return try [directory, ArchivedCapabilityFixtures.directory]
+            .flatMap { try FileManager.default.contentsOfDirectory(at: $0, includingPropertiesForKeys: nil) }
             .filter { $0.pathExtension == "json" }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }

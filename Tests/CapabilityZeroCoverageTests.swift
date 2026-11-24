@@ -73,7 +73,7 @@ struct ApprovedCapabilityBundleZeroCoverageTests {
         #expect(!packages.isEmpty)
         let ids = Set(packages.map(\.id))
         #expect(ids.contains("jira-workflow"))
-        #expect(ids.contains("security-auditor"))
+        #expect(ids.contains("github-workflow"))
     }
 }
 
