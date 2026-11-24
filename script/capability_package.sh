@@ -135,7 +135,9 @@ def discover_package_paths(path):
             # when the input is the archive or a folder inside it. Only that
             # pair counts, so an unrelated "archived" folder above the
             # checkout doesn't hide a whole library.
-            ancestors = candidate.resolve().parents
+            # Both the path as given (a symlinked root keeps its own name) and
+            # the resolved one (a symlink pointing into the archive).
+            ancestors = list(candidate.absolute().parents) + list(candidate.resolve().parents)
             if any(folder.name.casefold() == "archived" and folder.parent.name.casefold() == "capabilities"
                    for folder in ancestors):
                 continue

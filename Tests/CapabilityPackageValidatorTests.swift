@@ -915,11 +915,24 @@ struct CapabilityPackageImporterTests {
             .map { try JSONDecoder().decode(PluginPackage.self, from: Data(contentsOf: $0)).id }
         #expect(installedIDs == [activeID])
 
-        // The archive itself, or a folder inside it, in any casing, installs nothing.
+        // The archive itself, or a folder inside it, in any casing, installs
+        // nothing. The uppercase archive is its own folder, so this holds on a
+        // case-sensitive volume too.
         let nested = archive.appendingPathComponent("team", isDirectory: true)
-        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
-        try encodedData(makePackage(id: archivedID, governance: nil)).write(to: nested.appendingPathComponent("nested.json"))
-        for input in [library.appendingPathComponent("ARCHIVED"), nested] {
+        let upper = root.appendingPathComponent("other/capabilities/ARCHIVED", isDirectory: true)
+        for folder in [nested, upper] {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try encodedData(makePackage(id: archivedID, governance: nil)).write(to: folder.appendingPathComponent("held.json"))
+        }
+        // A symlinked library root with another name keeps its archive skipped.
+        let linked = root.appendingPathComponent("linked/capabilities")
+        try FileManager.default.createDirectory(at: linked.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let target = root.appendingPathComponent("library-target", isDirectory: true)
+        try FileManager.default.createDirectory(at: target.appendingPathComponent("archived"), withIntermediateDirectories: true)
+        try encodedData(makePackage(id: archivedID, governance: nil))
+            .write(to: target.appendingPathComponent("archived/held.json"))
+        try FileManager.default.createSymbolicLink(at: linked, withDestinationURL: target)
+        for input in [upper, nested, linked] {
             let direct = try runCapabilityPackageScript(arguments: ["install-dev-dir", input.path], home: homeRoot)
             #expect(direct.status != 0, "\(input.lastPathComponent): \(direct.output)")
             #expect(direct.output.contains("emptyLibrary"))
