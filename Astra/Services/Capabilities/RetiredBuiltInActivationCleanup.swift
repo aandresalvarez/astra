@@ -38,6 +38,37 @@ enum RetiredBuiltInActivationCleanup {
         var failed: [String] = []
     }
 
+    /// The listed IDs with no definition that Remove would still touch: an
+    /// activation row, or a plugin held only in legacy state after a deferred
+    /// activation migration, as `PluginRemovalScope` reads them. A store that
+    /// can't be read counts every listed ID as pending, so the pass tries
+    /// them and reports why.
+    ///
+    /// Startup recovery asks for a mirror scan while any is pending, as it does
+    /// for other pending cleanup: the cleanup chain that runs this pass only
+    /// runs on a launch whose recovery is trusted. Once they are retired,
+    /// nothing is pending and launches go back to vouching without a scan.
+    static func pendingIDs(
+        modelContext: ModelContext,
+        library: CapabilityLibrary = CapabilityLibrary(),
+        builtInIDs: Set<String> = Set(PluginCatalog.builtInPackages.map(\.id)),
+        ids: [String] = retiredBuiltInIDs
+    ) -> [String] {
+        let defined = builtInIDs.union(library.installedPackages().map(\.id))
+        let missing = ids.filter { !defined.contains($0) }
+        guard !missing.isEmpty else { return [] }
+        guard let workspaces = try? modelContext.fetch(FetchDescriptor<Workspace>()).filter({ !$0.isDeleted }) else {
+            return missing
+        }
+        return missing.filter { id in
+            workspaces.contains { workspace in
+                workspace.pluginActivations.contains { !$0.isDeleted && $0.pluginID == id }
+                    || WorkspaceCapabilityActivation.pendingLegacyInstallations(in: workspace).contains { $0.id == id }
+                    || WorkspaceCapabilityActivation.pendingLegacyState(of: workspace).enabledPluginIDs.contains(id)
+            }
+        }
+    }
+
     @discardableResult
     static func retireActivations(
         modelContext: ModelContext,
@@ -51,15 +82,8 @@ enum RetiredBuiltInActivationCleanup {
             try CapabilityCatalogActionService(library: library).forgetMissing(pluginID: id, modelContext: context)
         }
         var outcome = Outcome()
-        let defined = builtInIDs.union(library.installedPackages().map(\.id))
-        for id in ids where !defined.contains(id) {
+        for id in pendingIDs(modelContext: modelContext, library: library, builtInIDs: builtInIDs, ids: ids) {
             do {
-                // The workspaces Remove would touch: an activation row, or a
-                // plugin still held only in legacy state after a deferred
-                // activation migration (`PluginRemovalScope`).
-                guard try !PluginRemovalScope.capture(pluginID: id, modelContext: modelContext).workspaces.isEmpty else {
-                    continue
-                }
                 try forget(id, modelContext)
                 outcome.retired.append(id)
                 AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [

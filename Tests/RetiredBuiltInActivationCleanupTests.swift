@@ -82,6 +82,32 @@ struct RetiredBuiltInActivationCleanupTests {
         #expect(WorkspaceCapabilityActivation.activation(for: "security-auditor", in: env.workspace) == nil)
     }
 
+    /// Startup asks for a recovery scan while this is non-empty: the cleanup
+    /// chain only runs after a trusted recovery, and a clean launch that
+    /// vouches without a scan would otherwise skip the retirement forever.
+    @Test("A leftover activation keeps a retirement pending until it is retired, and only then")
+    func pendingUntilRetired() throws {
+        let env = try upgradedWorkspace(id: "stanford-apple-mail")
+        defer { try? FileManager.default.removeItem(at: env.root) }
+        let pending = { RetiredBuiltInActivationCleanup.pendingIDs(modelContext: env.context, library: env.library, builtInIDs: []) }
+        #expect(pending() == ["stanford-apple-mail"])
+        // Unsaved edits elsewhere don't make it look pending (or not).
+        env.workspace.name = "Edited"
+        #expect(pending() == ["stanford-apple-mail"])
+        try env.context.save()
+        #expect(cleanup(env).retired == ["stanford-apple-mail"])
+        #expect(pending().isEmpty)
+    }
+
+    @Test("Nothing is pending on a store with no former built-in left")
+    func nothingPendingOnACleanStore() throws {
+        let env = try PluginOperationsTests.Environment()
+        defer { try? FileManager.default.removeItem(at: env.root) }
+        try env.install(PluginOperationsTests.package(version: "1.0.0"))
+        try env.context.save()
+        #expect(RetiredBuiltInActivationCleanup.pendingIDs(modelContext: env.context, library: env.library, builtInIDs: []).isEmpty)
+    }
+
     @Test("A second pass has nothing left to do")
     func idempotent() throws {
         let env = try upgradedWorkspace(id: "google-drive-browser")

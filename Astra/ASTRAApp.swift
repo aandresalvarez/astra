@@ -926,6 +926,9 @@ public struct ASTRAApp: App {
                 || connectorCleanup
                 || ConnectorCredentialGenerationJournal.requiresRecoveryScan(modelContext: modelContext)
                 || SkillCredentialGenerationJournal.requiresRecoveryScan(modelContext: modelContext)
+                // A former built-in's leftover activation is retired by the
+                // cleanup chain, which only runs after a trusted recovery.
+                || !RetiredBuiltInActivationCleanup.pendingIDs(modelContext: modelContext).isEmpty
             // Every folder a mirror was written into is probed too, wherever
             // it is. The store's own workspaces are recorded first, so ones
             // imported before the registry existed are covered from now on.
