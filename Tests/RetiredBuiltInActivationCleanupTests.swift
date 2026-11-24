@@ -43,7 +43,7 @@ struct RetiredBuiltInActivationCleanupTests {
         // A request-time copy of the workspace, as a launch reads it: a
         // launch that lands before the cleanup is not refused for it.
         activation.launchWorkspaceID = env.workspace.id
-        #expect(PluginQueuedContractValidation.issues(in: env.workspace, packages: env.library.installedPackages()).isEmpty)
+        #expect(PluginQueuedContractValidation.issues(in: env.workspace, packages: env.library.installedPackages(), library: env.library).isEmpty)
         activation.launchWorkspaceID = nil
 
         let outcome = cleanup(env)
@@ -51,7 +51,7 @@ struct RetiredBuiltInActivationCleanupTests {
         #expect(outcome == .init(retired: ["stanford-apple-mail"], failed: []))
         #expect(WorkspaceCapabilityActivation.activation(for: "stanford-apple-mail", in: env.workspace) == nil)
         #expect(!env.workspace.enabledCapabilityIDs.contains("stanford-apple-mail"))
-        #expect(PluginQueuedContractValidation.issues(in: env.workspace, packages: env.library.installedPackages()).isEmpty)
+        #expect(PluginQueuedContractValidation.issues(in: env.workspace, packages: env.library.installedPackages(), library: env.library).isEmpty)
         // Kept for a later Add, as a person's Remove keeps it.
         #expect(WorkspaceCapabilityActivation.retiredActivations(of: env.workspace).map(\.pluginID) == ["stanford-apple-mail"])
     }
@@ -62,7 +62,7 @@ struct RetiredBuiltInActivationCleanupTests {
         defer { try? FileManager.default.removeItem(at: env.root) }
         let activation = try #require(WorkspaceCapabilityActivation.activation(for: "local.gone", in: env.workspace))
         activation.launchWorkspaceID = env.workspace.id
-        #expect(PluginQueuedContractValidation.issues(in: env.workspace, packages: env.library.installedPackages())
+        #expect(PluginQueuedContractValidation.issues(in: env.workspace, packages: env.library.installedPackages(), library: env.library)
             .map(\.packageID) == ["local.gone"])
     }
 
@@ -97,6 +97,39 @@ struct RetiredBuiltInActivationCleanupTests {
         // Saved, not only staged.
         let saved = try #require(try ModelContext(env.container).fetch(FetchDescriptor<Workspace>()).first)
         #expect(WorkspaceCapabilityActivation.retiredActivations(of: saved).first?.pendingOverrides == nil)
+    }
+
+    @Test("A local package stored under a retired ID that can't be read still fails the launch contract")
+    func storedUnreadablePackageStillBlocks() throws {
+        let env = try upgradedWorkspace(id: "security-auditor")
+        defer { try? FileManager.default.removeItem(at: env.root) }
+        try FileManager.default.createDirectory(at: env.library.directory, withIntermediateDirectories: true)
+        try Data("{ not json".utf8).write(to: env.library.packageURL(for: "security-auditor"))
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: "security-auditor", in: env.workspace))
+        activation.launchWorkspaceID = env.workspace.id
+        #expect(PluginQueuedContractValidation.issues(in: env.workspace, packages: env.library.installedPackages(), library: env.library)
+            .map(\.packageID) == ["security-auditor"])
+    }
+
+    @Test("Unsaved edits in the shared context defer the pass instead of being committed with it")
+    func unsavedEditsDefer() throws {
+        let env = try PluginOperationsTests.Environment()
+        defer { try? FileManager.default.removeItem(at: env.root) }
+        let row = Skill(name: "Security Auditor", allowedTools: ["Read"], behaviorInstructions: "Audit.")
+        row.workspace = env.workspace
+        env.context.insert(row)
+        WorkspaceCapabilityActivation.recordPendingOverride(
+            componentID: "skill:security-auditor", rowID: row.id, pluginID: "security-auditor", in: env.workspace)
+        try env.context.save()
+        env.workspace.name = "Unsaved edit"
+
+        let outcome = cleanup(env) { id, _ in Issue.record("\(id) ran with unsaved edits") }
+
+        #expect(outcome == .init(retired: [], failed: [], deferred: ["security-auditor"]))
+        #expect(env.context.hasChanges)
+        let saved = try #require(try ModelContext(env.container).fetch(FetchDescriptor<Workspace>()).first)
+        #expect(saved.name == "Ops")
+        #expect(WorkspaceCapabilityActivation.retiredActivations(of: saved).first?.pendingOverrides?.count == 1)
     }
 
     @Test("A former built-in held only in legacy state after a deferred migration is retired too")

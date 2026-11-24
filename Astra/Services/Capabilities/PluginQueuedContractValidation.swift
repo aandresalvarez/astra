@@ -7,15 +7,17 @@ import ASTRAModels
 /// would let the task run with missing capabilities. Live inventory keeps its
 /// existing focus rules; launchWorkspaceID identifies a request-time copy.
 enum PluginQueuedContractValidation {
-    static func issues(in workspace: Workspace, packages: [PluginPackage]) -> [CapabilityRuntimeIntegrityIssue] {
+    static func issues(in workspace: Workspace, packages: [PluginPackage],
+                       library: CapabilityLibrary = CapabilityLibrary()) -> [CapabilityRuntimeIntegrityIssue] {
         let definitions = Dictionary(packages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         return WorkspaceCapabilityActivation.activations(of: workspace).compactMap { activation in
             guard activation.isEnabled, activation.launchWorkspaceID != nil else { return nil }
             let package = definitions[activation.pluginID]
-            // A former built-in this build retired: nothing of it can run, and
-            // startup retires the activation (`RetiredBuiltInActivationCleanup`).
-            // Until it has, a launch goes on without it instead of failing.
-            if package == nil, RetiredBuiltInActivationCleanup.retiredBuiltInIDs.contains(activation.pluginID) {
+            // A former built-in this build retired, with nothing stored under
+            // its ID: nothing of it can run, and startup retires the activation
+            // (`RetiredBuiltInActivationCleanup`). Until it has, a launch goes
+            // on without it instead of failing.
+            if package == nil, RetiredBuiltInActivationCleanup.awaitsRetirement(activation.pluginID, library: library) {
                 return nil
             }
             guard package.map({ PluginRuntimeProjection.awaitsUpdate(activation, to: $0) }) ?? true else { return nil }

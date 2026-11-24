@@ -37,6 +37,19 @@ enum RetiredBuiltInActivationCleanup {
     struct Outcome: Equatable {
         var retired: [String] = []
         var failed: [String] = []
+        /// Left for a later launch: the shared context held unsaved edits,
+        /// which this pass must not commit along with its own.
+        var deferred: [String] = []
+    }
+
+    /// Whether a launch may go on without an enabled activation of
+    /// `pluginID` that has no definition: a listed former built-in with no
+    /// package stored under its ID, which this pass will retire. Nothing of it
+    /// can run. A stored package that failed to decode is a local plugin, not a
+    /// retired one, and keeps failing the launch contract
+    /// (`PluginQueuedContractValidation`).
+    nonisolated static func awaitsRetirement(_ pluginID: String, library: CapabilityLibrary = CapabilityLibrary()) -> Bool {
+        retiredBuiltInIDs.contains(pluginID) && !isStored(pluginID, in: library)
     }
 
     /// The listed IDs with no definition that still hold something in a
@@ -79,7 +92,18 @@ enum RetiredBuiltInActivationCleanup {
             try CapabilityCatalogActionService(library: library).forgetMissing(pluginID: id, modelContext: context)
         }
         var outcome = Outcome()
-        for id in pendingIDs(modelContext: modelContext, library: library, builtInIDs: builtInIDs, ids: ids) {
+        let pending = pendingIDs(modelContext: modelContext, library: library, builtInIDs: builtInIDs, ids: ids)
+        for (index, id) in pending.enumerated() {
+            // The pass shares the app's context and saves it: an unrelated
+            // unsaved edit would be committed (and its mirror skipped) with it.
+            guard !modelContext.hasChanges else {
+                outcome.deferred = Array(pending[index...])
+                AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
+                    "operation": "retired_builtin_cleanup", "result": "deferred_unsaved_edits",
+                    "plugin_ids": outcome.deferred.joined(separator: ",")
+                ], level: .error)
+                break
+            }
             do {
                 let workspaces = try modelContext.fetch(FetchDescriptor<Workspace>()).filter { !$0.isDeleted }
                 if workspaces.contains(where: { inRemovalScope(id, $0) }) {
@@ -89,9 +113,17 @@ enum RetiredBuiltInActivationCleanup {
                 // stay in scope as authored rows; a retired plugin's rows leave
                 // it with its activation, and come back as overrides on Add.
                 for workspace in workspaces where WorkspaceCapabilityActivation.retirePendingOverrides(pluginID: id, in: workspace) {
-                    try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
-                        workspace: workspace, modelContext: modelContext,
-                        auditFields: ["operation": "retired_builtin_cleanup", "plugin_id": id])
+                    do {
+                        try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
+                            workspace: workspace, modelContext: modelContext,
+                            auditFields: ["operation": "retired_builtin_cleanup", "plugin_id": id])
+                    } catch {
+                        // Not committed: the context was clean before this
+                        // change, so rolling back restores the saved record and
+                        // the rows stay pending for the next launch.
+                        if modelContext.hasChanges { modelContext.rollback() }
+                        throw error
+                    }
                 }
                 outcome.retired.append(id)
                 AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
@@ -110,13 +142,14 @@ enum RetiredBuiltInActivationCleanup {
 
     private static func missingIDs(library: CapabilityLibrary, builtInIDs: Set<String>, ids: [String]) -> [String] {
         let defined = builtInIDs.union(library.installedPackages().map(\.id))
-        // A package stored under the ID that failed to decode (a local import
-        // reusing the ID, briefly unreadable) is not missing: leave it be.
-        let stored = { (id: String) in
-            [library.packageURL(for: id), library.packageManifestURL(for: id)]
-                .contains { FileManager.default.fileExists(atPath: $0.path) }
-        }
-        return ids.filter { !defined.contains($0) && !stored($0) }
+        return ids.filter { !defined.contains($0) && !isStored($0, in: library) }
+    }
+
+    /// A package stored under the ID that failed to decode (a local import
+    /// reusing the ID, briefly unreadable) is not missing: leave it be.
+    nonisolated private static func isStored(_ id: String, in library: CapabilityLibrary) -> Bool {
+        [library.packageURL(for: id), library.packageManifestURL(for: id)]
+            .contains { FileManager.default.fileExists(atPath: $0.path) }
     }
 
     private static func inRemovalScope(_ id: String, _ workspace: Workspace) -> Bool {
