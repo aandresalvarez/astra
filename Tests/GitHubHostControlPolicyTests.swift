@@ -62,6 +62,10 @@ struct GitHubHostControlPolicyTests {
         ["api", "graphql", "-f", "query={viewer{login}}"],
         ["api", "graphql"],
         ["api", "/graphql"],
+        // gh expands placeholders after the check; a branch, owner or repo can be named graphql.
+        ["api", "{branch}", "-H", "Accept: application/vnd.github.v4.idl"],
+        ["api", "/{repo}/"],
+        ["api", "{owner}/{repo}"],
         // The path gh requests, however the endpoint is spelled.
         ["api", "graphql#ignored", "-H", "Accept: application/vnd.github.v4.idl"],
         ["api", "//GraphQL/?x=1"],
