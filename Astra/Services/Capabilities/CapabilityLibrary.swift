@@ -66,12 +66,18 @@ struct CapabilityLibrary {
     /// The default library of a test run, `nil` in every other process. It is
     /// one folder for the whole process, as the Application Support library
     /// was, so a fixture one call installs is the one the next call reads.
-    /// Its parent is this process's alone because the library's journal,
-    /// staging and quarantine folders are siblings of it.
+    /// Its parent is this run's alone because the library's journal,
+    /// staging and quarantine folders are siblings of it. The name carries a
+    /// UUID as well as the PID: nothing deletes the folder when the process
+    /// exits, and a later run that is handed a recycled PID would otherwise
+    /// reopen its packages, approvals and journals.
     static let testRunDirectory: URL? = AppLogger.isRunningTests
         ? FileManager.default.temporaryDirectory
             .appendingPathComponent("AstraTests", isDirectory: true)
-            .appendingPathComponent("AppSupport-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
+            .appendingPathComponent(
+                "AppSupport-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString)",
+                isDirectory: true
+            )
             .appendingPathComponent("Capabilities", isDirectory: true)
         : nil
 
