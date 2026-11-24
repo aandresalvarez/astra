@@ -209,7 +209,9 @@ struct BuiltInGovernanceFromDefinitionTests {
 
         // Tamper: rewrite github-workflow's on-disk governance to restricted
         // draft requiring consent — the load must restore curated governance.
-        let url = library.packageURL(for: "github-workflow")
+        // An asset icon makes this a directory package: tamper its real manifest.
+        let url = library.packageManifestURL(for: "github-workflow")
+        #expect(FileManager.default.fileExists(atPath: url.path))
         var tampered = try #require(library.installedPackage(id: "github-workflow"))
         tampered.governance = .localDraft()
         let encoder = JSONEncoder()
@@ -231,7 +233,9 @@ struct BuiltInGovernanceFromDefinitionTests {
 
         // Tamper the on-disk source metadata to claim local content, which
         // would bypass a kind-based removal guard.
-        let url = library.packageURL(for: "github-workflow")
+        // An asset icon makes this a directory package: tamper its real manifest.
+        let url = library.packageManifestURL(for: "github-workflow")
+        #expect(FileManager.default.fileExists(atPath: url.path))
         var tampered = try #require(library.installedPackage(id: "github-workflow"))
         tampered.sourceMetadata = .localLibrary()
         let encoder = JSONEncoder()
