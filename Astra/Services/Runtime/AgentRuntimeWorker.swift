@@ -643,8 +643,8 @@ final class AgentRuntimeWorker {
             workingDirectory: capabilityWorkingDirectory
         )
 
-        LaunchSSHConnectionSnapshot.pin(for: task) // One read of the SSH connections for the whole launch.
-        defer { LaunchSSHConnectionSnapshot.release(for: task) }
+        let sshPin = LaunchSSHConnectionSnapshot.pin(for: launchTask) // One read of the SSH connections for the whole launch.
+        defer { LaunchSSHConnectionSnapshot.release(sshPin) }
         _ = AgentRuntimeLaunchPreflight.preflightRemoteWorkspaceBeforeLaunch(
             task: task,
             run: run,

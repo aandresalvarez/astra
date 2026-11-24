@@ -20,9 +20,16 @@ enum LaunchSSHConnectionSnapshot {
     /// Imported task rows may share one task id, so the id alone does not
     /// name a launch. The workspace folder is what the connections are read
     /// from; two rows that share both read the same file, and share one pin.
-    private struct Key: Hashable {
+    fileprivate struct Key: Hashable {
         let taskID: UUID
         let workspacePath: String
+    }
+
+    /// One launch's hold on a pinned set. Released as it was acquired: the
+    /// task's workspace may move or go away while the run is active, and a
+    /// key recomputed then would miss the entry and leave it pinned for good.
+    struct Pin {
+        fileprivate let key: Key
     }
 
     private static let lock = NSLock()
@@ -33,18 +40,19 @@ enum LaunchSSHConnectionSnapshot {
         return Key(taskID: task.id, workspacePath: WorkspacePathPresentation.standardizedPath(path))
     }
 
-    /// Reads the task's workspace connections once and pins them for its
-    /// launch. A launch that finds a pin for the same task id and workspace
-    /// joins it, so neither replaces the other's set. Returns what is pinned.
-    @discardableResult
-    static func pin(for task: AgentTask) -> [SSHConnection] {
-        guard let key = key(for: task) else { return [] }
+    /// Reads the connections of the workspace this launch runs in, once, and
+    /// pins them for it. Pass the task the launch itself uses (its detached
+    /// copy when it has one): that is the folder its grants, route and prompt
+    /// are built from. A launch that finds a pin for the same task id and
+    /// workspace joins it, so neither replaces the other's set.
+    static func pin(for task: AgentTask) -> Pin? {
+        guard let key = key(for: task) else { return nil }
         lock.lock()
         if var existing = pinned[key] {
             existing.pins += 1
             pinned[key] = existing
             lock.unlock()
-            return existing.connections
+            return Pin(key: key)
         }
         lock.unlock()
         let connections = SSHConnectionManager.load(workspacePath: key.workspacePath)
@@ -54,16 +62,16 @@ enum LaunchSSHConnectionSnapshot {
             // Another launch pinned while this one was reading: join it.
             existing.pins += 1
             pinned[key] = existing
-            return existing.connections
+        } else {
+            pinned[key] = (connections, 1)
         }
-        pinned[key] = (connections, 1)
-        return connections
+        return Pin(key: key)
     }
 
     /// Ends one launch's pin. The set stays pinned while another launch of
     /// the same task id and workspace still holds it.
-    static func release(for task: AgentTask) {
-        guard let key = key(for: task) else { return }
+    static func release(_ pin: Pin?) {
+        guard let key = pin?.key else { return }
         lock.lock()
         defer { lock.unlock() }
         guard var existing = pinned[key] else { return }
@@ -71,11 +79,17 @@ enum LaunchSSHConnectionSnapshot {
         pinned[key] = existing.pins > 0 ? existing : nil
     }
 
+    /// The set pinned for this task's launch. A reader may hold the live task
+    /// while the launch pinned its detached copy, whose workspace folder can
+    /// differ if the workspace moved since the request was frozen; when the
+    /// task id has exactly one pin, that is this launch's. With several (rows
+    /// that share an id), only an exact workspace match is used.
     static func pinnedConnections(for task: AgentTask) -> [SSHConnection]? {
-        guard let key = key(for: task) else { return nil }
         lock.lock()
         defer { lock.unlock() }
-        return pinned[key]?.connections
+        if let key = key(for: task), let exact = pinned[key] { return exact.connections }
+        let sameID = pinned.filter { $0.key.taskID == task.id }
+        return sameID.count == 1 ? sameID.first?.value.connections : nil
     }
 
     /// The pinned set during a launch, otherwise the live file.

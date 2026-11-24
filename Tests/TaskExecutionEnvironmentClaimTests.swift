@@ -346,8 +346,8 @@ struct TaskExecutionEnvironmentClaimTests {
         let lease = fixture.lease(task, request: request)
         let path = try #require(task.workspace?.primaryPath)
 
-        LaunchSSHConnectionSnapshot.pin(for: task)
-        defer { LaunchSSHConnectionSnapshot.release(for: task) }
+        let pin = LaunchSSHConnectionSnapshot.pin(for: task)
+        defer { LaunchSSHConnectionSnapshot.release(pin) }
         // The file changes after the launch read it: another machine.
         SSHConnectionManager.save([connection(host: "other.example.com", path: "/srv/service-b")], workspacePath: path)
 
@@ -360,7 +360,7 @@ struct TaskExecutionEnvironmentClaimTests {
 
         // Released, readers see the file again, and the next launch's check
         // stops on the folder its lease does not cover.
-        LaunchSSHConnectionSnapshot.release(for: task)
+        LaunchSSHConnectionSnapshot.release(pin)
         #expect(LaunchSSHConnectionSnapshot.connections(for: task).map(\.host) == ["other.example.com"])
         #expect(TaskExecutionResourceClaimResolver.hasWorkspacePathDrift(
             request: request, task: task, lease: lease, workspaceAccess: .exclusive))
@@ -375,21 +375,41 @@ struct TaskExecutionEnvironmentClaimTests {
         let second = try fixture.remoteTask("b", connection(host: "other.example.com", path: "/srv/service-b"))
         second.id = first.id
 
-        LaunchSSHConnectionSnapshot.pin(for: first)
-        LaunchSSHConnectionSnapshot.pin(for: second)
+        let firstPin = LaunchSSHConnectionSnapshot.pin(for: first)
+        let secondPin = LaunchSSHConnectionSnapshot.pin(for: second)
         #expect(LaunchSSHConnectionSnapshot.pinnedConnections(for: first)?.map(\.host) == ["release.example.com"])
         #expect(LaunchSSHConnectionSnapshot.pinnedConnections(for: second)?.map(\.host) == ["other.example.com"])
 
-        LaunchSSHConnectionSnapshot.release(for: second)
+        LaunchSSHConnectionSnapshot.release(secondPin)
         #expect(LaunchSSHConnectionSnapshot.pinnedConnections(for: first)?.map(\.host) == ["release.example.com"])
-        #expect(LaunchSSHConnectionSnapshot.pinnedConnections(for: second) == nil)
 
         // Two launches of one id in one workspace share a pin until both end.
-        LaunchSSHConnectionSnapshot.pin(for: first)
-        LaunchSSHConnectionSnapshot.release(for: first)
+        let again = LaunchSSHConnectionSnapshot.pin(for: first)
+        LaunchSSHConnectionSnapshot.release(firstPin)
         #expect(LaunchSSHConnectionSnapshot.pinnedConnections(for: first) != nil)
-        LaunchSSHConnectionSnapshot.release(for: first)
+        LaunchSSHConnectionSnapshot.release(again)
         #expect(LaunchSSHConnectionSnapshot.pinnedConnections(for: first) == nil)
+    }
+
+    @Test("A pin is released as it was acquired, and found by its launch, even after the workspace folder moves")
+    func pinSurvivesAWorkspaceMove() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let task = try fixture.remoteTask("a", connection(path: "/srv/service-a"))
+        let elsewhere = try fixture.directory("moved")
+        SSHConnectionManager.save([connection(host: "other.example.com", path: "/srv/service-b")], workspacePath: elsewhere)
+
+        let pin = LaunchSSHConnectionSnapshot.pin(for: task)
+        // The live workspace is pointed somewhere else while the run is active.
+        task.workspace?.primaryPath = elsewhere
+        // Readers of this launch still get the set it pinned, not the new folder's.
+        #expect(LaunchSSHConnectionSnapshot.connections(for: task).map(\.host) == ["release.example.com"])
+
+        // Releasing ends exactly the entry that was pinned: nothing is left
+        // behind to be reused by a later launch.
+        LaunchSSHConnectionSnapshot.release(pin)
+        #expect(LaunchSSHConnectionSnapshot.pinnedConnections(for: task) == nil)
+        #expect(LaunchSSHConnectionSnapshot.connections(for: task).map(\.host) == ["other.example.com"])
     }
 
     @Test("A launch stops when the connections name a remote machine its lease does not cover")
