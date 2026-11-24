@@ -18,7 +18,7 @@ struct GitHubHostControlPolicyTests {
         ["api", "--hostname", "github.com", "--cache", "1h", "repos/example/project", "-t", "{{.name}}"]
     ])
     func allowsReads(_ arguments: [String]) {
-        #expect(GitHubHostControlPolicy.denialReason(for: arguments, environment: [:]) == nil)
+        #expect(GitHubHostControlPolicy.denialReason(for: arguments) == nil)
     }
 
     /// gojq's `env` and `$ENV` read the broker's environment, and no scan of the
@@ -40,7 +40,7 @@ struct GitHubHostControlPolicyTests {
 
     @Test("A refused jq filter points at a flag the command has")
     func jqDenialAdviceFitsTheCommand() throws {
-        let api = try #require(GitHubHostControlPolicy.denialReason(for: ["api", "user", "--jq", ".login"], environment: [:]))
+        let api = try #require(GitHubHostControlPolicy.denialReason(for: ["api", "user", "--jq", ".login"]))
         #expect(api.contains("drop --jq and read the JSON response"))
         #expect(!api.contains("--json"))
         let view = try #require(GitHubHostControlPolicy.denialReason(for: ["pr", "view", "1", "--json", "title", "-q", ".title"]))
@@ -76,19 +76,38 @@ struct GitHubHostControlPolicyTests {
         #expect(reason.contains("does not allow GitHub operation"))
     }
 
-    @Test("An inherited GH_HOST away from github.com needs an explicit github.com host")
-    func defaultHostStaysOnGitHub() throws {
-        let arguments = ["api", "user"]
-        let enterprise = ["GH_HOST": "ghe.example.com"]
-        let reason = try #require(GitHubHostControlPolicy.denialReason(for: arguments, environment: enterprise))
-        #expect(reason.contains("GH_HOST points away from github.com"))
-        #expect(GitHubHostControlPolicy.denialReason(
-            for: ["api", "--hostname", "github.com", "user"], environment: enterprise
-        ) == nil)
-        #expect(GitHubHostControlPolicy.denialReason(for: arguments, environment: ["GH_HOST": "github.com"]) == nil)
-        #expect(GitHubHostControlPolicy.denialReason(for: arguments, environment: [:]) == nil)
-        // Only `api` is new here; other reads already follow GH_HOST.
-        #expect(GitHubHostControlPolicy.denialReason(for: ["pr", "view", "1"], environment: enterprise) == nil)
+    /// Without `--hostname`, gh sends an api request to its default host
+    /// (`GH_HOST`, or the only host it is signed in to) with that host's
+    /// credentials; the broker pins API reads to github.com instead.
+    @Test("API reads run pinned to github.com; other commands run as given", arguments: [
+        (["api", "user"], ["api", "user", "--hostname", "github.com"]),
+        (["api", "-XGET", "repos/o/r"], ["api", "-XGET", "repos/o/r", "--hostname", "github.com"]),
+        (["api", "--", "repos/o/r"], ["api", "--hostname", "github.com", "--", "repos/o/r"]),
+        (["api", "--hostname", "github.com", "user"], ["api", "--hostname", "github.com", "user"]),
+        (["api", "--hostname=github.com", "user"], ["api", "--hostname=github.com", "user"]),
+        (["pr", "view", "1"], ["pr", "view", "1"])
+    ])
+    func apiReadsArePinned(_ given: [String], _ executed: [String]) {
+        #expect(GitHubHostControlPolicy.executionArguments(for: given) == executed)
+    }
+
+    @Test("The broker runs an unpinned API read against github.com even when gh's default is another host")
+    func brokerPinsTheHost() throws {
+        let runner = PinRecordingRunner()
+        let server = HostControlMCPServer(
+            configuration: .init(githubExecutable: "/host/bin/gh", allowedTools: ["github"],
+                                 environment: ["GH_HOST": "ghe.example.com"]),
+            processRunner: runner
+        )
+        for (id, arguments) in [(1, ["api", "user"]), (2, ["pr", "view", "1"])] {
+            let request: [String: Any] = [
+                "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                "params": ["name": "github", "arguments": ["arguments": arguments]]
+            ]
+            let line = String(decoding: try JSONSerialization.data(withJSONObject: request), as: UTF8.self)
+            _ = try #require(server.handleLine(line))
+        }
+        #expect(runner.arguments == [["api", "user", "--hostname", "github.com"], ["pr", "view", "1"]])
     }
 
     @Test("Browser launch and token display stay denied with their own reasons")
@@ -102,5 +121,15 @@ struct GitHubHostControlPolicyTests {
         #expect(GitHubHostControlPolicy.denialReason(for: ["auth", "token"]) != nil)
         #expect(GitHubHostControlPolicy.denialReason(for: ["pr", "create", "--title", "x"]) != nil)
         #expect(GitHubHostControlPolicy.denialReason(for: ["run", "watch", "1"]) != nil)
+    }
+}
+
+private final class PinRecordingRunner: HostControlProcessRunning {
+    var arguments: [[String]] = []
+
+    func run(executablePath: String, arguments: [String], timeoutSeconds: TimeInterval,
+             environment: [String: String], currentDirectory: String?) -> HostControlCommandResult {
+        self.arguments.append(arguments)
+        return HostControlCommandResult(command: executablePath, arguments: arguments, exitCode: 0, stdout: "{}", stderr: "")
     }
 }

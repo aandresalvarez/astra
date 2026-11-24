@@ -856,7 +856,8 @@ public final class HostControlMCPServer {
                 executable: configuration.githubExecutable,
                 arguments: arguments,
                 allowedFirstArguments: nil,
-                argumentPolicy: GitHubHostControlPolicy.denialReason(for:)
+                argumentPolicy: GitHubHostControlPolicy.denialReason(for:),
+                executionArguments: GitHubHostControlPolicy.executionArguments(for:)
             )
         case "gcloud":
             return handleProcessTool(
@@ -907,7 +908,8 @@ public final class HostControlMCPServer {
         executable: String,
         arguments: [String: Any],
         allowedFirstArguments: Set<String>?,
-        argumentPolicy: (([String]) -> String?)? = nil
+        argumentPolicy: (([String]) -> String?)? = nil,
+        executionArguments: (([String]) -> [String])? = nil
     ) -> MCPServerReply {
         guard let argv = stringArray(arguments["arguments"]) else {
             return .error(code: -32602, message: "\(toolName) requires an arguments array")
@@ -937,7 +939,8 @@ public final class HostControlMCPServer {
             return .error(code: -32602, message: rejection)
         }
         return runProcessTool(toolName: toolName, executable: executable, arguments: argv,
-                              executionArguments: argv, timeout: timeoutSeconds(from: arguments["timeout_seconds"]))
+                              executionArguments: executionArguments?(argv) ?? argv,
+                              timeout: timeoutSeconds(from: arguments["timeout_seconds"]))
     }
 
     private func runProcessTool(

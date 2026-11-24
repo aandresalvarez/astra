@@ -12,13 +12,7 @@ enum GitHubHostControlPolicy {
     private static let jqFlags: Set<String> = ["--jq", "-q"]
     private static let authStatusDeniedFlags: Set<String> = ["--show-token", "-t"]
 
-    /// gh inherits the broker's environment, so `GH_HOST` there is the host an
-    /// `api` call without `--hostname` reaches.
     static func denialReason(for arguments: [String]) -> String? {
-        denialReason(for: arguments, environment: ProcessInfo.processInfo.environment)
-    }
-
-    static func denialReason(for arguments: [String], environment: [String: String]) -> String? {
         let operation = normalizedOperation(arguments)
         if containsDeniedFlag(arguments, deniedFlags: tokenDisplayFlags) {
             return denial(operation, reason: "credential and token display flags are not exposed")
@@ -64,7 +58,7 @@ enum GitHubHostControlPolicy {
             if let index = commandIndex(in: arguments) {
                 apiArguments.remove(at: index)
             }
-            if let reason = apiReadDenialReason(apiArguments, defaultHost: environment["GH_HOST"]) {
+            if let reason = apiReadDenialReason(apiArguments) {
                 return denial(operation, reason: reason + ". "
                     + "For inline PR comments use pr review-threads NUMBER --repo OWNER/REPO")
             }
@@ -108,7 +102,7 @@ enum GitHubHostControlPolicy {
     /// `gh api` is exposed for a single GET (or HEAD) of one REST path on
     /// github.com: no fields or body, no GraphQL, no other host, no
     /// method-override header, and no `--verbose` (it prints the request headers).
-    private static func apiReadDenialReason(_ arguments: [String], defaultHost: String?) -> String? {
+    private static func apiReadDenialReason(_ arguments: [String]) -> String? {
         var options: [(name: String, value: String?)] = []
         var positionals: [String] = []
         var index = 0
@@ -181,14 +175,6 @@ enum GitHubHostControlPolicy {
                 return "method-override headers are not exposed"
             }
         }
-        // Without `--hostname`, gh sends the request to `GH_HOST` with that
-        // host's credentials; hold that default to github.com as well.
-        if !options.contains(where: { $0.name == "--hostname" }),
-           let host = defaultHost?.trimmingCharacters(in: .whitespaces).lowercased(),
-           !host.isEmpty, host != "github.com" {
-            return "GH_HOST points away from github.com; pass --hostname github.com"
-        }
-
         guard positionals.count == 1, let endpoint = positionals.first else {
             return "exactly one REST endpoint path is required"
         }
@@ -200,6 +186,24 @@ enum GitHubHostControlPolicy {
             return "only endpoint paths on the configured GitHub host are exposed"
         }
         return nil
+    }
+
+    /// What the broker runs for an allowed call. Without `--hostname`, `gh api`
+    /// picks its default host: `GH_HOST`, or the only host gh is signed in to,
+    /// with that host's credentials. An API read is pinned to github.com so the
+    /// default can't move it; every other command runs as given.
+    static func executionArguments(for arguments: [String]) -> [String] {
+        guard normalizedOperation(arguments).command == "api",
+              !arguments.contains(where: { $0 == "--hostname" || $0.hasPrefix("--hostname=") }) else {
+            return arguments
+        }
+        // After a `--`, gh reads every word as an operand.
+        if let separator = arguments.firstIndex(of: "--") {
+            var pinned = arguments
+            pinned.insert(contentsOf: ["--hostname", "github.com"], at: separator)
+            return pinned
+        }
+        return arguments + ["--hostname", "github.com"]
     }
 
     /// Index of the first positional argument (the gh command), skipping option values.
