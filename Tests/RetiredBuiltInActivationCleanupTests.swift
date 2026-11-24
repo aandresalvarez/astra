@@ -215,6 +215,105 @@ struct RetiredBuiltInActivationCleanupTests {
         #expect(WorkspaceCapabilityActivation.retiredActivations(of: saved).first?.pendingOverrides?.count == 1)
     }
 
+    /// A retirement is pending while the shared context holds an edit its
+    /// owner has not saved yet.
+    private func pendingRetirementWithUnsavedEdit() throws -> PluginOperationsTests.Environment {
+        let env = try upgradedWorkspace(id: "security-auditor")
+        env.workspace.name = "Unsaved edit"
+        return env
+    }
+
+    private func cleanupOnceSaved(
+        _ env: PluginOperationsTests.Environment, mayRun: @MainActor () -> Bool = { true },
+        wait: @MainActor () -> Void
+    ) async -> RetiredBuiltInActivationCleanup.Outcome {
+        await RetiredBuiltInActivationCleanup.retireActivationsOnceSaved(
+            modelContext: env.context, library: env.library, builtInIDs: [],
+            tries: 3, pause: .zero, wait: { _ in wait() }, mayRun: mayRun
+        )
+    }
+
+    @Test("Startup waits for unsaved edits to be saved, then retires, without committing them itself")
+    func waitsForUnsavedEditsToBeSaved() async throws {
+        let env = try pendingRetirementWithUnsavedEdit()
+        defer { try? FileManager.default.removeItem(at: env.root) }
+        var waits = 0
+        var savedByTheirOwner = false
+
+        let outcome = await cleanupOnceSaved(env) {
+            waits += 1
+            #expect(WorkspaceCapabilityActivation.activation(for: "security-auditor", in: env.workspace) != nil)
+            savedByTheirOwner = (try? env.context.save()) != nil
+        }
+
+        #expect(savedByTheirOwner && waits == 1)
+        #expect(outcome == .init(retired: ["security-auditor"], failed: []))
+        #expect(WorkspaceCapabilityActivation.activation(for: "security-auditor", in: env.workspace) == nil)
+        #expect(env.workspace.name == "Unsaved edit")
+    }
+
+    @Test("Edits still unsaved after the last try leave the retirement to the next launch")
+    func stillUnsavedEditsDeferAfterTheLastTry() async throws {
+        let env = try pendingRetirementWithUnsavedEdit()
+        defer { try? FileManager.default.removeItem(at: env.root) }
+        var waits = 0
+
+        let outcome = await cleanupOnceSaved(env) { waits += 1 }
+
+        #expect(waits == 2)
+        #expect(outcome == .init(retired: [], failed: [], deferred: ["security-auditor"]))
+        #expect(env.context.hasChanges)
+        let saved = try #require(try ModelContext(env.container).fetch(FetchDescriptor<Workspace>()).first)
+        #expect(saved.name == "Ops")
+        #expect(WorkspaceCapabilityActivation.activation(for: "security-auditor", in: saved) != nil)
+    }
+
+    @Test("With nothing to retire, unsaved edits are not waited for")
+    func nothingPendingDoesNotWait() async throws {
+        let env = try PluginOperationsTests.Environment()
+        defer { try? FileManager.default.removeItem(at: env.root) }
+        try env.context.save()
+        env.workspace.name = "Unsaved edit"
+        var waits = 0
+
+        let outcome = await cleanupOnceSaved(env) { waits += 1 }
+
+        #expect(outcome == .init())
+        #expect(waits == 0)
+        #expect(env.context.hasChanges)
+    }
+
+    @Test("A cleanup that is no longer allowed after a wait retires nothing")
+    func stopsWhenNoLongerAllowed() async throws {
+        let env = try pendingRetirementWithUnsavedEdit()
+        defer { try? FileManager.default.removeItem(at: env.root) }
+        var waits = 0
+
+        let outcome = await cleanupOnceSaved(env, mayRun: { false }) {
+            waits += 1
+            try? env.context.save()
+        }
+
+        #expect(waits == 1)
+        #expect(outcome == .init(retired: [], failed: [], deferred: ["security-auditor"]))
+        #expect(WorkspaceCapabilityActivation.activation(for: "security-auditor", in: env.workspace) != nil)
+    }
+
+    @Test("Startup waits for the shared context, and asks the cleanup gate again before the secret outbox")
+    func startupWaitsThenGatesAgain() throws {
+        let app = try String(
+            contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("Astra/ASTRAApp.swift"), encoding: .utf8
+        )
+        let gate = "guard !Task.isCancelled, WorkspaceRecoveryTrust.allowsCleanup else { return }"
+        let retire = try #require(app.range(of: "await RetiredBuiltInActivationCleanup.retireActivationsOnceSaved("))
+        let outbox = try #require(app.range(of: "await PluginSecretCleanupOutbox.resumePendingAsync",
+            range: retire.upperBound..<app.endIndex))
+        #expect(app[retire.upperBound..<outbox.lowerBound].contains(gate))
+        #expect(app[retire.upperBound..<outbox.lowerBound].contains("mayRun: { !Task.isCancelled && WorkspaceRecoveryTrust.allowsCleanup }"))
+        #expect(!app.contains("RetiredBuiltInActivationCleanup.retireActivations("))
+    }
+
     @Test("A former built-in held only in legacy state after a deferred migration is retired too")
     func pendingLegacyStateIsRetired() throws {
         let env = try PluginOperationsTests.Environment()

@@ -23,6 +23,9 @@ more thing to support. Bring one back when someone needs it.
   `RetiredBuiltInActivationCleanup` retires any workspace activation of an
   archived package through the normal Remove. Left enabled without its
   definition, it would stop every new task in that workspace at preflight.
+  The pass never commits someone else's unsaved edits: it waits about a
+  minute for them to be saved, and leaves the retirement to the next launch
+  if they still are not.
   Add a package's ID to `retiredBuiltInIDs` when you archive it.
 - The supporting code stays: the Stanford mail tools (`Tools/StanfordAppleMailTool`,
   `Tools/StanfordGraphMailTool`), Google Workspace OAuth and remote MCP

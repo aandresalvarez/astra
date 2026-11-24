@@ -345,7 +345,10 @@ enum CodexSessionUsageCorrectionService {
                     change.resetMarkersRemoved += markers.count
                 }
             }
-            task.tokensUsed = totals.taskAfter
+            // Assigning an equal total still marks the task as edited. The pass runs at every
+            // launch while a session is deferred and returns without saving when nothing
+            // changed, so that edit would stay unsaved in the shared context.
+            if task.tokensUsed != totals.taskAfter { task.tokensUsed = totals.taskAfter }
             guard change.runsCorrected > 0 || change.resetMarkersAdded > 0 || change.resetMarkersRemoved > 0 else {
                 continue
             }

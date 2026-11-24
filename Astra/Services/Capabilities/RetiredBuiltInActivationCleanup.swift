@@ -85,6 +85,66 @@ enum RetiredBuiltInActivationCleanup {
         }
     }
 
+    /// How often, and how far apart, startup tries before it leaves a
+    /// retirement to the next launch: about a minute for edits to be saved.
+    nonisolated static let savedContextTries = 12
+    nonisolated static let savedContextPause: Duration = .seconds(5)
+
+    /// `retireActivations`, tried again while the shared context holds unsaved
+    /// edits. The pass can't commit them, and startup runs it once: refused a
+    /// single time, the retirement waited for the next launch, and for every
+    /// launch after it when something leaves an edit unsaved at each one.
+    ///
+    /// An edit is saved by its owner or by autosave. Until then each try
+    /// waits `pause` without running the pass or reporting anything, and
+    /// `mayRun` is asked again after every wait. Only the last try lets the
+    /// pass refuse and say so; what it leaves is retried at the next launch,
+    /// as before. With nothing to retire there is nothing to wait for.
+    @discardableResult
+    static func retireActivationsOnceSaved(
+        modelContext: ModelContext,
+        library: CapabilityLibrary = CapabilityLibrary(),
+        builtInIDs: Set<String> = Set(PluginCatalog.builtInPackages.map(\.id)),
+        ids: [String] = retiredBuiltInIDs,
+        forget: (@MainActor (String, ModelContext) throws -> Void)? = nil,
+        tries: Int = savedContextTries,
+        pause: Duration = savedContextPause,
+        wait: @MainActor (Duration) async -> Void = { try? await Task.sleep(for: $0) },
+        mayRun: @MainActor () -> Bool = { !Task.isCancelled }
+    ) async -> Outcome {
+        var total = Outcome()
+        var remaining = ids
+        var reportedWait = false
+        for attempt in 1...max(tries, 1) {
+            if attempt < tries, modelContext.hasChanges {
+                total.deferred = pendingIDs(modelContext: modelContext, library: library, builtInIDs: builtInIDs, ids: remaining)
+                guard !total.deferred.isEmpty else { break }
+                if !reportedWait {
+                    reportedWait = true
+                    AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
+                        "operation": "retired_builtin_cleanup", "result": "waiting_for_unsaved_edits",
+                        "plugin_ids": total.deferred.joined(separator: ",")
+                    ], level: .info)
+                }
+                await wait(pause)
+                guard mayRun() else { break }
+                continue
+            }
+            let outcome = MainThreadPhase.tracking("startup_cleanup_retired_builtins") {
+                retireActivations(modelContext: modelContext, library: library, builtInIDs: builtInIDs,
+                                  ids: remaining, forget: forget)
+            }
+            total.retired += outcome.retired
+            total.failed += outcome.failed
+            total.deferred = outcome.deferred
+            // A refused Remove is reported once and left for the next launch;
+            // only what the pass put off is tried again.
+            remaining = outcome.deferred
+            if remaining.isEmpty { break }
+        }
+        return total
+    }
+
     @discardableResult
     static func retireActivations(
         modelContext: ModelContext,
