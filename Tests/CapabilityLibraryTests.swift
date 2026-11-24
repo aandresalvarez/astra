@@ -962,7 +962,7 @@ struct CapabilityLibraryTests {
         #expect(packages.first { $0.id == "github-workflow" }?.localTools.isEmpty == true)
         #expect(packages.first { $0.id == "github-workflow" }?.prerequisites.map(\.binary) == ["gh", "gh"])
         let github = packages.first { $0.id == "github-workflow" }
-        #expect(github?.version == "2.4.0")
+        #expect(github?.version == "2.4.1")
         #expect(github?.skills.first?.allowedTools.contains("Write") == false)
         #expect(github?.skills.first?.disallowedTools.contains("Write") == false)
         #expect(github?.skills.first?.behaviorInstructions.contains(

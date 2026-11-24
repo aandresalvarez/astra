@@ -304,7 +304,7 @@ struct PluginCatalogBuiltInTests {
         let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "github-workflow" })
         let skill = try #require(package.skills.first)
 
-        #expect(package.version == "2.4.0")
+        #expect(package.version == "2.4.1")
         #expect(!skill.allowedTools.contains("Write"))
         #expect(!skill.disallowedTools.contains("Write"))
         let subagentGrants = PermissionPolicy.restricted.subAgentPermissions(allowedTools: skill.allowedTools)
