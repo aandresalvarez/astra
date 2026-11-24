@@ -11,7 +11,7 @@ enum PluginQueuedContractValidation {
                        library: CapabilityLibrary = CapabilityLibrary()) -> [CapabilityRuntimeIntegrityIssue] {
         let definitions = Dictionary(packages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         return activationIssues(in: workspace, definitions: definitions, library: library)
-            + retiredRowIssues(in: workspace, definitions: definitions, library: library)
+            + retiredRowIssues(in: workspace, definitions: definitions)
     }
 
     /// Rows a V20 migration kept as a retired built-in's pending overrides are
@@ -20,13 +20,13 @@ enum PluginQueuedContractValidation {
     /// saved before the rows' own save failed, or a crash in between). A
     /// request-time copy holding them is refused, so they never run.
     private static func retiredRowIssues(
-        in workspace: Workspace, definitions: [String: PluginPackage], library: CapabilityLibrary
+        in workspace: Workspace, definitions: [String: PluginPackage]
     ) -> [CapabilityRuntimeIntegrityIssue] {
         guard workspace.launchPluginDefinitions != nil else { return [] }
         // An enabled activation of the plugin already raises its own issue; a
         // disabled one says nothing about rows still in scope.
         let live = Set(WorkspaceCapabilityActivation.activations(of: workspace).filter(\.isEnabled).map(\.pluginID))
-        return RetiredBuiltInActivationCleanup.pendingRowPluginIDs(in: workspace, library: library)
+        return RetiredBuiltInActivationCleanup.pendingRowPluginIDs(in: workspace)
             .filter { definitions[$0] == nil && !live.contains($0) }
             .map { pluginID in
                 CapabilityRuntimeIntegrityIssue(

@@ -166,11 +166,12 @@ enum RetiredBuiltInActivationCleanup {
             || WorkspaceCapabilityActivation.pendingLegacyState(of: workspace).enabledPluginIDs.contains(id)
     }
 
-    /// Listed former built-ins with no stored definition whose V20 pending rows
-    /// `workspace` still holds in scope (`PluginQueuedContractValidation`).
-    nonisolated static func pendingRowPluginIDs(in workspace: Workspace,
-                                                library: CapabilityLibrary = CapabilityLibrary()) -> [String] {
-        retiredBuiltInIDs.filter { holdsPendingOverrides($0, workspace) && !isStored($0, in: library) }
+    /// Listed former built-ins whose V20 pending rows `workspace` still holds in
+    /// scope (`PluginQueuedContractValidation`). A package stored under the ID
+    /// keeps this pass from retiring them, but not the launch from being
+    /// refused while they are in scope without a definition.
+    nonisolated static func pendingRowPluginIDs(in workspace: Workspace) -> [String] {
+        retiredBuiltInIDs.filter { holdsPendingOverrides($0, workspace) }
     }
 
     nonisolated private static func holdsPendingOverrides(_ id: String, _ workspace: Workspace) -> Bool {

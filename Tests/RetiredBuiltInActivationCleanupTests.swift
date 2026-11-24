@@ -175,6 +175,25 @@ struct RetiredBuiltInActivationCleanupTests {
             .map(\.packageID) == ["stanford-apple-mail"])
     }
 
+    @Test("A stored package under the ID keeps its pending V20 rows from being retired, not the launch from being refused")
+    func storedPackageDoesNotHidePendingRows() throws {
+        let env = try PluginOperationsTests.Environment()
+        defer { try? FileManager.default.removeItem(at: env.root) }
+        let tool = LocalTool(name: "stanford-apple-mail", toolDescription: "Mail", toolType: "cli", command: "stanford-apple-mail")
+        tool.workspace = env.workspace
+        env.context.insert(tool)
+        WorkspaceCapabilityActivation.recordPendingOverride(
+            componentID: "tool:stanford-apple-mail", rowID: tool.id, pluginID: "stanford-apple-mail", in: env.workspace)
+        try env.context.save()
+        try FileManager.default.createDirectory(at: env.library.directory, withIntermediateDirectories: true)
+        try Data("{ not json".utf8).write(to: env.library.packageURL(for: "stanford-apple-mail"))
+
+        #expect(cleanup(env) { id, _ in Issue.record("\(id) has stored storage") } == .init())
+        env.workspace.launchPluginDefinitions = []
+        #expect(PluginQueuedContractValidation.issues(in: env.workspace, packages: [], library: env.library)
+            .map(\.packageID) == ["stanford-apple-mail"])
+    }
+
     @Test("Unsaved edits in the shared context defer the pass instead of being committed with it")
     func unsavedEditsDefer() throws {
         let env = try PluginOperationsTests.Environment()
