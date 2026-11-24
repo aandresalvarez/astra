@@ -32,6 +32,19 @@ final class AgentEventRecordingState {
     /// Runs that also recorded unkeyed `.text`, whose output is append-only.
     private var runsWithUnkeyedText: Set<UUID> = []
 
+    private var openToolUseEvents: [String: [TaskEvent]] = [:]
+    /// Ids two open calls have shared since their list was last empty: the
+    /// group's own id, and its members no record has listed yet.
+    private var ambiguousGroups: [String: (id: UUID, unlisted: [UUID])] = [:]
+    private var pendingOperationStatuses: [String: PendingOperationStatus] = [:]
+    private var openOperationBatches: [UUID: TaskEvent] = [:]
+
+    struct PendingOperationStatus: Equatable {
+        let outcome: AgentOperationOutcome
+        let exitCode: Int?
+        let providerStatus: String?
+    }
+
     /// File changes announced with the tool call that makes them, in the
     /// order they were announced, until that call's result arrives.
     private var pendingFileChanges: [(runID: UUID, toolUseID: String, change: PendingFileChange)] = []
@@ -160,6 +173,96 @@ final class AgentEventRecordingState {
         toolUseEvidenceByRunAndID["\(run.id.uuidString)#\(id)"] = evidence
         toolNamesByRunAndID["\(run.id.uuidString)#\(id)"] = name
         toolUseCommandByRunAndID["\(run.id.uuidString)#\(id)"] = fullEvidence ?? evidence
+    }
+
+    /// The `tool.use` row of a call that has not finished yet, when exactly
+    /// one open call carries this id. A provider that reports one call's
+    /// state as several frames repeats the call; while it is open that is
+    /// one operation, not a new one.
+    func openToolUseEvent(id: String, run: TaskRun) -> TaskEvent? {
+        let key = "\(run.id.uuidString)#\(id)"
+        guard !id.isEmpty, ambiguousGroups[key] == nil, let open = openToolUseEvents[key], open.count == 1 else {
+            return nil
+        }
+        return open[0]
+    }
+
+    /// Open calls are kept per id as a list. An id that does not tell calls
+    /// apart — none at all, or a parser's stand-in such as the tool's name —
+    /// can be held by several open calls at once.
+    func openToolUse(_ event: TaskEvent, id: String, run: TaskRun) {
+        let key = "\(run.id.uuidString)#\(id)"
+        openToolUseEvents[key, default: []].append(event)
+        let open = openToolUseEvents[key, default: []]
+        if var group = ambiguousGroups[key] {
+            group.unlisted.append(event.id)
+            ambiguousGroups[key] = group
+        } else if open.count > 1 {
+            // From here on these calls cannot be told apart: one group, named
+            // by an id of its own, holding every call open under the id.
+            ambiguousGroups[key] = (UUID(), open.map(\.id))
+        }
+    }
+
+    /// The open call a permission denial names: by id, or by tool name when
+    /// exactly one open call of this run used that tool.
+    func openOperationID(deniedTool tool: String, run: TaskRun) -> String? {
+        let prefix = "\(run.id.uuidString)#"
+        if openToolUseEvents[prefix + tool]?.isEmpty == false { return tool }
+        let named = openToolUseEvents.filter {
+            $0.key.hasPrefix(prefix) && !$0.value.isEmpty && toolNamesByRunAndID[$0.key] == tool
+        }
+        if named.count == 1, named.first?.value.count == 1, named.first.map({ ambiguousGroups[$0.key] == nil }) == true {
+            return named.first.map { String($0.key.dropFirst(prefix.count)) }
+        }
+        // A call the provider gave no id has no name on record, only its row.
+        // The denial can mean it when it is the run's one open id-less call
+        // and that call used the tool.
+        if named.isEmpty, ambiguousGroups[prefix] == nil, let unnamed = openToolUseEvents[prefix], unnamed.count == 1,
+           RunAnswerSelectionPolicy.toolName(fromUsePayload: unnamed[0].payload) == tool {
+            return ""
+        }
+        return nil
+    }
+
+    /// The `tool.operation` row still taking this run's records.
+    func openOperationBatch(for run: TaskRun) -> TaskEvent? { openOperationBatches[run.id] }
+
+    func setOpenOperationBatch(_ event: TaskEvent, for run: TaskRun) { openOperationBatches[run.id] = event }
+
+    /// The provider's own terminal status for a call, held until its result.
+    func holdOperationStatus(_ status: PendingOperationStatus, id: String, run: TaskRun) {
+        guard !id.isEmpty else { return }
+        pendingOperationStatuses["\(run.id.uuidString)#\(id)"] = status
+    }
+
+    /// Closes a call: its open row, its name and any status the provider
+    /// reported for it. The id may be used again by a later call. When the id
+    /// is held by several open calls, one of them finished and which is
+    /// unknown: the open count drops, and no call is named.
+    func finishToolOperation(
+        id: String,
+        run: TaskRun
+    ) -> (use: TaskEvent?, tool: String?, status: PendingOperationStatus?, group: (id: UUID, listed: [UUID])?) {
+        let key = "\(run.id.uuidString)#\(id)"
+        let status = id.isEmpty ? nil : pendingOperationStatuses.removeValue(forKey: key)
+        let tool = id.isEmpty ? nil : toolNamesByRunAndID[key]
+        guard var open = openToolUseEvents[key], !open.isEmpty else { return (nil, tool, status, nil) }
+        // Once two calls shared the id, which ones are still open is unknown
+        // until all of them have finished, so none is named meanwhile: the
+        // record names their group and lists members not yet listed.
+        var groupRecord: (id: UUID, listed: [UUID])?
+        if var group = ambiguousGroups[key] {
+            let listed = Array(group.unlisted.prefix(ToolOperationRecord.candidatesPerRecord))
+            group.unlisted.removeFirst(listed.count)
+            ambiguousGroups[key] = group
+            groupRecord = (group.id, listed)
+        }
+        let use = groupRecord == nil ? open[0] : nil
+        open.removeFirst()
+        openToolUseEvents[key] = open.isEmpty ? nil : open
+        if open.isEmpty { ambiguousGroups[key] = nil }
+        return (use, tool, status, groupRecord)
     }
 
     func toolUseFullEvidence(id: String, run: TaskRun) -> String? {
@@ -644,18 +747,22 @@ enum AgentEventRecorder {
         recordingMode: AgentRuntimeRecordingMode = .initial,
         recordingState: AgentEventRecordingState? = nil
     ) {
+        RunLiveActivityStore.shared.observe(event, runID: run.id)
         switch event {
-        case .control, .assistantMessage:
+        case .control, .assistantMessage, .operation(.progress), .operation(.finished):
             break
         default:
             recordingState?.noteNonMessageEvent(for: run)
         }
         switch event {
         case .control(let type):
-            if let toolUseID = ToolCallDenialMarker.toolUseID(fromControlType: type),
-               let dropped = recordingState?.takePendingFileChanges(toolUseID: toolUseID, run: run),
-               !dropped.isEmpty {
-                logDroppedFileChanges(dropped.count, reason: "permission_denied", task: task)
+            if let toolUseID = ToolCallDenialMarker.toolUseID(fromControlType: type) {
+                if let dropped = recordingState?.takePendingFileChanges(toolUseID: toolUseID, run: run), !dropped.isEmpty {
+                    logDroppedFileChanges(dropped.count, reason: "permission_denied", task: task)
+                }
+                AgentToolOperationRecording.recordDenied(
+                    tool: toolUseID, task: task, run: run, modelContext: modelContext, recordingState: recordingState
+                )
             }
 
         case .assistantMessage(let message):
@@ -728,7 +835,15 @@ enum AgentEventRecorder {
             let payload = "Using tool: \(name)\(suffix)"
             recordingState?.recordToolUse(id: id, name: name, evidence: payload, run: run,
                                           fullEvidence: "Using tool: \(name)" + (inputSummary.map { ": \($0)" } ?? ""))
-            modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Tool.use, payload: payload, run: run))
+            // An id that is only the tool's name is a parser's stand-in for a
+            // missing one: it cannot tell a repeated frame from a second call.
+            if id != name, let open = recordingState?.openToolUseEvent(id: id, run: run) {
+                AgentToolOperationRecording.updateOpenUse(open, payload: payload, task: task)
+            } else {
+                let use = TaskEvent(task: task, eventType: TaskEventTypes.Tool.use, payload: payload, run: run)
+                modelContext.insert(use)
+                recordingState?.openToolUse(use, id: id, run: run)
+            }
 
         case .toolResult(let toolID, let content, let isError):
             recordingState?.breakConversationCoalescing(for: run)
@@ -747,6 +862,7 @@ enum AgentEventRecorder {
                     task: task, type: AgentExternalActionObserver.resultEventType, payload: marker, run: run
                 ))
             }
+            var resultEvent: TaskEvent?
             if !content.isEmpty {
                 let eventType = isError ? TaskEventTypes.Tool.resultFailed : TaskEventTypes.Tool.result
                 let payload = isError
@@ -756,8 +872,14 @@ enum AgentEventRecorder {
                         toolUseEvidence: recordingState?.toolUseEvidence(id: toolID, run: run)
                     ))
                     : String(content.prefix(10_000))
-                modelContext.insert(TaskEvent(task: task, eventType: eventType, payload: payload, run: run))
+                let event = TaskEvent(task: task, eventType: eventType, payload: payload, run: run)
+                modelContext.insert(event)
+                resultEvent = event
             }
+            AgentToolOperationRecording.recordFinished(
+                callID: toolID, isError: isError, resultEvent: resultEvent,
+                task: task, run: run, modelContext: modelContext, recordingState: recordingState
+            )
             // The result, not the call, is the evidence a file changed.
             if let pending = recordingState?.takePendingFileChanges(toolUseID: toolID, run: run), !pending.isEmpty {
                 if isError {
@@ -804,6 +926,9 @@ enum AgentEventRecorder {
             if let dropped = recordingState?.takePendingFileChangesDenied(tool: tool, run: run), !dropped.isEmpty {
                 logDroppedFileChanges(dropped.count, reason: "permission_denied", task: task)
             }
+            AgentToolOperationRecording.recordDenied(
+                tool: tool, task: task, run: run, modelContext: modelContext, recordingState: recordingState
+            )
             modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Tool.permissionDenied, payload: "Permission requested for tool: \(tool). \(String(reason.prefix(300)))", run: run))
             AppLogger.audit(.workerPermissionDenied, category: "Worker", taskID: task.id, fields: [
                 "tool": AgentEventRecordingPresentation.normalizedPermissionTool(tool),
@@ -909,6 +1034,11 @@ enum AgentEventRecorder {
             // A warning the provider carried on after: visible, never a failure.
             modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.info, payload: message, run: run))
 
+        case .operation(let signal):
+            AgentToolOperationRecording.record(
+                signal, task: task, run: run, modelContext: modelContext, recordingState: recordingState
+            )
+
         case .unknown(_, let type, _):
             recordingState?.breakConversationCoalescing(for: run)
             AppLogger.audit(.workerStarted, category: "Worker", taskID: task.id, fields: [
@@ -962,6 +1092,8 @@ enum AgentEventRecorder {
             return .toolUse(name: toolName, id: "", input: input)
         case .teamEvent(let teamEvent):
             return parsedEvent(from: teamEvent)
+        case .operation(let signal):
+            return signal.monitorControlType.map { .control(type: $0) }
         case .notice, .unknown:
             return nil
         }
@@ -1236,6 +1368,8 @@ enum AgentEventRecorder {
         modelContext: ModelContext,
         processExitedCleanly: Bool
     ) {
+        // The stream has ended: the run has no live activity left to show.
+        RunLiveActivityStore.shared.finish(runID: run.id)
         let unresolved = recordingState.takeUnresolvedFileChanges(for: run)
         guard !unresolved.isEmpty else { return }
         guard processExitedCleanly else {

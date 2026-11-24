@@ -143,17 +143,33 @@ public enum CodexStreamEventParser {
             let exitCode = int(in: item, keys: ["exit_code", "exitCode"])
             let status = string(in: item, keys: ["status"])?.lowercased()
             let failed = (exitCode.map { $0 != 0 } ?? false) || status.map(failedItemStatuses.contains) == true
-            return [.toolResult(
-                id: string(in: item, keys: ["id", "call_id", "callId"]) ?? "", content: commandResultSummary(in: item), isError: failed
-            )]
+            let id = string(in: item, keys: ["id", "call_id", "callId"]) ?? ""
+            let result = AgentEvent.toolResult(id: id, content: commandResultSummary(in: item), isError: failed)
+            // The exit code and status as fields, so nothing downstream has
+            // to read them back out of the summary's `exit_code=` text.
+            guard exitCode != nil || status != nil else { return [result] }
+            // A cancelled command is a cancellation, not a failure, though its
+            // result is still an error for everything that reads `isError`.
+            let reported = AgentOperationOutcome(providerStatus: status, exitCode: exitCode)
+            let outcome: AgentOperationOutcome = reported == .cancelled ? .cancelled : (failed ? .failed : reported)
+            return [.operation(.finished(operationID: id, outcome: outcome, exitCode: exitCode, providerStatus: status)), result]
         }
         if itemType == "file_change" {
             let itemID = string(in: item, keys: ["id", "call_id", "callId"])
             if let status = string(in: item, keys: ["status"])?.lowercased(),
                failedItemStatuses.contains(status) {
-                // Drops the changes held since the start.
+                // Drops the changes held since the start. A cancellation is
+                // still an error result, so the changes are dropped, but its
+                // outcome stays a cancellation.
                 guard let itemID else { return [.control(type: "item.completed.file_change.\(status)")] }
-                return [.toolResult(id: itemID, content: "file_change \(status)", isError: true)]
+                let reported = AgentOperationOutcome(providerStatus: status, exitCode: nil)
+                return [
+                    .operation(.finished(
+                        operationID: itemID, outcome: reported == .cancelled ? .cancelled : .failed,
+                        exitCode: nil, providerStatus: status
+                    )),
+                    .toolResult(id: itemID, content: "file_change \(status)", isError: true)
+                ]
             }
             let changes = fileChangeEvents(from: item, toolUseID: itemID)
             guard !changes.isEmpty else { return [.control(type: fileChangeControlType)] }
@@ -182,7 +198,22 @@ public enum CodexStreamEventParser {
         if itemType.contains("tool") || item["tool"] != nil || item["name"] != nil {
             let name = string(in: item, keys: ["name", "tool", "tool_name", "toolName"]) ?? "tool"
             let id = string(in: item, keys: ["id", "call_id", "callId"]) ?? ""
-            return [.toolUse(name: name, id: id, inputSummary: inputSummary(in: item))]
+            let use = AgentEvent.toolUse(name: name, id: id, inputSummary: inputSummary(in: item))
+            // The call again, for a completion with no start, then the result
+            // that ends it: the item completing is what says the call is no
+            // longer running. Its status decides the outcome, and without one
+            // the outcome is unknown rather than assumed. Empty content adds
+            // no transcript row.
+            guard !id.isEmpty else { return [use] }
+            let status = string(in: item, keys: ["status"])
+            let failed = status.map { failedItemStatuses.contains($0.lowercased()) } == true
+            let reported = AgentOperationOutcome(providerStatus: status, exitCode: nil)
+            let outcome: AgentOperationOutcome = reported == .cancelled ? .cancelled : (failed ? .failed : reported)
+            return [
+                use,
+                .operation(.finished(operationID: id, outcome: outcome, exitCode: nil, providerStatus: status)),
+                .toolResult(id: id, content: "", isError: failed)
+            ]
         }
         if itemType.contains("error") || itemType == "failed" {
             // An error item is a warning Codex carries on after, such as a
@@ -331,6 +362,8 @@ public enum CodexStreamEventParser {
             )
         case .notice:
             return nil
+        case .operation(let signal):
+            return signal.monitorControlType.map { .control(type: $0) }
         case .fileChange:
             // Progress only. The policy guard reads no paths from a control
             // frame, as it read none from the nil this replaced.

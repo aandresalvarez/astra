@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 
 public enum TaskEventCategory: String, Codable, Sendable, Equatable, Hashable {
     case lifecycle
@@ -95,6 +96,13 @@ public enum TaskEventTypes {
         public static let use: TaskEventType = "tool.use"
         public static let result: TaskEventType = "tool.result"
         public static let resultFailed: TaskEventType = "tool.result.failed"
+        /// The tool operations a run finished; payload is `ToolOperationBatch`.
+        /// Every result adds a record, including one that printed nothing, so
+        /// a result can be matched to its call after the task is reopened. A
+        /// record, never shown as a row of its own.
+        public static let operation = TaskEventType(stringLiteral: ToolOperationRecord.eventType)
+        /// A provider background job ended; payload is `BackgroundJobRecord`.
+        public static let backgroundJob = TaskEventType(stringLiteral: BackgroundJobRecord.eventType)
         public static let permissionDenied: TaskEventType = "permission.denied"
         public static let permissionApprovalRequested: TaskEventType = "permission.approval.requested"
         /// Emitted when a live in-flight ask is answered (allow or deny) without
@@ -335,6 +343,8 @@ public enum TaskEventTypes {
         Tool.use,
         Tool.result,
         Tool.resultFailed,
+        Tool.operation,
+        Tool.backgroundJob,
         Tool.permissionDenied,
         Plan.stepStarted,
         Plan.stepCompleted,

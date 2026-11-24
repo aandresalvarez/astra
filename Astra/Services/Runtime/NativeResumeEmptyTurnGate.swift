@@ -90,7 +90,9 @@ final class NativeResumeEmptyTurnGate: @unchecked Sendable {
             return !(summary ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         case .unknown(_, let type, _):
             return type.lowercased() != "thinking"
-        case .control, .started, .thinking, .stats, .usageMetadata:
+        case .operation(.backgroundJobFinished):
+            return true
+        case .control, .started, .thinking, .stats, .usageMetadata, .operation:
             return false
         }
     }

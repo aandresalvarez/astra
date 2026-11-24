@@ -162,6 +162,51 @@ struct GlobalResourceBrokerTests {
         #expect(roundTrip == v2)
     }
 
+    @Test("A container that writes a repository competes with whoever holds its Git metadata; a workspace claim does not")
+    func dockerMountsMeetGitMetadata() {
+        let (a, b) = (UUID(), UUID())
+        let git = claim(taskID: a, kind: .gitCommonDirectory, key: "/tmp/astra-broker-repo/.git", access: .write)
+        let writesRepo = claim(taskID: b, kind: .docker, key: "/tmp/astra-broker-repo", access: .write)
+        let readsRepo = claim(taskID: b, kind: .docker, key: "/tmp/astra-broker-repo", access: .readOnly)
+        let writesGit = claim(taskID: b, kind: .docker, key: "/tmp/astra-broker-repo/.git", access: .write)
+        let workspace = claim(taskID: b, kind: .workspace, key: "/tmp/astra-broker-repo", access: .write)
+
+        #expect(TaskExecutionResourceBroker.conflicts(git, writesRepo))
+        #expect(TaskExecutionResourceBroker.conflicts(writesRepo, git))
+        #expect(TaskExecutionResourceBroker.conflicts(git, writesGit))
+        // A read-only mount does not wait for metadata writers, as a read-only
+        // workspace folder does not.
+        #expect(!TaskExecutionResourceBroker.conflicts(git, readsRepo))
+        // Git metadata keeps its own kind against workspace claims.
+        #expect(!TaskExecutionResourceBroker.conflicts(git, workspace))
+    }
+
+    @Test("A reviewed decision names what the broker treats as the same folders")
+    func namingMirrorsFolderConflicts() {
+        let (requester, holder) = (UUID(), UUID())
+        func names(_ requested: TaskResourceLockClaim, _ held: TaskResourceLockClaim) -> Bool {
+            TaskExecutionResourceBroker.names(requested, resourceOf: held)
+        }
+        // A remote folder names the one inside it on the same machine.
+        #expect(names(claim(taskID: requester, kind: .remoteDirectory, key: "h:22 /srv", access: .write),
+                      claim(taskID: holder, kind: .remoteDirectory, key: "h:22 /srv/app", access: .write)))
+        #expect(!names(claim(taskID: requester, kind: .remoteDirectory, key: "h:22 /srv/app", access: .write),
+                       claim(taskID: holder, kind: .remoteDirectory, key: "h:22 /srv", access: .write)))
+        #expect(!names(claim(taskID: requester, kind: .remoteDirectory, key: "h:22 /srv", access: .write),
+                       claim(taskID: holder, kind: .remoteDirectory, key: "other:22 /srv/app", access: .write)))
+        // A workspace folder names a Docker mount inside it, and a mount of a
+        // repository names that repository's Git metadata.
+        #expect(names(claim(taskID: requester, kind: .workspace, key: "/tmp/astra-names/repo", access: .write),
+                      claim(taskID: holder, kind: .docker, key: "/tmp/astra-names/repo/cache", access: .write)))
+        #expect(names(claim(taskID: requester, kind: .docker, key: "/tmp/astra-names/repo", access: .write),
+                      claim(taskID: holder, kind: .gitCommonDirectory, key: "/tmp/astra-names/repo/.git", access: .write)))
+        // A workspace claim still never names Git metadata, and access must match.
+        #expect(!names(claim(taskID: requester, kind: .workspace, key: "/tmp/astra-names/repo", access: .write),
+                       claim(taskID: holder, kind: .gitCommonDirectory, key: "/tmp/astra-names/repo/.git", access: .write)))
+        #expect(!names(claim(taskID: requester, kind: .workspace, key: "/tmp/astra-names/repo", access: .write),
+                       claim(taskID: holder, kind: .docker, key: "/tmp/astra-names/repo/cache", access: .readOnly)))
+    }
+
     private func claim(
         taskID: UUID,
         kind: TaskExecutionResourceKind = .accountSession,

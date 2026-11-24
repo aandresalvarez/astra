@@ -350,7 +350,10 @@ public enum StreamEventParser {
                 let results = blocks.compactMap { block -> (String, String, Bool)? in
                     guard block.type == "tool_result" else { return nil }
                     let text = block.textContent
-                    return text.isEmpty ? nil : (block.tool_use_id ?? "", text, block.is_error ?? false)
+                    let id = block.tool_use_id ?? ""
+                    // A result with no output still ends the call it names;
+                    // only one that names no call says nothing at all.
+                    return text.isEmpty && id.isEmpty ? nil : (id, text, block.is_error ?? false)
                 }
                 if !results.isEmpty {
                     return .recognized(results.map {
@@ -539,7 +542,7 @@ public enum StreamEventParser {
             let id = block.tool_use_id ?? ""
             let text = block.textContent
             guard isDenial(block) else {
-                return text.isEmpty ? [] : [.toolResult(toolId: id, content: text, isError: block.is_error ?? false)]
+                return text.isEmpty && id.isEmpty ? [] : [.toolResult(toolId: id, content: text, isError: block.is_error ?? false)]
             }
             let tool = extractDeniedTool(from: text) ?? (id.isEmpty ? "unknown" : id)
             let denial = ParsedEvent.permissionDenied(tool: tool, reason: text)

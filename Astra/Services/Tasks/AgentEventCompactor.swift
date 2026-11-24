@@ -85,6 +85,16 @@ enum AgentEventCompactor {
         var preferences: [String] = []
 
         for event in events {
+            // A record is bookkeeping about other rows. Its failures belong in
+            // the summary; its JSON does not.
+            if event.type == ToolOperationRecord.eventType {
+                outcomes.append(contentsOf: (ToolOperationBatch.decode(from: event.payload)?.operations ?? []).compactMap(\.failureSummary))
+                continue
+            }
+            if let job = event.type == BackgroundJobRecord.eventType ? BackgroundJobRecord.decode(from: event.payload) : nil {
+                outcomes.append(boundedInline(job.milestoneText, maxCharacters: 420))
+                continue
+            }
             if let command = compactToolCommand(from: event) {
                 commands.append(command)
             }

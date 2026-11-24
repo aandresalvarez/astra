@@ -209,6 +209,10 @@ public enum AgentEvent: Sendable, Equatable {
     /// failure, such as a configuration warning it continued after. Recorded
     /// as a system note; it never fails the run.
     case notice(message: String)
+    /// What a provider reported about one operation apart from its output:
+    /// partial activity, a terminal status and exit code, or a background
+    /// job ending. Never assistant text.
+    case operation(AgentOperationSignal)
     /// In-process teammate orchestration events. Currently only Claude Code's
     /// CLI emits `local_agent`/`in_process_teammate` system events; the other
     /// five runtimes never produce these, so this case is Claude-only in

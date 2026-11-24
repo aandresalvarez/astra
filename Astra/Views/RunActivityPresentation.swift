@@ -23,6 +23,7 @@ struct ToolActivityPresentation: Identifiable, Hashable, Sendable {
     let detailKind: TaskToolDetailKind
     let count: Int
     let rawPayloads: [String]
+    var failedCount = 0
 
     var detailLabel: String? {
         switch detailKind {
@@ -35,7 +36,8 @@ struct ToolActivityPresentation: Identifiable, Hashable, Sendable {
     }
 
     var countLabel: String {
-        count == 1 ? "1 call" : "\(count) calls"
+        let calls = count == 1 ? "1 call" : "\(count) calls"
+        return failedCount > 0 ? "\(calls) · \(failedCount) failed" : calls
     }
 }
 
@@ -630,14 +632,17 @@ struct RunActivityPresentation: Hashable, Sendable {
     let technicalOutputs: [TechnicalOutputPresentation]
     let stats: [RunFactPresentation]
     let prefersExpandedDetails: Bool
+    let operations: RunOperationsPresentation
 
     init(
         run: TaskRunSnapshot,
         activity: TaskRunActivity,
         notices: [TaskRunNotice],
         suppressedNoticeIDs: Set<UUID> = [],
-        progressMessages: [TaskRunProgressMessage] = []
+        progressMessages: [TaskRunProgressMessage] = [],
+        operations: RunOperationsPresentation = .empty
     ) {
+        self.operations = operations
         var issueRows: [RunIssuePresentation] = []
         var approvalRows: [RuntimePermissionApprovalNoticePresentation] = []
         var technicalRows: [TechnicalOutputPresentation] = []
@@ -662,7 +667,7 @@ struct RunActivityPresentation: Hashable, Sendable {
         issues = issueRows
         approvals = approvalRows
         self.progressMessages = progressMessages
-        tools = Self.groupToolCalls(activity.toolCalls)
+        tools = Self.groupToolCalls(activity.toolCalls, failed: operations.failedUseEventIDs)
         files = activity.fileChanges
         policy = PolicySummaryPresentation(
             manifest: activity.permissionManifest,
@@ -679,7 +684,7 @@ struct RunActivityPresentation: Hashable, Sendable {
     }
 
     private var hasActivityDetails: Bool {
-        !issues.isEmpty || !approvals.isEmpty || !progressMessages.isEmpty || !tools.isEmpty || !files.isEmpty || policy != nil || !technicalOutputs.isEmpty || !stats.isEmpty
+        !issues.isEmpty || !approvals.isEmpty || !progressMessages.isEmpty || !tools.isEmpty || !files.isEmpty || policy != nil || !technicalOutputs.isEmpty || !stats.isEmpty || operations.hasContent
     }
 
     /// Plan items live in the run protocol snapshot rather than activity
@@ -711,9 +716,9 @@ struct RunActivityPresentation: Hashable, Sendable {
         return false
     }
 
-    private static func groupToolCalls(_ calls: [TaskToolCall]) -> [ToolActivityPresentation] {
+    private static func groupToolCalls(_ calls: [TaskToolCall], failed: Set<UUID>) -> [ToolActivityPresentation] {
         var order: [String] = []
-        var grouped: [String: (call: TaskToolCall, count: Int, rawPayloads: [String])] = [:]
+        var grouped: [String: (call: TaskToolCall, count: Int, rawPayloads: [String], failed: Int)] = [:]
 
         for call in calls {
             let key = [
@@ -721,13 +726,15 @@ struct RunActivityPresentation: Hashable, Sendable {
                 call.detailKind.rawValue,
                 call.detail ?? ""
             ].joined(separator: "#")
+            let failure = failed.contains(call.id) ? 1 : 0
             if var existing = grouped[key] {
                 existing.count += 1
                 existing.rawPayloads.append(call.rawPayload)
+                existing.failed += failure
                 grouped[key] = existing
             } else {
                 order.append(key)
-                grouped[key] = (call, 1, [call.rawPayload])
+                grouped[key] = (call, 1, [call.rawPayload], failure)
             }
         }
 
@@ -739,7 +746,8 @@ struct RunActivityPresentation: Hashable, Sendable {
                 detail: group.call.detail,
                 detailKind: group.call.detailKind,
                 count: group.count,
-                rawPayloads: group.rawPayloads
+                rawPayloads: group.rawPayloads,
+                failedCount: group.failed
             )
         }
     }
@@ -748,11 +756,13 @@ struct RunActivityPresentation: Hashable, Sendable {
         let summary = PayloadFormatter.summary(for: result.payload)
         return TechnicalOutputPresentation(
             id: "tool-result-\(result.id.uuidString)",
-            title: "Tool result",
+            title: result.isFailure ? "Failed tool result" : "Tool result",
             summary: summary.summary,
             facts: summary.facts,
             rawPayload: summary.rawPayload,
-            severity: .info
+            // A warning, not an error: a failed call is routine in a run that
+            // went on, and must not force the details open as a run failure does.
+            severity: result.isFailure ? .warning : .info
         )
     }
 
@@ -786,7 +796,8 @@ struct RunActivityPresentation: Hashable, Sendable {
         policy: nil,
         technicalOutputs: [],
         stats: [],
-        prefersExpandedDetails: false
+        prefersExpandedDetails: false,
+        operations: .empty
     )
 
     private init(
@@ -798,8 +809,10 @@ struct RunActivityPresentation: Hashable, Sendable {
         policy: PolicySummaryPresentation?,
         technicalOutputs: [TechnicalOutputPresentation],
         stats: [RunFactPresentation],
-        prefersExpandedDetails: Bool
+        prefersExpandedDetails: Bool,
+        operations: RunOperationsPresentation
     ) {
+        self.operations = operations
         self.issues = issues
         self.approvals = approvals
         self.progressMessages = progressMessages
@@ -845,21 +858,25 @@ enum RunActivityTab: String, CaseIterable, Hashable, Identifiable, Sendable {
 struct RunActivityTabDescriptor: Hashable, Identifiable, Sendable {
     let tab: RunActivityTab
     let count: Int?
+    /// How many there are in all, when `count` is only the ones shown.
+    var total: Int?
 
     var id: RunActivityTab { tab }
 
     var accessibilityLabel: String {
-        guard let count else { return tab.title }
-        return "\(tab.title), \(count)"
+        guard let countText else { return tab.title }
+        return "\(tab.title), \(countText)"
     }
 }
 
 extension RunActivityPresentation {
     func tabDescriptors(hasPlanItems: Bool) -> [RunActivityTabDescriptor] {
         var tabs: [RunActivityTabDescriptor] = []
-        if !progressMessages.isEmpty || hasPlanItems {
+        if !progressMessages.isEmpty || hasPlanItems || operations.hasContent {
             tabs.append(.init(
                 tab: .updates,
+                // The agent's own messages, as the collapsed header counts
+                // them; observed milestones are listed, not counted here.
                 count: progressMessages.isEmpty ? nil : progressMessages.count
             ))
         }
@@ -877,93 +894,11 @@ extension RunActivityPresentation {
         if !technicalOutputs.isEmpty || !stats.isEmpty {
             tabs.append(.init(
                 tab: .logs,
-                count: technicalOutputs.isEmpty ? nil : technicalOutputs.count
+                count: technicalOutputs.isEmpty ? nil : technicalOutputs.count,
+                total: operations.resultsWithOutput
             ))
         }
         return tabs
-    }
-}
-
-enum RunActivityProgressPhaseStatus: Hashable, Sendable {
-    case completed
-    case active
-    case upcoming
-}
-
-struct RunActivityProgressPhasePresentation: Hashable, Identifiable, Sendable {
-    let id: String
-    let title: String
-    let status: RunActivityProgressPhaseStatus
-}
-
-struct RunActivityProgressTimelinePresentation: Hashable, Sendable {
-    static let compactMessageLimit = 3
-    static let historyPageSize = 20
-
-    let phases: [RunActivityProgressPhasePresentation]
-    let messageAttachmentPhaseID: String?
-    let visibleMessages: [TaskRunProgressMessage]
-    let hiddenMessageCount: Int
-    let totalMessageCount: Int
-    let olderMessageCount: Int
-    let newerMessageCount: Int
-    let latestPageAnchorID: UUID?
-    let olderPageAnchorID: UUID?
-    let newerPageAnchorID: UUID?
-    let isBrowsingHistory: Bool
-
-    init(
-        messages: [TaskRunProgressMessage],
-        planItems: [TaskProtocolTodoItem],
-        historyAnchorID: UUID?
-    ) {
-        let firstPendingIndex = planItems.firstIndex { !$0.isDone }
-        phases = planItems.enumerated().map { index, item in
-            let status: RunActivityProgressPhaseStatus
-            if item.isDone {
-                status = .completed
-            } else if index == firstPendingIndex {
-                status = .active
-            } else {
-                status = .upcoming
-            }
-            return RunActivityProgressPhasePresentation(
-                id: item.id,
-                title: item.text,
-                status: status
-            )
-        }
-        messageAttachmentPhaseID = phases.first(where: { $0.status == .active })?.id
-            ?? phases.last?.id
-
-        totalMessageCount = messages.count
-        latestPageAnchorID = messages.last?.id
-        guard let historyAnchorID, !messages.isEmpty else {
-            isBrowsingHistory = false
-            visibleMessages = Array(messages.suffix(Self.compactMessageLimit))
-            hiddenMessageCount = max(0, messages.count - visibleMessages.count)
-            olderMessageCount = hiddenMessageCount
-            newerMessageCount = 0
-            olderPageAnchorID = nil
-            newerPageAnchorID = nil
-            return
-        }
-
-        isBrowsingHistory = true
-        let anchorIndex = messages.firstIndex { $0.id == historyAnchorID } ?? (messages.count - 1)
-        let endIndex = anchorIndex + 1
-        let startIndex = max(0, endIndex - Self.historyPageSize)
-        visibleMessages = Array(messages[startIndex..<endIndex])
-        olderMessageCount = startIndex
-        newerMessageCount = messages.count - endIndex
-        hiddenMessageCount = olderMessageCount + newerMessageCount
-        olderPageAnchorID = startIndex > 0 ? messages[startIndex - 1].id : nil
-        if endIndex < messages.count {
-            let newerEndIndex = min(messages.count, endIndex + Self.historyPageSize)
-            newerPageAnchorID = messages[newerEndIndex - 1].id
-        } else {
-            newerPageAnchorID = nil
-        }
     }
 }
 
