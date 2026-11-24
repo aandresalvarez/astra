@@ -38,6 +38,15 @@ struct GitHubHostControlPolicyTests {
         #expect(reason.contains("jq filters are not exposed"))
     }
 
+    @Test("A refused jq filter points at a flag the command has")
+    func jqDenialAdviceFitsTheCommand() throws {
+        let api = try #require(GitHubHostControlPolicy.denialReason(for: ["api", "user", "--jq", ".login"], environment: [:]))
+        #expect(api.contains("drop --jq and read the JSON response"))
+        #expect(!api.contains("--json"))
+        let view = try #require(GitHubHostControlPolicy.denialReason(for: ["pr", "view", "1", "--json", "title", "-q", ".title"]))
+        #expect(view.contains("use --json and read the JSON output"))
+    }
+
     @Test("API writes and wider requests stay denied", arguments: [
         ["api", "--method", "DELETE", "/repos/example/project"],
         ["api", "-X", "PATCH", "repos/example/project", "-f", "name=x"],

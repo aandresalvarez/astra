@@ -31,8 +31,12 @@ enum GitHubHostControlPolicy {
         // the filter text can keep that out (strings, Unicode, slice bounds,
         // comments), so filters are refused and the agent reads the JSON.
         if containsDeniedFlag(arguments, deniedFlags: jqFlags) {
+            // `gh api` already answers in JSON and has no `--json` flag.
+            let instead = operation.command == "api"
+                ? "drop --jq and read the JSON response"
+                : "use --json and read the JSON output"
             return denial(operation, reason: "jq filters are not exposed because they can read the broker's "
-                + "environment; use --json and read the JSON output")
+                + "environment; \(instead)")
         }
 
         switch operation.command {
