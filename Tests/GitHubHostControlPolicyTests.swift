@@ -17,7 +17,8 @@ struct GitHubHostControlPolicyTests {
         ["api", "repos/{owner}/{repo}/compare/a...b", "--paginate", "--slurp", "--silent"],
         ["api", "repos/example/project/contents/docs/graphql.md"],
         ["api", "user", "--template", "--hostname"],
-        ["api", "--hostname", "github.com", "--cache", "1h", "repos/example/project", "-t", "{{.name}}"]
+        ["api", "--hostname", "github.com", "repos/example/project", "-t", "{{.name}}"],
+        ["api", "repos/example/project", "-H", "accept: application/vnd.github.raw+json", "-H", "X-GitHub-Api-Version: 2022-11-28"]
     ])
     func allowsReads(_ arguments: [String]) {
         #expect(GitHubHostControlPolicy.denialReason(for: arguments) == nil)
@@ -73,9 +74,14 @@ struct GitHubHostControlPolicyTests {
         ["api", "--hostname=enterprise.example", "repos/example/project"],
         ["api", "--hostname", "", "repos/example/project"],
         ["api", "repos/example/project", "-H", "X-HTTP-Method-Override: DELETE"],
+        // Only Accept and X-GitHub-Api-Version headers, and no response cache.
+        ["api", "repos/example/project", "-H", "Authorization: token planted"],
+        ["api", "repos/example/project", "-H", "X-GH-CACHE-DIR: /tmp/planted"],
+        ["api", "repos/example/project", "--cache", "1h"],
+        ["api", "repos/example/project", "--cache=1h"],
         ["api", "repos/example/project", "--verbose"],
         ["api", "repos/example/project", "--template=", "--method=DELETE"],
-        ["api", "repos/example/project", "--cache=", "-XDELETE"],
+        ["api", "repos/example/project", "--template=", "-XDELETE"],
         ["api", "repos/example/project", "repos/other/project"],
         ["api"],
         ["api", "repos/example/project", "--unknown-flag"]

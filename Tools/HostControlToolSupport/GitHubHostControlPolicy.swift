@@ -98,9 +98,15 @@ enum GitHubHostControlPolicy {
     // MARK: api reads
 
     private static let apiFlags: Set<String> = ["--paginate", "--slurp", "--include", "-i", "--silent"]
+    /// No `--cache`: gh writes the response to a cache file, which a planted
+    /// symlink (or an `X-GH-CACHE-DIR` header) could point anywhere.
     private static let apiValuedOptions: Set<String> = [
-        "--jq", "-q", "--template", "-t", "--cache", "--hostname", "--preview", "-p", "--header", "-H", "--method", "-X"
+        "--jq", "-q", "--template", "-t", "--hostname", "--preview", "-p", "--header", "-H", "--method", "-X"
     ]
+    /// The only request headers a read needs. Anything else can change who
+    /// the request authenticates as (`Authorization`), what it does (a method
+    /// override) or where gh writes (`X-GH-CACHE-DIR`).
+    private static let apiAllowedHeaders: Set<String> = ["accept", "x-github-api-version"]
     private static let apiBodyOptions: Set<String> = ["-f", "--raw-field", "-F", "--field", "--input"]
 
     /// `gh api` is exposed for a single GET (or HEAD) of one REST path on
@@ -130,11 +136,12 @@ enum GitHubHostControlPolicy {
                (option.value ?? "").trimmingCharacters(in: .whitespaces).lowercased() != "github.com" {
                 return "only github.com is exposed as the API host"
             }
-            if option.name == "--header" || option.name == "-H",
-               let header = option.value,
-               let colon = header.firstIndex(of: ":"),
-               header[..<colon].lowercased().contains("method") {
-                return "method-override headers are not exposed"
+            if option.name == "--header" || option.name == "-H" {
+                let header = option.value ?? ""
+                let name = header.firstIndex(of: ":").map { header[..<$0] } ?? Substring(header)
+                guard apiAllowedHeaders.contains(name.trimmingCharacters(in: .whitespaces).lowercased()) else {
+                    return "only Accept and X-GitHub-Api-Version headers are exposed"
+                }
             }
         }
         guard positionals.count == 1, let endpoint = positionals.first else {
