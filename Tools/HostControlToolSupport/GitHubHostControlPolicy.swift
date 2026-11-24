@@ -164,10 +164,14 @@ enum GitHubHostControlPolicy {
             return "GraphQL requests are not exposed"
         }
         // gh fills `{owner}`, `{repo}` and `{branch}` (and their `:owner`,
-        // `:repo`, `:branch` forms) in after this check, and any of them can be
-        // named `graphql`. One literal segment keeps the expanded path at two
-        // segments or more, so it can't be GraphQL's.
-        let isPlaceholder = { (segment: String) in segment.contains("{") || segment.hasPrefix(":") }
+        // `:repo`, `:branch` forms, anywhere in a segment) in after this check,
+        // and any of them can complete `graphql`. One segment free of them
+        // keeps the expanded path at two segments or more, so it can't be
+        // GraphQL's.
+        let isPlaceholder = { (segment: String) in
+            segment.contains("{") || segment.hasPrefix(":")
+                || [":owner", ":repo", ":branch"].contains { segment.contains($0) }
+        }
         if segments.allSatisfy(isPlaceholder) {
             return "an endpoint made only of {owner}/{repo}/{branch} placeholders is not exposed"
         }

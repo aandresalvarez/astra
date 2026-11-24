@@ -69,6 +69,8 @@ struct GitHubHostControlPolicyTests {
         ["api", "{owner}/{repo}"],
         ["api", ":branch", "-H", "Accept: application/vnd.github.v4.idl"],
         ["api", "/:owner/:repo"],
+        ["api", "g:branch", "-H", "Accept: application/vnd.github.v4.idl"],
+        ["api", "graph{branch}"],
         // The path gh requests, however the endpoint is spelled.
         ["api", "graphql#ignored", "-H", "Accept: application/vnd.github.v4.idl"],
         ["api", "//GraphQL/?x=1"],
