@@ -130,10 +130,14 @@ def discover_package_paths(path):
             relative_parts = candidate.relative_to(path).parts
             if any(part.startswith(".") for part in relative_parts):
                 continue
-            # Archived packages are kept for later, not installed, also when
-            # the input is the archive folder or a folder inside it (in any
-            # casing: the macOS filesystem ignores case).
-            if "archived" in (part.casefold() for part in path.resolve().parts + relative_parts[:-1]):
+            # Archived packages (capabilities/archived/, in any casing: the macOS
+            # filesystem ignores case) are kept for later, not installed, also
+            # when the input is the archive or a folder inside it. Only that
+            # pair counts, so an unrelated "archived" folder above the
+            # checkout doesn't hide a whole library.
+            ancestors = candidate.resolve().parents
+            if any(folder.name.casefold() == "archived" and folder.parent.name.casefold() == "capabilities"
+                   for folder in ancestors):
                 continue
             files.append(candidate)
         if not files:

@@ -55,7 +55,13 @@ enum RetiredBuiltInActivationCleanup {
         ids: [String] = retiredBuiltInIDs
     ) -> [String] {
         let defined = builtInIDs.union(library.installedPackages().map(\.id))
-        let missing = ids.filter { !defined.contains($0) }
+        // A package stored under the ID that failed to decode (a local import
+        // reusing the ID, briefly unreadable) is not missing: leave it be.
+        let stored = { (id: String) in
+            [library.packageURL(for: id), library.packageManifestURL(for: id)]
+                .contains { FileManager.default.fileExists(atPath: $0.path) }
+        }
+        let missing = ids.filter { !defined.contains($0) && !stored($0) }
         guard !missing.isEmpty else { return [] }
         guard let workspaces = try? modelContext.fetch(FetchDescriptor<Workspace>()).filter({ !$0.isDeleted }) else {
             return missing

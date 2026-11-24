@@ -137,6 +137,17 @@ struct RetiredBuiltInActivationCleanupTests {
         #expect(WorkspaceCapabilityActivation.activation(for: listed.id, in: env.workspace) != nil)
     }
 
+    @Test("A stored package under the ID that can't be read counts as present")
+    func unreadableStoredPackageIsPresent() throws {
+        let env = try upgradedWorkspace(id: "security-auditor")
+        defer { try? FileManager.default.removeItem(at: env.root) }
+        try FileManager.default.createDirectory(at: env.library.directory, withIntermediateDirectories: true)
+        try Data("{ not json".utf8).write(to: env.library.packageURL(for: "security-auditor"))
+        #expect(!env.library.installedPackages().contains { $0.id == "security-auditor" })
+        #expect(cleanup(env) { id, _ in Issue.record("\(id) has a stored definition") } == .init())
+        #expect(WorkspaceCapabilityActivation.activation(for: "security-auditor", in: env.workspace) != nil)
+    }
+
     @Test("A bundled definition counts as present")
     func bundledDefinitionIsPresent() throws {
         let env = try upgradedWorkspace(id: "google-workspace")
