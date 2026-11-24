@@ -886,6 +886,49 @@ struct CapabilityPackageImporterTests {
         #expect(installedPackages.allSatisfy { $0.governance.approvedAt == nil })
     }
 
+    @Test("developer script skips capabilities/archived, and only that folder pair")
+    func developerScriptSkipsArchivedPackages() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-capability-script-archive-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        // An unrelated ancestor named "archived" above the checkout must not count.
+        let library = root.appendingPathComponent("archived/checkout/capabilities", isDirectory: true)
+        let archive = library.appendingPathComponent("archived", isDirectory: true)
+        let homeRoot = root.appendingPathComponent("home", isDirectory: true)
+        for folder in [archive, homeRoot] {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+        let activeID = "local.script-active-\(UUID().uuidString)"
+        let archivedID = "local.script-archived-\(UUID().uuidString)"
+        try encodedData(makePackage(id: activeID, governance: nil)).write(to: library.appendingPathComponent("active.json"))
+        try encodedData(makePackage(id: archivedID, governance: nil)).write(to: archive.appendingPathComponent("old.json"))
+
+        let validated = try runCapabilityPackageScript(arguments: ["validate-dir", library.path])
+        #expect(validated.status == 0, "Script failed: \(validated.output)")
+        #expect(!validated.output.contains("old.json"))
+
+        let installed = try runCapabilityPackageScript(arguments: ["install-dev-dir", library.path], home: homeRoot)
+        #expect(installed.status == 0, "Script failed: \(installed.output)")
+        let devLibrary = homeRoot.appendingPathComponent("Library/Application Support/AstraDev/Capabilities")
+        let installedIDs = try FileManager.default.contentsOfDirectory(at: devLibrary, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "json" }
+            .map { try JSONDecoder().decode(PluginPackage.self, from: Data(contentsOf: $0)).id }
+        #expect(installedIDs == [activeID])
+
+        // The archive itself, or a folder inside it, in any casing, installs nothing.
+        let nested = archive.appendingPathComponent("team", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try encodedData(makePackage(id: archivedID, governance: nil)).write(to: nested.appendingPathComponent("nested.json"))
+        for input in [library.appendingPathComponent("ARCHIVED"), nested] {
+            let direct = try runCapabilityPackageScript(arguments: ["install-dev-dir", input.path], home: homeRoot)
+            #expect(direct.status != 0, "\(input.lastPathComponent): \(direct.output)")
+            #expect(direct.output.contains("emptyLibrary"))
+        }
+        let after = try FileManager.default.contentsOfDirectory(at: devLibrary, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "json" }
+        #expect(after.count == 1)
+    }
+
     @Test("developer script rejects invalid package identity without partial writes")
     func developerScriptRejectsInvalidIdentityWithoutPartialWrites() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
