@@ -391,25 +391,47 @@ struct TaskExecutionEnvironmentClaimTests {
         #expect(LaunchSSHConnectionSnapshot.pinnedConnections(for: first) == nil)
     }
 
-    @Test("A pin is released as it was acquired, and found by its launch, even after the workspace folder moves")
+    @Test("A pin is released as it was acquired, and found only by its own workspace, even after the live workspace moves")
     func pinSurvivesAWorkspaceMove() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
         let task = try fixture.remoteTask("a", connection(path: "/srv/service-a"))
+        let original = try #require(task.workspace?.primaryPath)
+        // The launch works from its own copy of the task, frozen in the folder
+        // the request was submitted for.
+        let launchCopy = AgentTask(title: task.title, goal: task.goal, workspace: Workspace(name: "a", primaryPath: original))
+        launchCopy.id = task.id
         let elsewhere = try fixture.directory("moved")
         SSHConnectionManager.save([connection(host: "other.example.com", path: "/srv/service-b")], workspacePath: elsewhere)
 
-        let pin = LaunchSSHConnectionSnapshot.pin(for: task)
+        let pin = LaunchSSHConnectionSnapshot.pin(for: launchCopy)
         // The live workspace is pointed somewhere else while the run is active.
         task.workspace?.primaryPath = elsewhere
-        // Readers of this launch still get the set it pinned, not the new folder's.
-        #expect(LaunchSSHConnectionSnapshot.connections(for: task).map(\.host) == ["release.example.com"])
+        // The launch's planners still get the set it pinned; a reader holding
+        // the moved live task reads that folder's own file, never the pin.
+        #expect(LaunchSSHConnectionSnapshot.connections(for: launchCopy).map(\.host) == ["release.example.com"])
+        #expect(LaunchSSHConnectionSnapshot.connections(for: task).map(\.host) == ["other.example.com"])
 
         // Releasing ends exactly the entry that was pinned: nothing is left
         // behind to be reused by a later launch.
         LaunchSSHConnectionSnapshot.release(pin)
-        #expect(LaunchSSHConnectionSnapshot.pinnedConnections(for: task) == nil)
-        #expect(LaunchSSHConnectionSnapshot.connections(for: task).map(\.host) == ["other.example.com"])
+        #expect(LaunchSSHConnectionSnapshot.pinnedConnections(for: launchCopy) == nil)
+    }
+
+    @Test("A task that shares an id with a running task elsewhere claims its own machine, not the running one's")
+    func admissionNeverReadsAnotherWorkspacesPin() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let running = try fixture.remoteTask("a", connection(path: "/srv/service-a"))
+        let imported = try fixture.remoteTask("b", connection(host: "other.example.com", path: "/srv/service-b"))
+        imported.id = running.id
+
+        let pin = LaunchSSHConnectionSnapshot.pin(for: running)
+        defer { LaunchSSHConnectionSnapshot.release(pin) }
+
+        #expect(LaunchSSHConnectionSnapshot.pinnedConnections(for: imported) == nil)
+        #expect(TaskExecutionResourceClaimResolver.remoteDirectoryClaims(for: imported, workspaceAccess: .exclusive).map(\.key)
+            == ["other.example.com:22 /"])
     }
 
     @Test("A launch stops when the connections name a remote machine its lease does not cover")

@@ -186,6 +186,28 @@ struct ToolOperationRecordingTests {
         #expect(operations.failedCount == 1)
     }
 
+    @Test("A denial by tool name closes the run's one open call that had no id")
+    func denialClosesAnIDLessCall() throws {
+        let fixture = try Fixture()
+        fixture.run.status = .running
+
+        fixture.record(
+            .toolUse(name: "shell", id: "", inputSummary: "rm -rf build"),
+            .permissionRequested(tool: "shell", reason: "not allowed")
+        )
+
+        let record = try #require(fixture.operations.first)
+        #expect(fixture.operations.count == 1)
+        #expect(record.outcome == .failed)
+        #expect(record.providerStatus == ToolOperationRecord.deniedStatus)
+        #expect(record.tool == "shell")
+        #expect(record.useEventID == fixture.events(TaskEventTypes.Tool.use).first?.id)
+        try fixture.context.save()
+        let operations = TaskThreadSnapshot(task: fixture.task).activityPresentation(for: fixture.run).operations
+        #expect(operations.inFlightCount == 0)
+        #expect(operations.failedCount == 1)
+    }
+
     @Test("A denial that names no open call adds no record")
     func denialWithoutAnOpenCallAddsNothing() throws {
         let fixture = try Fixture()

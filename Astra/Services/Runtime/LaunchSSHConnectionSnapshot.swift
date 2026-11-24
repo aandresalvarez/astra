@@ -79,17 +79,17 @@ enum LaunchSSHConnectionSnapshot {
         pinned[key] = existing.pins > 0 ? existing : nil
     }
 
-    /// The set pinned for this task's launch. A reader may hold the live task
-    /// while the launch pinned its detached copy, whose workspace folder can
-    /// differ if the workspace moved since the request was frozen; when the
-    /// task id has exactly one pin, that is this launch's. With several (rows
-    /// that share an id), only an exact workspace match is used.
+    /// The set pinned for this task id in this workspace folder, and no
+    /// other: a task id alone does not name a launch, so a row that shares
+    /// its id with a running task in another workspace must never be handed
+    /// that task's connections (admission would claim the wrong machine).
+    /// The launch's own planners hold its detached copies, which share the
+    /// pinned folder, so they match exactly.
     static func pinnedConnections(for task: AgentTask) -> [SSHConnection]? {
+        guard let key = key(for: task) else { return nil }
         lock.lock()
         defer { lock.unlock() }
-        if let key = key(for: task), let exact = pinned[key] { return exact.connections }
-        let sameID = pinned.filter { $0.key.taskID == task.id }
-        return sameID.count == 1 ? sameID.first?.value.connections : nil
+        return pinned[key]?.connections
     }
 
     /// The pinned set during a launch, otherwise the live file.

@@ -212,8 +212,17 @@ final class AgentEventRecordingState {
         let named = openToolUseEvents.filter {
             $0.key.hasPrefix(prefix) && !$0.value.isEmpty && toolNamesByRunAndID[$0.key] == tool
         }
-        return named.count == 1 && named.first?.value.count == 1 && named.first.map({ ambiguousGroups[$0.key] == nil }) == true
-            ? named.first.map { String($0.key.dropFirst(prefix.count)) } : nil
+        if named.count == 1, named.first?.value.count == 1, named.first.map({ ambiguousGroups[$0.key] == nil }) == true {
+            return named.first.map { String($0.key.dropFirst(prefix.count)) }
+        }
+        // A call the provider gave no id has no name on record, only its row.
+        // The denial can mean it when it is the run's one open id-less call
+        // and that call used the tool.
+        if named.isEmpty, ambiguousGroups[prefix] == nil, let unnamed = openToolUseEvents[prefix], unnamed.count == 1,
+           RunAnswerSelectionPolicy.toolName(fromUsePayload: unnamed[0].payload) == tool {
+            return ""
+        }
+        return nil
     }
 
     /// The `tool.operation` row still taking this run's records.

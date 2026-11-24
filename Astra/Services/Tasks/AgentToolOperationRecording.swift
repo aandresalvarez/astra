@@ -39,12 +39,10 @@ enum AgentToolOperationRecording {
         recordingState: AgentEventRecordingState?
     ) {
         guard let recordingState, let callID = recordingState.openOperationID(deniedTool: tool, run: run) else { return }
-        recordingState.holdOperationStatus(
-            .init(outcome: .failed, exitCode: nil, providerStatus: ToolOperationRecord.deniedStatus), id: callID, run: run
-        )
         recordFinished(
             callID: callID, isError: true, resultEvent: nil,
-            task: task, run: run, modelContext: modelContext, recordingState: recordingState
+            task: task, run: run, modelContext: modelContext, recordingState: recordingState,
+            status: .init(outcome: .failed, exitCode: nil, providerStatus: ToolOperationRecord.deniedStatus)
         )
     }
 
@@ -58,19 +56,25 @@ enum AgentToolOperationRecording {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        recordingState: AgentEventRecordingState?
+        recordingState: AgentEventRecordingState?,
+        status: AgentEventRecordingState.PendingOperationStatus? = nil
     ) {
         let finished = recordingState?.finishToolOperation(id: callID, run: run)
+        // `status` is the caller's own (a denial); otherwise what the provider
+        // reported for the call, if anything.
+        let status = status ?? finished?.status
         // An error result is a failure whatever the status said, except a call
         // the provider says was cancelled: that stays a cancellation.
-        let reported = finished?.status?.outcome
+        let reported = status?.outcome
         let outcome: AgentOperationOutcome = reported == .cancelled ? .cancelled : (isError ? .failed : (reported ?? .succeeded))
+        // A call with no id has no name on record; its row still says the tool.
+        let rowTool = finished?.use.map { RunAnswerSelectionPolicy.toolName(fromUsePayload: $0.payload) }
         let record = ToolOperationRecord(
             callID: callID,
-            tool: finished?.tool,
+            tool: finished?.tool ?? rowTool.flatMap { $0.isEmpty ? nil : $0 },
             outcome: outcome,
-            exitCode: finished?.status?.exitCode,
-            providerStatus: finished?.status?.providerStatus,
+            exitCode: status?.exitCode,
+            providerStatus: status?.providerStatus,
             hasOutput: resultEvent != nil,
             useEventID: finished?.use?.id,
             resultEventID: resultEvent?.id,
