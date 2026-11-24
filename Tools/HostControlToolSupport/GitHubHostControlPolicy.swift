@@ -20,22 +20,13 @@ enum GitHubHostControlPolicy {
         if containsDeniedFlag(arguments, deniedFlags: browserLaunchFlags) {
             return denial(operation, reason: "opening a browser is not exposed")
         }
-        if containsJQFilter(arguments) {
-            // `gh auth status --json` describes the stored credentials; keep
-            // its output fixed rather than filterable.
-            if operation.command == "auth" {
-                return denial(operation, reason: "credential and token display flags are not exposed")
-            }
-            // gh evaluates `--jq` with gojq, whose `env` and `$ENV` read the
-            // broker's process environment.
-            for filter in jqFilters(in: arguments) {
-                guard let code = jqCode(filter) else {
-                    return denial(operation, reason: "jq comments are not exposed")
-                }
-                if readsEnvironment(code) {
-                    return denial(operation, reason: "a jq filter cannot read the environment (env, $ENV)")
-                }
-            }
+        // gh runs `--jq` filters with gojq, whose `env` and `$ENV` read the
+        // broker's whole process environment, credentials included. No scan of
+        // the filter text can keep that out (strings, Unicode, slice bounds,
+        // comments), so filters are refused and the agent reads the JSON.
+        if containsDeniedFlag(arguments, deniedFlags: jqFlags) {
+            return denial(operation, reason: "jq filters are not exposed because they can read the broker's "
+                + "environment; use --json and read the JSON output")
         }
 
         switch operation.command {
@@ -94,113 +85,6 @@ enum GitHubHostControlPolicy {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         return Operation(command: command, subcommand: subcommand)
-    }
-
-    // MARK: jq filters
-
-    private static func containsJQFilter(_ arguments: [String]) -> Bool {
-        containsDeniedFlag(arguments, deniedFlags: jqFlags)
-    }
-
-    /// Every `--jq`/`-q` value, including `--jq=F`, `-qF` and bundles such as `-cq F`.
-    private static func jqFilters(in arguments: [String]) -> [String] {
-        var filters: [String] = []
-        for (index, token) in arguments.enumerated() {
-            let next = index + 1 < arguments.count ? arguments[index + 1] : ""
-            if token == "--jq" || token == "-q" {
-                filters.append(next)
-            } else if token.hasPrefix("--jq=") {
-                filters.append(String(token.dropFirst("--jq=".count)))
-            } else if token.hasPrefix("-"), !token.hasPrefix("--"), token.count > 2 {
-                let characters = Array(token.dropFirst())
-                for (offset, character) in characters.enumerated() {
-                    if character == "q" {
-                        let rest = String(characters[(offset + 1)...])
-                        filters.append(rest.isEmpty ? next : rest)
-                        break
-                    }
-                    if shortOptionsWithValues.contains(character) {
-                        break
-                    }
-                }
-            }
-        }
-        return filters
-    }
-
-    /// The filter's code with string-literal text blanked out and `\( … )`
-    /// interpolations kept, so `"env"` is data while `"\(env)"` is still code.
-    /// Nil when the filter has a `#` comment: a comment could hide a quote
-    /// from this scan while jq still runs the code around it.
-    private static func jqCode(_ filter: String) -> String? {
-        enum Mode { case code(depth: Int), string }
-        let characters = Array(filter)
-        var stack: [Mode] = [.code(depth: 0)]
-        var code = ""
-        var index = 0
-        while index < characters.count {
-            let character = characters[index]
-            switch stack[stack.count - 1] {
-            case .string:
-                if character == "\\" {
-                    if index + 1 < characters.count, characters[index + 1] == "(" {
-                        stack.append(.code(depth: 0))
-                        code.append(" (")
-                    }
-                    index += 2
-                    continue
-                }
-                if character == "\"" {
-                    stack.removeLast()
-                    code.append(" ")
-                }
-                index += 1
-            case .code(let depth):
-                switch character {
-                case "\"":
-                    stack.append(.string)
-                    code.append(" ")
-                case "#":
-                    return nil
-                case "(":
-                    stack[stack.count - 1] = .code(depth: depth + 1)
-                    code.append(character)
-                case ")" where depth == 0 && stack.count > 1:
-                    stack.removeLast()
-                    code.append(") ")
-                case ")":
-                    stack[stack.count - 1] = .code(depth: max(0, depth - 1))
-                    code.append(character)
-                default:
-                    code.append(character)
-                }
-                index += 1
-            }
-        }
-        return code
-    }
-
-    /// `$ENV` anywhere, and `env` as a jq identifier. A `.env` field access and
-    /// an `env:` object key (after `{` or `,`) read JSON, not the environment.
-    private static func readsEnvironment(_ code: String) -> Bool {
-        if code.range(of: #"(?<![A-Za-z0-9_])\$ENV(?![A-Za-z0-9_])"#, options: .regularExpression) != nil {
-            return true
-        }
-        let characters = Array(code)
-        var searchStart = code.startIndex
-        while let match = code.range(of: #"(?<![A-Za-z0-9_.$])env(?![A-Za-z0-9_])"#,
-                                     options: .regularExpression, range: searchStart..<code.endIndex) {
-            let lower = code.distance(from: code.startIndex, to: match.lowerBound)
-            let upper = code.distance(from: code.startIndex, to: match.upperBound)
-            let previous = characters[..<lower].last { !$0.isWhitespace }
-            let next = characters[upper...].first { !$0.isWhitespace }
-            let isObjectKey = (previous == "{" || previous == ",") && next == ":"
-            if !isObjectKey {
-                return true
-            }
-            searchStart = match.upperBound
-        }
-        return false
     }
 
     // MARK: api reads
