@@ -212,10 +212,13 @@ struct HealthCheckPolicyTests {
 
     // MARK: - Fixtures
 
+    /// Shipped definitions and the archived ones: an archived package's check
+    /// must stay read-only for the day it ships again.
     private func bundledPackageFiles() throws -> [URL] {
         let directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Astra/Resources/Capabilities")
-        return try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        return try [directory, ArchivedCapabilityFixtures.directory]
+            .flatMap { try FileManager.default.contentsOfDirectory(at: $0, includingPropertiesForKeys: nil) }
             .filter { $0.pathExtension == "json" }
     }
 
