@@ -514,8 +514,12 @@ struct ToolOperationRecordingTests {
         #expect(first.operations.inFlightCount == 0)
         #expect(first.operations.summaryLine == "2 operations · 2 finished · 1 failed")
         // The agent said nothing, and what it said is still kept apart from
-        // what was observed.
+        // what was observed: the Updates tab lists the observed lines without
+        // counting them as the agent's updates.
         #expect(first.progressMessages.isEmpty)
+        let updates = try #require(first.tabDescriptors(hasPlanItems: false).first { $0.tab == .updates })
+        #expect(updates.count == nil)
+        #expect(!first.timeline.isEmpty)
         let lines = first.timeline.map(\.text)
         #expect(lines.contains("Bash failed — swift test"))
         #expect(lines.contains("Background job completed · exit code 0 — Build finished"))

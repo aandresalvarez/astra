@@ -875,7 +875,9 @@ extension RunActivityPresentation {
         if !progressMessages.isEmpty || hasPlanItems || operations.hasContent {
             tabs.append(.init(
                 tab: .updates,
-                count: timeline.isEmpty ? nil : timeline.count
+                // The agent's own messages, as the collapsed header counts
+                // them; observed milestones are listed, not counted here.
+                count: progressMessages.isEmpty ? nil : progressMessages.count
             ))
         }
 

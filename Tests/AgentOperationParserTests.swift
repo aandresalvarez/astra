@@ -212,6 +212,23 @@ struct AgentOperationParserTests {
         #expect(events.last == .toolResult(id: "part-4", content: "", isError: true))
     }
 
+    @Test("OpenCode output does not make a failed or cancelled tool a successful result", arguments: [
+        ("error", AgentOperationOutcome.failed, true),
+        ("cancelled", AgentOperationOutcome.cancelled, true),
+        ("completed", AgentOperationOutcome.succeeded, false)
+    ])
+    func openCodeOutputFollowsTheTerminalStatus(status: String, outcome: AgentOperationOutcome, isError: Bool) {
+        let line = #"{"type":"tool_use","part":{"id":"part-5","tool":"bash","state":{"status":""# + status
+            + #"","input":{"command":"make"},"output":"partial build log"}}}"#
+
+        let events = OpenCodeStreamEventParser.parseIdentifiedAgentEvents(line: line)
+
+        #expect(events.contains(.operation(.finished(
+            operationID: "part-5", outcome: outcome, exitCode: nil, providerStatus: status
+        ))))
+        #expect(events.last == .toolResult(id: "part-5", content: "partial build log", isError: isError))
+    }
+
     // MARK: - Antigravity
 
     @Test("An Antigravity DONE step without output is still a result for its step")

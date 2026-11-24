@@ -187,7 +187,11 @@ public enum OpenCodeStreamEventParser {
         let input = state?["input"] as? [String: Any] ?? part["input"] as? [String: Any]
         var events: [ParsedEvent] = [.toolUse(name: name, id: id, input: ToolInputFingerprint.replacingReservedKey(in: input))]
         if let output = state?["output"] as? String, !output.isEmpty {
-            events.append(.toolResult(toolId: id, content: output))
+            // Output does not make a failed or cancelled tool a success: the
+            // terminal status decides, as it does when nothing was printed.
+            events.append(.toolResult(
+                toolId: id, content: output, isError: terminalOutcome(of: state).map { $0 != .succeeded } ?? false
+            ))
         } else if let error = state?["error"] as? String, !error.isEmpty {
             events.append(.toolResult(toolId: id, content: error, isError: true))
         } else if let outcome = terminalOutcome(of: state) {
