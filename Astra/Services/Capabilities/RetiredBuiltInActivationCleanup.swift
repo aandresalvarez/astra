@@ -48,21 +48,15 @@ enum RetiredBuiltInActivationCleanup {
         }
     ) -> Outcome {
         var outcome = Outcome()
-        let workspaces: [Workspace]
-        do {
-            workspaces = try modelContext.fetch(FetchDescriptor<Workspace>()).filter { !$0.isDeleted }
-        } catch {
-            AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
-                "operation": "retired_builtin_cleanup", "error_type": String(describing: error)
-            ], level: .error)
-            return outcome
-        }
         let defined = builtInIDs.union(library.installedPackages().map(\.id))
         for id in ids where !defined.contains(id) {
-            guard workspaces.contains(where: { WorkspaceCapabilityActivation.activation(for: id, in: $0) != nil }) else {
-                continue
-            }
             do {
+                // The workspaces Remove would touch: an activation row, or a
+                // plugin still held only in legacy state after a deferred
+                // activation migration (`PluginRemovalScope`).
+                guard try !PluginRemovalScope.capture(pluginID: id, modelContext: modelContext).workspaces.isEmpty else {
+                    continue
+                }
                 try forget(id, modelContext)
                 outcome.retired.append(id)
                 AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [

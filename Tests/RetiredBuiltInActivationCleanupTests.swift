@@ -55,6 +55,22 @@ struct RetiredBuiltInActivationCleanupTests {
         #expect(WorkspaceCapabilityActivation.retiredActivations(of: env.workspace).map(\.pluginID) == ["stanford-apple-mail"])
     }
 
+    @Test("A former built-in held only in legacy state after a deferred migration is retired too")
+    func pendingLegacyStateIsRetired() throws {
+        let env = try PluginOperationsTests.Environment()
+        defer { try? FileManager.default.removeItem(at: env.root) }
+        env.workspace.legacyEnabledCapabilityIDs = ["stanford-healthcare-graph-mail"]
+        env.workspace.legacyInstalledPluginIDs = ["stanford-healthcare-graph-mail"]
+        env.workspace.legacyInstalledPluginVersions = ["1.0.0"]
+        try env.context.save()
+        #expect(WorkspaceCapabilityActivation.activation(for: "stanford-healthcare-graph-mail", in: env.workspace) == nil)
+        #expect(env.workspace.enabledCapabilityIDs.contains("stanford-healthcare-graph-mail"))
+
+        #expect(cleanup(env).retired == ["stanford-healthcare-graph-mail"])
+        #expect(!env.workspace.enabledCapabilityIDs.contains("stanford-healthcare-graph-mail"))
+        #expect(env.workspace.legacyInstalledPluginIDs.isEmpty)
+    }
+
     @Test("A second pass has nothing left to do")
     func idempotent() throws {
         let env = try upgradedWorkspace(id: "google-drive-browser")
