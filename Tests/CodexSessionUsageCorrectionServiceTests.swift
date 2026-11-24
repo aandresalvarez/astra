@@ -230,6 +230,23 @@ struct CodexSessionUsageCorrectionServiceTests {
         #expect(fixture.correctionEvents.isEmpty)
     }
 
+    @Test("A session with nothing to correct leaves no unsaved edit in the shared context")
+    func untouchedSessionLeavesTheContextSaved() async throws {
+        let fixture = try makeFixture()
+        defer { withExtendedLifetime(fixture.container) {} }
+        for (index, usage) in Self.prodSession.enumerated() {
+            fixture.recordedRun("01a15ac1", at: Double(index) * 60, input: usage.0, output: usage.1)
+        }
+        try fixture.context.save()
+
+        let outcome = await Service.correct(modelContext: fixture.context)
+
+        // The pass runs at every launch while any session is deferred, and startup
+        // passes that refuse a context with unsaved edits run after it.
+        #expect(outcome == .init(tasksCorrected: 0, runsCorrected: 0, sessionsSkipped: 0, completed: true))
+        #expect(!fixture.context.hasChanges)
+    }
+
     @Test("A legacy counter drop starts a new epoch with a reset marker, and sessions are corrected apart")
     func legacyCounterDropIsMarked() async throws {
         let fixture = try makeFixture()

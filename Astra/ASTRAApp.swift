@@ -1024,9 +1024,12 @@ public struct ASTRAApp: App {
                         // launch in its workspace at preflight. Its Remove rewrites
                         // workspace mirrors, which the preflight above has touched
                         // off the main actor; the outbox below cleans its secrets.
-                        _ = MainThreadPhase.tracking("startup_cleanup_retired_builtins") {
-                            RetiredBuiltInActivationCleanup.retireActivations(modelContext: modelContext)
-                        }
+                        // It can wait a while for edits someone else has yet to
+                        // save, so the gate is asked again on the way and after.
+                        await RetiredBuiltInActivationCleanup.retireActivationsOnceSaved(
+                            modelContext: modelContext,
+                            mayRun: { !Task.isCancelled && WorkspaceRecoveryTrust.allowsCleanup })
+                        guard !Task.isCancelled, WorkspaceRecoveryTrust.allowsCleanup else { return }
                         await PluginSecretCleanupOutbox.resumePendingAsync(modelContext: modelContext)
                         guard !Task.isCancelled, WorkspaceRecoveryTrust.allowsCleanup else { return }
                         MainThreadPhase.tracking("startup_cleanup_drop_unconfirmed") {
