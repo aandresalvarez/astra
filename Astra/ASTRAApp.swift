@@ -1047,6 +1047,9 @@ public struct ASTRAApp: App {
                 "operation": "plugin_reconcile", "error_type": String(describing: error)
             ], level: .error)
         }
+        // A former built-in's activation would stop every launch in its
+        // workspace at preflight; Remove retires it with its settings kept.
+        RetiredBuiltInActivationCleanup.retireActivations(modelContext: modelContext)
     }
 
     /// Settles the runs and turn requests a crash or quit left in flight.
