@@ -1264,7 +1264,7 @@ struct CapabilityInstallerTests {
         let (library, root) = makeCapabilityInstallerLibrary()
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "security-auditor" })
+        let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "github-workflow" })
         try library.install(package, sourceMetadata: .builtIn())
 
         do {

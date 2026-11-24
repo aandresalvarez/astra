@@ -309,7 +309,7 @@ struct PluginOperationsTests {
 
     @Test("A plugin that needs an account sign-in ASTRA can't do is listed without Add")
     func oauthPluginIsNotOffered() throws {
-        let google = try #require(PluginCatalog.builtInPackages.first { $0.id == "google-workspace" })
+        let google = try ArchivedCapabilityFixtures.package("google-workspace")
         let reason = try #require(PluginsSurfacePresentation.unavailableReason(for: google))
         var input = PluginsSurfacePresentation.Input(
             package: google, isEnabled: false, pendingSteps: 0, isVisible: true, isRemovable: false

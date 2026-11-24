@@ -276,9 +276,7 @@ struct PluginPackageGovernanceTests {
         let packages = Dictionary(uniqueKeysWithValues: PluginCatalog.builtInPackages.map { ($0.id, $0) })
 
         #expect(packages["github-workflow"]?.governance.riskLevel == .high)
-        #expect(packages["google-drive-browser"]?.governance.riskLevel == .high)
         #expect(packages["redcap-workflow"]?.governance.riskLevel == .restricted)
         #expect(packages["gcloud-workflow"]?.governance.riskLevel == .restricted)
-        #expect(packages["stanford-healthcare-graph-mail"]?.governance.riskLevel == .restricted)
     }
 }

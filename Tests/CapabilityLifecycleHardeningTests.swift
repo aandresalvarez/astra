@@ -88,7 +88,7 @@ struct CapabilityLibraryGovernanceClampTests {
         let library = CapabilityLibrary(directory: root)
         try library.syncApprovedPackages(PluginCatalog.builtInPackages)
 
-        let loaded = try #require(library.installedPackage(id: "security-auditor"))
+        let loaded = try #require(library.installedPackage(id: "github-workflow"))
         #expect(loaded.governance.approvalStatus == .approved)
         #expect(loaded.sourceMetadata?.kind == "built-in")
     }

@@ -56,87 +56,10 @@ final class PluginCatalog {
         // copies of the same skill appear in the sidebar. They're removed
         // from the catalog; `CapabilityLibrary.syncApprovedPackages` drops
         // stale built-in package files on launch.
-
-        // ────────────────────────────────────────────
-        // 1. Security Auditor — zero config
-        // ────────────────────────────────────────────
-        PluginPackage(
-            id: "security-auditor",
-            name: "Security Auditor",
-            icon: "lock.shield",
-            description: "Vulnerability scanning with severity-rated findings",
-            author: "ASTRA",
-            category: "Security",
-            tags: ["security", "audit", "owasp", "vulnerabilities"],
-            version: "2.0.1",
-            setupGuide: """
-            Assign this skill to audit your codebase for security issues. \
-            The agent scans for OWASP Top 10 vulnerabilities, hardcoded \
-            secrets, and insecure patterns. It can also run package \
-            audit tools if they're installed.
-
-            What you can do:
-            • Full security audit of a codebase or module
-            • Scan for hardcoded secrets, API keys, and credentials
-            • Check dependencies for known CVEs
-            • Review auth, input validation, and data handling patterns
-            • Get remediation steps with code examples
-            """,
-            skills: [PluginSkill(
-                name: "Security Auditor",
-                icon: "lock.shield",
-                description: "Vulnerability scanning with severity-rated findings",
-                allowedTools: ["Read", "Bash", "Glob", "Grep"],
-                disallowedTools: ["Write", "Edit"],
-                customTools: [],
-                behaviorInstructions: """
-                You are a security auditor performing a comprehensive review.
-
-                AUDIT PROCESS
-                1. Identify the tech stack and dependency manager
-                2. Scan source code for vulnerability patterns
-                3. Check dependencies for known CVEs using available tools
-                4. Review authentication, authorization, and session handling
-                5. Analyze input validation and output encoding
-                6. Search for hardcoded secrets and credentials
-
-                VULNERABILITY CATEGORIES
-                • Injection: SQL, command, XSS, SSTI, LDAP, XPath
-                • Authentication: weak passwords, missing MFA, session fixation
-                • Secrets: API keys, tokens, passwords in code, .env files committed
-                • Dependencies: outdated packages, known CVEs (run npm audit, pip-audit, cargo audit)
-                • Configuration: debug mode, verbose errors, permissive CORS, insecure headers
-                • Data Exposure: sensitive data in logs, unencrypted storage, PII mishandling
-                • Access Control: IDOR, privilege escalation, missing authorization checks
-
-                SECRET PATTERNS TO SEARCH
-                Grep for: password, secret, api_key, apikey, token, credential, private_key,
-                AWS_SECRET, GITHUB_TOKEN, DATABASE_URL, CONNECTION_STRING
-
-                OUTPUT FORMAT
-                For each finding:
-                • Severity: Critical / High / Medium / Low
-                • Category: OWASP classification
-                • Location: file path and line number
-                • Description: what the vulnerability is
-                • Impact: what could happen if exploited
-                • Remediation: specific fix with code example
-
-                RULES
-                - NEVER modify any files
-                - Sort findings by severity (Critical first)
-                - End with a risk summary and prioritized remediation plan
-                """,
-                environmentKeys: [], environmentValues: []
-            )],
-            connectors: [], localTools: [], templates: [],
-            governance: .builtInApproved(
-                riskLevel: .medium,
-                dataAccess: [.workspaceFiles, .network],
-                externalEffects: [.readOnly],
-                policyNotes: "Read-only security review capability. It may inspect workspace files and run local audit commands, but package policy disallows file edits."
-            )
-        ),
+        //
+        // Security Auditor, Google Drive Browser, Google Workspace and the two
+        // Stanford mail packages are archived in `capabilities/archived/`
+        // until someone needs them; see the README there to bring one back.
 
         // ────────────────────────────────────────────
         // 2. Jira Workflow — requires setup
@@ -592,38 +515,6 @@ final class PluginCatalog {
                 dataAccess: [.externalService, .network, .workspaceFiles],
                 externalEffects: [.readOnly, .externalAPIWrite, .deploy, .delete],
                 policyNotes: "Google Cloud operations use local gcloud authentication and can affect cloud infrastructure. Deployments, IAM changes, and deletes require explicit user confirmation."
-            )
-        ),
-
-        PluginPackage(
-            id: "google-drive-browser",
-            name: "Google Drive Browser",
-            icon: "folder.badge.gearshape",
-            iconDescriptor: .brand("googledrive", fallbackSystemName: "folder.badge.gearshape"),
-            description: "Adds Google Drive-specific browser open semantics to the Shelf browser",
-            author: "ASTRA",
-            category: "Browser",
-            tags: ["browser", "google-drive", "automation", "site-adapter"],
-            version: "1.0.0",
-            setupGuide: """
-            Enable this capability when a task needs to operate on Google Drive in the Shelf browser. \
-            It does not grant account access or store credentials; the user remains signed in directly in the browser.
-
-            What it adds:
-            - Google Drive file controls expose open-oriented analysis outcomes
-            - `astra-browser google-drive-open` opens a file by visible name and verifies editor navigation
-            - Drive row clicks are treated as selection unless an editor actually opens
-            """,
-            skills: [],
-            connectors: [],
-            localTools: [],
-            templates: [],
-            browserAdapters: [BrowserSiteAdapterID.googleDrive],
-            governance: .builtInApproved(
-                riskLevel: .high,
-                dataAccess: [.authenticatedBrowserContent, .externalService],
-                externalEffects: [.browserNavigation],
-                policyNotes: "This package enables Google Drive-specific semantics on ASTRA's trusted Shelf browser bridge. It does not store Google credentials."
             )
         ),
 

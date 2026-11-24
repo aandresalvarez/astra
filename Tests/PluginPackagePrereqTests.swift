@@ -136,9 +136,9 @@ struct PluginPackagePrereqTests {
         #expect(fallback.prerequisites == expected)
     }
 
-    @Test("Built-in Google Drive browser package exposes adapter only")
+    @Test("Archived Google Drive browser package exposes adapter only")
     func builtInGoogleDriveBrowserHasAdapter() {
-        let drive = PluginCatalog.builtInPackages.first { $0.id == "google-drive-browser" }
+        let drive = try? ArchivedCapabilityFixtures.package("google-drive-browser")
         #expect(drive != nil)
         #expect(drive?.category == "Browser")
         #expect(drive?.browserAdapters == [BrowserSiteAdapterID.googleDrive])
@@ -202,9 +202,9 @@ struct PluginPackagePrereqTests {
         }
     }
 
-    @Test("Built-in Stanford Apple Mail package is local and text-only")
+    @Test("Archived Stanford Apple Mail package is local and text-only")
     func builtInStanfordAppleMailUsesLocalMailBridge() {
-        let mail = PluginCatalog.builtInPackages.first { $0.id == "stanford-apple-mail" }
+        let mail = try? ArchivedCapabilityFixtures.package("stanford-apple-mail")
         #expect(mail != nil)
         #expect(mail?.category == "Integrations")
         #expect(mail?.connectors.isEmpty == true)
@@ -218,9 +218,9 @@ struct PluginPackagePrereqTests {
         #expect(mail?.skills.first?.behaviorInstructions.contains("auto-detects exactly one @stanford.edu account") == true)
     }
 
-    @Test("Built-in SHC Graph Mail package is local tool based")
+    @Test("Archived SHC Graph Mail package is local tool based")
     func builtInSHCGraphMailUsesPowerShellBridge() {
-        let mail = PluginCatalog.builtInPackages.first { $0.id == "stanford-healthcare-graph-mail" }
+        let mail = try? ArchivedCapabilityFixtures.package("stanford-healthcare-graph-mail")
         #expect(mail != nil)
         #expect(mail?.category == "Integrations")
         #expect(mail?.connectors.isEmpty == true)
@@ -231,21 +231,6 @@ struct PluginPackagePrereqTests {
         #expect(mail?.skills.first?.behaviorInstructions.contains("Graph PowerShell") == true)
         #expect(mail?.skills.first?.behaviorInstructions.contains("@stanfordhealthcare.org") == true)
         #expect(mail?.skills.first?.behaviorInstructions.contains("Do not use it for @stanford.edu") == true)
-    }
-
-    @Test("Zero-config built-ins have no prerequisites")
-    func builtInZeroConfigHasNoPrereqs() {
-        // `test-runner` and `read-only-explorer` used to live here but
-        // were removed from the catalog because they duplicated skills
-        // every workspace already ships with (see PluginCatalog's
-        // `deprecated` list).
-        let zeroConfigIDs = [
-            "security-auditor"
-        ]
-        for id in zeroConfigIDs {
-            let pkg = PluginCatalog.builtInPackages.first { $0.id == id }
-            #expect(pkg?.prerequisites.isEmpty == true, "\(id) should have no prerequisites")
-        }
     }
 
     @Test("Deprecated package IDs no longer ship in the catalog")

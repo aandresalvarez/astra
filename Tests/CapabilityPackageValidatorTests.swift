@@ -1045,6 +1045,12 @@ private func capabilityPackageFiles(in directory: URL) throws -> [URL] {
     var files: [URL] = []
     while let url = enumerator?.nextObject() as? URL {
         let values = try url.resourceValues(forKeys: Set(keys))
+        // Archived former built-ins are kept for later, not installed, like
+        // `capability_package.sh validate-dir` skips them.
+        if values.isDirectory == true, url.lastPathComponent == "archived" {
+            enumerator?.skipDescendants()
+            continue
+        }
         if values.isRegularFile == true && url.pathExtension == "json" {
             files.append(url)
         }

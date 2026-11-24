@@ -130,6 +130,9 @@ def discover_package_paths(path):
             relative_parts = candidate.relative_to(path).parts
             if any(part.startswith(".") for part in relative_parts):
                 continue
+            # Archived packages are kept for later, not installed.
+            if "archived" in relative_parts[:-1]:
+                continue
             files.append(candidate)
         if not files:
             print(f"BLOCKER emptyLibrary: no capability JSON files found in {path}", file=sys.stderr)
