@@ -1016,6 +1016,14 @@ public struct ASTRAApp: App {
                         MainThreadPhase.tracking("startup_cleanup_connector_outbox") {
                             ConnectorCredentialCleanup.resumePending(modelContext: modelContext)
                         }
+                        guard !Task.isCancelled, WorkspaceRecoveryTrust.allowsCleanup else { return }
+                        // A former built-in's leftover activation would stop every
+                        // launch in its workspace at preflight. Its Remove rewrites
+                        // workspace mirrors, which the preflight above has touched
+                        // off the main actor; the outbox below cleans its secrets.
+                        _ = MainThreadPhase.tracking("startup_cleanup_retired_builtins") {
+                            RetiredBuiltInActivationCleanup.retireActivations(modelContext: modelContext)
+                        }
                         await PluginSecretCleanupOutbox.resumePendingAsync(modelContext: modelContext)
                         guard !Task.isCancelled, WorkspaceRecoveryTrust.allowsCleanup else { return }
                         MainThreadPhase.tracking("startup_cleanup_drop_unconfirmed") {
@@ -1047,9 +1055,6 @@ public struct ASTRAApp: App {
                 "operation": "plugin_reconcile", "error_type": String(describing: error)
             ], level: .error)
         }
-        // A former built-in's activation would stop every launch in its
-        // workspace at preflight; Remove retires it with its settings kept.
-        RetiredBuiltInActivationCleanup.retireActivations(modelContext: modelContext)
     }
 
     /// Settles the runs and turn requests a crash or quit left in flight.

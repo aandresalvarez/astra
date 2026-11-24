@@ -10,9 +10,10 @@ import ASTRAModels
 /// An enabled activation whose definition is gone fails the launch contract
 /// (`PluginQueuedContractValidation`): every new task in that workspace stops
 /// at preflight with `capability_runtime_resources_missing`, though nothing
-/// of the plugin could run. Remove keeps the activation's settings, override
-/// rows, accounts and template IDs as a retired activation, so adding the
-/// plugin back restores them.
+/// of the plugin could run. Remove keeps what a person's Remove keeps (the
+/// namespace seed, override rows, accounts and template IDs) as a retired
+/// activation for a later Add; like that Remove, it does not keep the
+/// activation's non-secret settings or its secrets.
 ///
 /// Only the IDs listed here are retired, and only while no definition for
 /// them exists (bundled or in the library): a local plugin whose file is
@@ -43,10 +44,12 @@ enum RetiredBuiltInActivationCleanup {
         library: CapabilityLibrary = CapabilityLibrary(),
         builtInIDs: Set<String> = Set(PluginCatalog.builtInPackages.map(\.id)),
         ids: [String] = retiredBuiltInIDs,
-        forget: @MainActor (String, ModelContext) throws -> Void = { id, context in
-            try CapabilityCatalogActionService().forgetMissing(pluginID: id, modelContext: context)
-        }
+        forget: (@MainActor (String, ModelContext) throws -> Void)? = nil
     ) -> Outcome {
+        // Remove acts on the same library that said the definition is missing.
+        let forget = forget ?? { id, context in
+            try CapabilityCatalogActionService(library: library).forgetMissing(pluginID: id, modelContext: context)
+        }
         var outcome = Outcome()
         let defined = builtInIDs.union(library.installedPackages().map(\.id))
         for id in ids where !defined.contains(id) {

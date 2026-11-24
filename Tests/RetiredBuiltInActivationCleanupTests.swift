@@ -71,6 +71,17 @@ struct RetiredBuiltInActivationCleanupTests {
         #expect(env.workspace.legacyInstalledPluginIDs.isEmpty)
     }
 
+    @Test("The default Remove acts on the library that found the definition missing")
+    func defaultRemoveUsesTheGivenLibrary() throws {
+        let env = try upgradedWorkspace(id: "security-auditor")
+        defer { try? FileManager.default.removeItem(at: env.root) }
+        let outcome = RetiredBuiltInActivationCleanup.retireActivations(
+            modelContext: env.context, library: env.library, builtInIDs: []
+        )
+        #expect(outcome == .init(retired: ["security-auditor"], failed: []))
+        #expect(WorkspaceCapabilityActivation.activation(for: "security-auditor", in: env.workspace) == nil)
+    }
+
     @Test("A second pass has nothing left to do")
     func idempotent() throws {
         let env = try upgradedWorkspace(id: "google-drive-browser")
