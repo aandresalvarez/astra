@@ -56,6 +56,10 @@ enum GitHubHostControlPolicy {
         case "api":
             var apiArguments = arguments
             if let index = commandIndex(in: arguments) {
+                // The host pin goes right after `api`; behind a `--` it would be an operand.
+                if arguments[..<index].contains("--") {
+                    return denial(operation, reason: "a -- before the api command is not exposed")
+                }
                 apiArguments.remove(at: index)
             }
             if let reason = apiReadDenialReason(apiArguments) {
@@ -103,54 +107,12 @@ enum GitHubHostControlPolicy {
     /// github.com: no fields or body, no GraphQL, no other host, no
     /// method-override header, and no `--verbose` (it prints the request headers).
     private static func apiReadDenialReason(_ arguments: [String]) -> String? {
-        var options: [(name: String, value: String?)] = []
-        var positionals: [String] = []
-        var index = 0
-        while index < arguments.count {
-            let token = arguments[index]
-            let next = index + 1 < arguments.count ? arguments[index + 1] : nil
-            if token == "--" {
-                positionals.append(contentsOf: arguments[(index + 1)...])
-                break
-            }
-            if token.hasPrefix("--") {
-                // Keep an explicit empty value (`--jq=`) so it cannot swallow the next option.
-                let parts = token.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
-                let name = parts[0]
-                if apiFlags.contains(name), parts.count == 1 {
-                    options.append((name, nil))
-                    index += 1
-                } else if apiValuedOptions.contains(name) || apiBodyOptions.contains(name) {
-                    options.append((name, parts.count == 2 ? parts[1] : next))
-                    index += parts.count == 2 ? 1 : 2
-                } else {
-                    return "the option \(name) is not exposed for read-only API requests"
-                }
-                continue
-            }
-            if token.hasPrefix("-"), token.count > 1 {
-                let characters = Array(token.dropFirst())
-                var consumedNext = false
-                for (offset, character) in characters.enumerated() {
-                    let name = "-\(character)"
-                    if apiFlags.contains(name) {
-                        options.append((name, nil))
-                        continue
-                    }
-                    guard apiValuedOptions.contains(name) || apiBodyOptions.contains(name) else {
-                        return "the option \(name) is not exposed for read-only API requests"
-                    }
-                    let rest = String(characters[(offset + 1)...])
-                    options.append((name, rest.isEmpty ? next : rest))
-                    consumedNext = rest.isEmpty
-                    break
-                }
-                index += consumedNext ? 2 : 1
-                continue
-            }
-            positionals.append(token)
-            index += 1
+        let parsed = parseAPI(arguments)
+        if let unexposed = parsed.unexposed {
+            return "the option \(unexposed) is not exposed for read-only API requests"
         }
+        let options = parsed.options
+        let positionals = parsed.positionals
 
         for option in options {
             if apiBodyOptions.contains(option.name) {
@@ -178,14 +140,79 @@ enum GitHubHostControlPolicy {
         guard positionals.count == 1, let endpoint = positionals.first else {
             return "exactly one REST endpoint path is required"
         }
-        let path = endpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/ ")).lowercased()
-        if path == "graphql" || path.hasPrefix("graphql?") {
-            return "GraphQL requests are not exposed"
-        }
         if endpoint.contains("://") {
             return "only endpoint paths on the configured GitHub host are exposed"
         }
+        // The path gh requests: before any query or fragment, percent-decoded,
+        // without empty or `.` segments. `..` could step out of a REST path.
+        let rawPath = String(endpoint.prefix { $0 != "?" && $0 != "#" })
+        let segments = (rawPath.removingPercentEncoding ?? rawPath)
+            .split(separator: "/", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+            .filter { !$0.isEmpty && $0 != "." }
+        if segments.contains("..") {
+            return "endpoint paths with .. segments are not exposed"
+        }
+        if segments == ["graphql"] {
+            return "GraphQL requests are not exposed"
+        }
         return nil
+    }
+
+    /// `gh api`'s options and operands, each option with the value it consumes,
+    /// as gh's flag parser reads them. `unexposed` names the first option that
+    /// is not on the read-only list.
+    private static func parseAPI(_ arguments: [String])
+        -> (options: [(name: String, value: String?)], positionals: [String], unexposed: String?) {
+        var options: [(name: String, value: String?)] = []
+        var positionals: [String] = []
+        var index = 0
+        while index < arguments.count {
+            let token = arguments[index]
+            let next = index + 1 < arguments.count ? arguments[index + 1] : nil
+            if token == "--" {
+                positionals.append(contentsOf: arguments[(index + 1)...])
+                break
+            }
+            if token.hasPrefix("--") {
+                // Keep an explicit empty value (`--jq=`) so it cannot swallow the next option.
+                let parts = token.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+                let name = parts[0]
+                if apiFlags.contains(name), parts.count == 1 {
+                    options.append((name, nil))
+                    index += 1
+                } else if apiValuedOptions.contains(name) || apiBodyOptions.contains(name) {
+                    options.append((name, parts.count == 2 ? parts[1] : next))
+                    index += parts.count == 2 ? 1 : 2
+                } else {
+                    return (options, positionals, name)
+                }
+                continue
+            }
+            if token.hasPrefix("-"), token.count > 1 {
+                let characters = Array(token.dropFirst())
+                var consumedNext = false
+                for (offset, character) in characters.enumerated() {
+                    let name = "-\(character)"
+                    if apiFlags.contains(name) {
+                        options.append((name, nil))
+                        continue
+                    }
+                    guard apiValuedOptions.contains(name) || apiBodyOptions.contains(name) else {
+                        return (options, positionals, name)
+                    }
+                    let rest = String(characters[(offset + 1)...])
+                    options.append((name, rest.isEmpty ? next : rest))
+                    consumedNext = rest.isEmpty
+                    break
+                }
+                index += consumedNext ? 2 : 1
+                continue
+            }
+            positionals.append(token)
+            index += 1
+        }
+        return (options, positionals, nil)
     }
 
     /// What the broker runs for an allowed call. Without `--hostname`, `gh api`
@@ -193,17 +220,17 @@ enum GitHubHostControlPolicy {
     /// with that host's credentials. An API read is pinned to github.com so the
     /// default can't move it; every other command runs as given.
     static func executionArguments(for arguments: [String]) -> [String] {
-        guard normalizedOperation(arguments).command == "api",
-              !arguments.contains(where: { $0 == "--hostname" || $0.hasPrefix("--hostname=") }) else {
+        guard normalizedOperation(arguments).command == "api", let index = commandIndex(in: arguments) else {
             return arguments
         }
-        // After a `--`, gh reads every word as an operand.
-        if let separator = arguments.firstIndex(of: "--") {
-            var pinned = arguments
-            pinned.insert(contentsOf: ["--hostname", "github.com"], at: separator)
-            return pinned
-        }
-        return arguments + ["--hostname", "github.com"]
+        var apiArguments = arguments
+        apiArguments.remove(at: index)
+        // A real `--hostname` option, not a word another option consumed.
+        guard !parseAPI(apiArguments).options.contains(where: { $0.name == "--hostname" }) else { return arguments }
+        // Right after `api`: never inside another option's value, never after a `--`.
+        var pinned = arguments
+        pinned.insert(contentsOf: ["--hostname", "github.com"], at: index + 1)
+        return pinned
     }
 
     /// Index of the first positional argument (the gh command), skipping option values.

