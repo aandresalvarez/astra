@@ -136,9 +136,9 @@ enum GitHubHostControlPolicy {
     ]
     private static let apiBodyOptions: Set<String> = ["-f", "--raw-field", "-F", "--field", "--input"]
 
-    /// `gh api` is exposed for a single GET (or HEAD) of one REST path on the
-    /// configured host: no fields or body, no GraphQL, no method-override
-    /// header, and no `--verbose` (it prints the request headers).
+    /// `gh api` is exposed for a single GET (or HEAD) of one REST path on
+    /// github.com: no fields or body, no GraphQL, no other host, no
+    /// method-override header, and no `--verbose` (it prints the request headers).
     private static func apiReadDenialReason(_ arguments: [String]) -> String? {
         var options: [(name: String, value: String?)] = []
         var positionals: [String] = []
@@ -197,6 +197,12 @@ enum GitHubHostControlPolicy {
                 guard method == "GET" || method == "HEAD" else {
                     return "only GET and HEAD requests are exposed"
                 }
+            }
+            // `--hostname` picks the request host and the credential gh sends
+            // with it (an enterprise token, for one), so keep it on github.com.
+            if option.name == "--hostname",
+               (option.value ?? "").trimmingCharacters(in: .whitespaces).lowercased() != "github.com" {
+                return "only github.com is exposed as the API host"
             }
             if option.name == "--header" || option.name == "-H",
                let header = option.value,
