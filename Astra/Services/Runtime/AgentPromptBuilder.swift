@@ -334,7 +334,7 @@ enum AgentPromptBuilder {
     private static func appendSSHContext(for task: AgentTask, to sections: inout [PromptContextSection]) {
         guard let ws = task.workspace,
               let sshBlock = RemoteWorkspacePromptGuidance.connectionBlock(
-                connections: SSHConnectionManager.load(workspacePath: ws.primaryPath)
+                connections: LaunchSSHConnectionSnapshot.connections(for: task)
               ) else { return }
         appendSection(sshBlock, kind: .supportingContext, to: &sections, sourcePointers: sshSourcePointers(workspace: ws))
     }
@@ -1421,7 +1421,7 @@ enum AgentPromptBuilder {
         var contextParts: [String] = []
 
         if let ws = task.workspace {
-            let connections = SSHConnectionManager.load(workspacePath: ws.primaryPath)
+            let connections = LaunchSSHConnectionSnapshot.connections(for: task)
             if let conn = connections.first, !conn.remotePath.isEmpty {
                 contextParts.append("Remote server: ssh \(conn.configAlias.isEmpty ? conn.sshTarget : conn.configAlias) — remote path: \(conn.remotePath)")
             }
@@ -1704,6 +1704,16 @@ enum AgentPromptBuilder {
         If a file read or write is blocked by policy or sandboxing, say it was blocked and name the path when known.
         Do not describe sandbox retries as full access, elevated access, or broad access unless ASTRA explicitly granted that permission for this run.
         """, kind: .tools, to: &sections, sourcePointers: [sourcePointer(label: "runtime permissions", target: "sandbox reporting contract")])
+
+        appendSection("""
+        Progress updates:
+        The person supervising this task follows it through your short messages, not your tool calls. Write one or two plain sentences when you:
+        - finish investigating and decide what to do, or change direction;
+        - hit a failure or blocker that matters, saying what you will try next;
+        - start something long, such as a full test run, a build, or waiting on a background job;
+        - get an important result and decide the next step.
+        Write these as ordinary assistant text, not ASTRA_EVENT markers. Do not narrate every tool call, and do not repeat tool output or system notifications verbatim.
+        """, kind: .tools, to: &sections, sourcePointers: [sourcePointer(label: "runtime protocol", target: "progress narration")])
 
         appendSection("""
         Astra Run Protocol v1:

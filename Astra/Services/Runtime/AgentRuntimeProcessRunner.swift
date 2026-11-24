@@ -213,6 +213,8 @@ final class AgentRuntimeProcessRunner {
             capabilityResolutionSnapshot: context.capabilityResolutionSnapshot,
             runtimePermissionGrants: context.executionPolicy.permissionGrantsOverride ?? [],
             permissionPolicy: effectivePermissionPolicy,
+            admittedWritableGitMetadataRoots: TaskExecutionResourceClaimResolver
+                .admittedWritableGitMetadataRoots(for: nil, task: context.task),
             gitCredentialContextProvider: { [gitCredentialContextProvider] _, _, _, _ in
                 gitCredentialContextProvider(context)
             },

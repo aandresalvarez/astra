@@ -34,7 +34,10 @@ public enum RuntimeProgressSignals {
         // preceding silence composing. Its success arrives as an empty tool
         // result, which is diagnostic, so without this a run writing one large
         // file after another never refreshed the clock (run 5642).
-        "codex.item.file_change"
+        "codex.item.file_change",
+        // A provider background job ending (Copilot's `shell_completed`
+        // notification): the work the agent was waiting on finished.
+        AgentOperationSignal.backgroundJobFinishedControlType
     ]
 
     public static func isProgressBearingControl(_ type: String) -> Bool {

@@ -196,9 +196,9 @@ struct RemoteWorkspaceSSHRoute: Codable, Equatable, Sendable {
 
     @MainActor
     private static func connectTargets(for task: AgentTask) -> [String] {
-        guard let workspace = task.workspace else { return [] }
+        guard task.workspace != nil else { return [] }
         var seen: Set<String> = []
-        return SSHConnectionManager.load(workspacePath: workspace.primaryPath)
+        return LaunchSSHConnectionSnapshot.connections(for: task)
             .map(connectTarget(for:))
             .filter { !$0.isEmpty && seen.insert($0).inserted }
     }

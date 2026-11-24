@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 import ASTRAModels
 
 enum TaskRuntimeHealthState: String, Equatable, Sendable {
@@ -49,7 +50,8 @@ struct TaskRuntimeHealth: Equatable, Sendable {
         taskStatus: TaskStatus,
         snapshot: TaskThreadSnapshot,
         now: Date = Date(),
-        quietThreshold: TimeInterval = Self.quietThreshold
+        quietThreshold: TimeInterval = Self.quietThreshold,
+        liveActivity: RunLiveActivity? = nil
     ) -> TaskRuntimeHealth {
         guard taskStatus == .running, let run = snapshot.latestRun else {
             return TaskRuntimeHealth(
@@ -74,20 +76,24 @@ struct TaskRuntimeHealth: Equatable, Sendable {
         let fileActivity = snapshot.activity(for: run).fileChanges.max { $0.timestamp < $1.timestamp }
         let progressEvents = runEvents.filter(Self.isProgressEvent)
         let latestProgressEvent = progressEvents.last
-        let latestProgressAt = latestDate(latestProgressEvent?.timestamp, fileActivity?.timestamp)
+        // The stream this process is receiving is the same evidence the
+        // watchdog acts on. Partial output that is never stored still counts
+        // here, so the run cannot be alive to one and quiet to the other.
+        let liveOperationAt = (liveActivity ?? RunLiveActivityStore.shared.activity(for: run.id))?.lastOperationSignalAt
+        let latestProgressAt = latestDate(latestDate(latestProgressEvent?.timestamp, fileActivity?.timestamp), liveOperationAt)
         let latestConversationAt = runEvents.last(where: Self.isConversationActivityEvent)?.timestamp
         let latestWarning = runEvents.last { $0.type == "permission.denied" }
         let latestPlanBlock = runEvents.last { $0.type == "plan.step.blocked" }
-        let laterProgressAfterWarningAt = latestWarning.flatMap { warning -> Date? in
-            let laterEventAt = progressEvents.last { $0.timestamp > warning.timestamp }?.timestamp
-            let laterFileAt = fileActivity.flatMap { $0.timestamp > warning.timestamp ? $0.timestamp : nil }
-            return latestDate(laterEventAt, laterFileAt)
+        // Live operation activity after a warning or a blocked step is
+        // recovery from it, as a stored event would be.
+        func progress(after date: Date) -> Date? {
+            let laterEventAt = progressEvents.last { $0.timestamp > date }?.timestamp
+            let laterFileAt = fileActivity.flatMap { $0.timestamp > date ? $0.timestamp : nil }
+            let laterLiveAt = liveOperationAt.flatMap { $0 > date ? $0 : nil }
+            return latestDate(latestDate(laterEventAt, laterFileAt), laterLiveAt)
         }
-        let laterProgressAfterPlanBlockAt = latestPlanBlock.flatMap { block -> Date? in
-            let laterEventAt = progressEvents.last { $0.timestamp > block.timestamp }?.timestamp
-            let laterFileAt = fileActivity.flatMap { $0.timestamp > block.timestamp ? $0.timestamp : nil }
-            return latestDate(laterEventAt, laterFileAt)
-        }
+        let laterProgressAfterWarningAt = latestWarning.flatMap { progress(after: $0.timestamp) }
+        let laterProgressAfterPlanBlockAt = latestPlanBlock.flatMap { progress(after: $0.timestamp) }
 
         let lastActivityAt = latestDate(
             latestProgressAt,
@@ -191,6 +197,7 @@ struct TaskRuntimeHealth: Equatable, Sendable {
     private static func isProgressEvent(_ event: TaskEventSnapshot) -> Bool {
         switch event.type {
         case "task.started", "agent.response", "agent.thinking", "tool.use", "tool.result",
+             "tool.result.failed", ToolOperationRecord.eventType, BackgroundJobRecord.eventType,
              "task.stats", "task.completed", "astra.todo.replace", "astra.complete",
              "budget.warning",
              "plan.step.started", "plan.step.completed", "plan.step.blocked", "plan.step.skipped",
@@ -322,8 +329,10 @@ struct TaskRuntimeHealth: Equatable, Sendable {
                     return "Skipping a plan step..."
                 case "tool.use":
                     return latestTool.map { "Running \($0)..." } ?? "Running a tool..."
-                case "tool.result":
+                case "tool.result", "tool.result.failed", ToolOperationRecord.eventType:
                     return "Processing tool output..."
+                case BackgroundJobRecord.eventType:
+                    return "A background job finished..."
                 case "agent.response":
                     return "Writing response..."
                 case "agent.thinking":

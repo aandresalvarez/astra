@@ -307,7 +307,7 @@ final class PluginCatalog {
             author: "ASTRA",
             category: "Integrations",
             tags: ["github", "git", "pull-requests", "issues", "ci"],
-            version: "2.4.0",
+            version: "2.4.1",
             setupGuide: """
             Connect your workspace to GitHub using ASTRA's host-control \
             GitHub tool. This capability does not use a stored GitHub \
@@ -371,9 +371,9 @@ final class PluginCatalog {
                 • If the user explicitly asks to post a review on an existing PR, prepare a GitHub Create Review JSON payload as `pr<NUMBER>_review.json` in the task folder. Include `commit_id`, `event` (`COMMENT` or `REQUEST_CHANGES`), `body`, and any inline `comments` with `path`, `line`, `side`, and `body`. Use a new filename such as `pr<NUMBER>_review_2.json` for a later, separate review. ASTRA will show the exact payload and require the user to press Post review. A saved file is a proposal, not a posted review; report it as pending until ASTRA records the GitHub receipt.
                 • In Ask, GitHub writes require ASTRA's confirmed typed publication workflow. In Auto, native developer tools may perform an explicitly requested normal branch/commit/push/draft-PR workflow when Bash is available.
                 • Never merge, force-push, delete branches or repositories, change secrets, or modify repository administration through this inspection capability.
-                • Use `--json` for structured output; do not use `--jq` or `-q` because ASTRA's host-control GitHub broker rejects jq filters.
+                • Use `--json` for structured output; do not use `--jq` or `-q`: the broker refuses jq filters because they can read its environment.
                 • Do not pipe JSON into `python3 - <<'PY'`; the heredoc consumes stdin, so Python will not receive the command output. If Python parsing is required, write JSON to a temp file first or pass it as an argument.
-                • Prefer the brokered `search issues` and `search prs` operations for cross-repository searches; raw GitHub API calls are outside this read-only capability.
+                • Prefer the brokered `search issues` and `search prs` operations for cross-repository searches; raw `api` calls are limited to a single GET of a REST endpoint, without `-f`/`-F` fields or `graphql`.
                 • Include links to issues/PRs in your responses
                 • Never ask the user to paste GitHub credentials or run a refresh command; use login for a signed-out CLI and the capability's Repair access workflow for organization SSO
                 """,

@@ -284,6 +284,9 @@ final class AgentRuntimeStreamDebugCapture: @unchecked Sendable {
         case .completed: "completed"
         case .failed: "failed"
         case .notice: "notice"
+        case .operation(.progress): "operation_progress"
+        case .operation(.finished): "operation_finished"
+        case .operation(.backgroundJobFinished): "background_job_finished"
         case .teamEvent: "team_event"
         case .unknown(_, let type, _): "unknown:\(type)"
         }

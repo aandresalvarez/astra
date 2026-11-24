@@ -10,7 +10,8 @@ enum TaskExecutionResourceClaimResolver {
     static func claims(
         for task: AgentTask,
         acceptedTurn: String? = nil,
-        approvedPlan: TaskPlanPayload? = nil
+        approvedPlan: TaskPlanPayload? = nil,
+        readOnlyInputPaths: [String] = []
     ) -> [TaskExecutionResourceClaim] {
         let access: TaskExecutionResourceAccess = TaskWorkspaceConsultationPolicy.hasCommandAssertions(in: approvedPlan)
             ? .exclusive : workspaceAccess(for: task, acceptedTurn: acceptedTurn)
@@ -33,9 +34,11 @@ enum TaskExecutionResourceClaimResolver {
         // repository run together, while a writer of the main checkout, which
         // holds that directory exclusively, still waits for them and they for
         // it. Writable main checkouts claim their Git metadata because they
-        // have direct write access to .git. Other checkouts retain the
-        // credential grant's Git-intent predicate, including its context-only
-        // known gap documented in TaskExecutionResourceClaimCoverageTests.
+        // have direct write access to .git. Other checkouts follow the
+        // credential grant's Git-intent predicate over the accepted turn,
+        // title, and goal. That grant also reads launch context the claim
+        // never sees; `TaskLaunchResourceResolver.restrictingGitWrites` keeps
+        // such a path read-only unless it was claimed exclusively here.
         let mutatesGitMetadata = task.isolationStrategy == .gitBranch
             || GitOperationIntentDetector.detectsRuntimeGitOperation(
                 prompt: acceptedTurn ?? "",
@@ -48,12 +51,16 @@ enum TaskExecutionResourceClaimResolver {
         let worktreeKeys = worktreeGitMetadataKeys(for: task)
         let sharedKeys = Set(worktreeKeys)
         var seen = Set<String>()
-        return workspaceClaims + readOnlyClaims + (worktreeKeys + credentialKeys).compactMap { rawKey in
+        let gitClaims: [TaskExecutionResourceClaim] = (worktreeKeys + credentialKeys).compactMap { rawKey in
             guard let key = standardizedPath(rawKey), seen.insert(key).inserted else { return nil }
             return TaskExecutionResourceClaim(
                 kind: .gitCommonDirectory, key: key, access: sharedKeys.contains(key) ? .shared : access
             )
         }
+        // Docker mounts and the remote folder follow the workspace access:
+        // see `environmentClaims`.
+        return workspaceClaims + readOnlyClaims + gitClaims
+            + environmentClaims(for: task, workspaceAccess: access, readOnlyInputPaths: readOnlyInputPaths)
     }
 
     /// The verified shared Git directory of a prepared worktree, as claim
@@ -125,8 +132,11 @@ enum TaskExecutionResourceClaimResolver {
             ?? task.isolationStrategy
         let validation = policy.flatMap { ValidationStrategy(rawValue: $0.validationStrategyRawValue) }
             ?? task.validationStrategy
-        let hooks = policy?.templateHooksJSON ?? task.templateHooksJSON
-        return isolation == .gitBranch || validation == .runTests || (!hooks.isEmpty && hooks != "{}")
+        let claimsHookSettings = TemplateHookInjectionPolicy.claimsCheckoutSettings(
+            hooksJSON: policy?.templateHooksJSON ?? task.templateHooksJSON,
+            runtimeRawValue: request?.runtimeIDSnapshot ?? task.runtimeID ?? task.resolvedRuntimeID.rawValue
+        )
+        return isolation == .gitBranch || validation == .runTests || claimsHookSettings
             || TaskWorkspaceConsultationPolicy.hasCommandAssertions(
                 in: TaskWorkspaceConsultationPolicy.acceptedPlan(for: request, task: task))
     }
@@ -141,7 +151,19 @@ enum TaskExecutionResourceClaimResolver {
     /// launch would write a root the request never claimed; a live root equal
     /// to or beneath a claimed one is still covered by the held lease, as the
     /// broker's own path-overlap rule treats it.
-    static func hasWorkspacePathDrift(request: TaskTurnRequest?, task: AgentTask) -> Bool {
+    static func hasWorkspacePathDrift(
+        request: TaskTurnRequest?,
+        task: AgentTask,
+        lease: [TaskResourceLockClaim]? = nil,
+        workspaceAccess: TaskExecutionResourceAccess = .exclusive
+    ) -> Bool {
+        // A Docker mount or remote folder the launch would use that the
+        // admitted lease does not cover is drift too, with or without a
+        // durable request.
+        if !unadmittedMounts(lease: lease, task: task, workspaceAccess: workspaceAccess, request: request).isEmpty
+            || !unadmittedRemoteDirectories(lease: lease, task: task, workspaceAccess: workspaceAccess).isEmpty {
+            return true
+        }
         guard let request else { return false }
         let readOnlyKeys = Set(readOnlyWorkspaceKeys(for: task))
         // A shared claim on a folder the task only reads never covers a root
@@ -163,15 +185,15 @@ enum TaskExecutionResourceClaimResolver {
     }
 
     /// Git common directories the request may write: those it admitted
-    /// exclusively, including intrinsic workflow claims. A pre-claim row is
-    /// admitted under its fallback workspace claim, so it projects that set
-    /// rather than falling through. `nil` only for a direct launch.
+    /// exclusively, including intrinsic workflow claims. A pre-claim row and
+    /// a direct launch with no request are both admitted under the fallback
+    /// workspace claim, so they project that set too. Neither falls through
+    /// to an unrestricted launch: Git metadata nobody claimed stays read-only.
     static func admittedWritableGitMetadataRoots(
         for request: TaskTurnRequest?,
         task: AgentTask
-    ) -> [String]? {
-        guard let request else { return nil }
-        return admissionClaims(for: request, task: task)
+    ) -> [String] {
+        admissionClaims(for: request, task: task)
             .filter { $0.kind == .gitCommonDirectory && $0.access == .exclusive }
             .map(\.key)
     }
@@ -182,11 +204,14 @@ enum TaskExecutionResourceClaimResolver {
     ) -> TaskExecutionResourceAccess {
         // ASTRA itself — not the prompt — rewrites the checkout's
         // `.claude/settings.local.json` before the provider starts and restores
-        // it afterwards (`TaskQueue.injectTemplateHooks`). That mutation happens
-        // whatever the task declares or reads as its intent, so a hook-injecting
-        // task must never resolve to a concurrently-admissible shared claim:
-        // two of them would overwrite each other's backup and strand or drop
-        // executable hooks while the sibling is still running.
+        // it afterwards (`RuntimeTemplateHookScope`, created by
+        // `AgentRuntimeWorker` for the task's code working directory). That
+        // mutation happens whatever the task declares or reads as its intent,
+        // so a hook-injecting task must never resolve to a
+        // concurrently-admissible shared claim: two of them would overwrite
+        // each other's backup and strand or drop executable hooks while the
+        // sibling is still running. A runtime that never reads the file gets
+        // no injection and so no claim; see `TemplateHookInjectionPolicy`.
         if injectsTemplateHooks(task) || requiresExclusiveWorkflowAccess(task) {
             return .exclusive
         }
@@ -210,6 +235,8 @@ enum TaskExecutionResourceClaimResolver {
     /// Every path a runtime may write must participate in admission. The
     /// primary execution root stays first because legacy drift and runtime
     /// access checks use it as the task's canonical workspace boundary.
+    static func workspaceClaimKeys(for task: AgentTask) -> [String] { workspaceKeys(for: task) }
+
     private static func workspaceKeys(for task: AgentTask) -> [String] {
         let access = TaskWorkspaceAccess(task: task)
         let primary = access.codeWorkingDirectory.isEmpty
@@ -254,10 +281,11 @@ enum TaskExecutionResourceClaimResolver {
         }
     }
 
-    /// Mirrors `ClaudeSettingsStore.injectTemplateHooks`' own write guard: an
-    /// empty or `{}` payload never touches the settings file.
     private static func injectsTemplateHooks(_ task: AgentTask) -> Bool {
-        !task.templateHooksJSON.isEmpty && task.templateHooksJSON != "{}"
+        TemplateHookInjectionPolicy.claimsCheckoutSettings(
+            hooksJSON: task.templateHooksJSON,
+            runtimeRawValue: task.runtimeID ?? task.resolvedRuntimeID.rawValue
+        )
     }
 
     /// Shared admission covers the provider boundary only when every

@@ -232,7 +232,21 @@ public enum CopilotStreamEventParser {
         // authoritative tool.execution_complete enters task history.
         if normalized == "tool.execution_partial_result"
             || normalized == "tool.execution_progress" {
-            return [.control(type: normalized)]
+            // The control keeps the watchdog's liveness; the signal names the
+            // operation the activity belongs to, for the live view only.
+            let payload = payloadObject(in: object) ?? object
+            guard let operationID = firstString(in: payload, keys: ["toolCallId", "tool_call_id", "toolUseId", "callId"]) else {
+                return [.control(type: normalized)]
+            }
+            return [.control(type: normalized), .operation(.progress(operationID: operationID))]
+        }
+
+        // A notification the CLI injects for the model is the provider
+        // speaking, not the agent. Left to the text fallback below, a
+        // background shell finishing was recorded as an assistant update with
+        // its `<system_notification>` wrapper intact.
+        if normalized == "system.notification" {
+            return systemNotificationEvents(from: object, type: normalized)
         }
 
         if normalized == "assistant.message_delta" {
@@ -399,6 +413,39 @@ public enum CopilotStreamEventParser {
         return [.unknown(provider: "copilot", type: type, raw: raw)]
     }
 
+    /// `kind.type` values that report a background job ending. The job's own
+    /// id and exit code ride on `kind`; `content` is the model-facing text.
+    private static func systemNotificationEvents(from object: [String: Any], type: String) -> [AgentEvent] {
+        let payload = payloadObject(in: object) ?? object
+        let kind = payload["kind"] as? [String: Any] ?? [:]
+        let kindType = firstString(in: kind, keys: ["type"])?.lowercased() ?? ""
+        let summary = textValue(in: object).map(strippingNotificationTags).flatMap { $0.isEmpty ? nil : $0 }
+        if kindType.hasSuffix("_completed") || kindType.hasSuffix("_failed") {
+            let exitCode = intValue(in: kind, keys: ["exitCode", "exit_code"])
+            let status = firstString(in: kind, keys: ["status"]) ?? (kindType.hasSuffix("_failed") ? "failed" : nil)
+            return [.operation(.backgroundJobFinished(AgentBackgroundJobEvent(
+                jobID: firstString(in: kind, keys: ["shellId", "shell_id", "jobId", "job_id", "agentId", "agent_id", "id"]) ?? "",
+                kind: kindType,
+                outcome: AgentOperationOutcome(providerStatus: status, exitCode: exitCode),
+                exitCode: exitCode,
+                summary: summary
+            )))]
+        }
+        // The control is what the process monitor sees: the provider is alive.
+        guard let summary else { return [.control(type: type)] }
+        return [.control(type: type), .notice(message: summary)]
+    }
+
+    /// The text of a notification without the `<system_notification>` wrapper
+    /// the CLI adds for the model.
+    static func strippingNotificationTags(_ text: String) -> String {
+        text.replacingOccurrences(
+            of: #"</?system[_-]notification[^>]*>"#,
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private static func parsedEvent(from event: AgentEvent) -> ParsedEvent? {
         switch event {
         case .control(let type):
@@ -434,6 +481,8 @@ public enum CopilotStreamEventParser {
             return .result(text: message, costUSD: nil, totalInputTokens: 0, totalOutputTokens: 0, durationMs: nil, numTurns: nil, isError: true)
         case .notice:
             return nil
+        case .operation(let signal):
+            return signal.monitorControlType.map { .control(type: $0) }
         case .fileChange(let path, let kind, let summary, let oldString, let newString, _):
             let toolName = kind.lowercased().contains("write") ? "Write" : "Edit"
             var input: [String: Any] = ["file_path": path]

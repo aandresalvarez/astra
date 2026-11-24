@@ -92,12 +92,20 @@ struct ProviderMessageIdentityTests {
                     + fields + "}}"
             )
         }
-        #expect(result(#""aggregated_output":"rejected","exit_code":1,"status":"failed""#)
-            == [.toolResult(id: "c1", content: "rejected\nexit_code=1\nstatus=failed", isError: true)])
-        #expect(result(#""aggregated_output":"","status":"declined""#)
-            == [.toolResult(id: "c1", content: "status=declined", isError: true)])
-        #expect(result(#""aggregated_output":"ok","exit_code":0,"status":"completed""#)
-            == [.toolResult(id: "c1", content: "ok\nexit_code=0\nstatus=completed", isError: false)])
+        // Each result is preceded by the same outcome as fields, so nothing
+        // has to read the exit code back out of the summary text.
+        #expect(result(#""aggregated_output":"rejected","exit_code":1,"status":"failed""#) == [
+            .operation(.finished(operationID: "c1", outcome: .failed, exitCode: 1, providerStatus: "failed")),
+            .toolResult(id: "c1", content: "rejected\nexit_code=1\nstatus=failed", isError: true)
+        ])
+        #expect(result(#""aggregated_output":"","status":"declined""#) == [
+            .operation(.finished(operationID: "c1", outcome: .failed, exitCode: nil, providerStatus: "declined")),
+            .toolResult(id: "c1", content: "status=declined", isError: true)
+        ])
+        #expect(result(#""aggregated_output":"ok","exit_code":0,"status":"completed""#) == [
+            .operation(.finished(operationID: "c1", outcome: .succeeded, exitCode: 0, providerStatus: "completed")),
+            .toolResult(id: "c1", content: "ok\nexit_code=0\nstatus=completed", isError: false)
+        ])
     }
 
     // MARK: - Antigravity and OpenCode

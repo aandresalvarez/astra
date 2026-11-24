@@ -144,7 +144,7 @@ enum RuntimeWorkspaceContinuation {
         // independently released its resources. Use ordinary admission.
         if leases.isEmpty && previous == nil { return nil }
         return Admission(authorization: authorization, leases: leases,
-            excludedClaims: Set(excluded.filter { $0.resourceKind == .workspace || $0.resourceKind == .gitCommonDirectory }))
+            excludedClaims: Set(excluded.filter { TaskExecutionResourceBroker.isFolderKind($0.resourceKind) }))
     }
 
     /// Whether a reviewed holder still reserves anything. A holder that

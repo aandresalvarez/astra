@@ -41,7 +41,7 @@ enum PluginPromptScopeParityGolden {
   },
   "github-workflow" : {
     "behaviorInstructionsDigest" : [
-      "GitHub Agent:5683:Read,Glob,Grep"
+      "GitHub Agent:5733:Read,Glob,Grep"
     ],
     "behaviorSkills" : [
       "GitHub Agent"

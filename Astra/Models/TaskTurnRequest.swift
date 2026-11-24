@@ -277,7 +277,7 @@ public final class TaskTurnRequest {
             pluginDefinitions: pluginDefinitions,
             accountInventory: accountInventory
         ))
-        self.resourceClaimsJSON = Self.encode(resourceClaims) ?? "[]"
+        self.resourceClaimsJSON = TaskExecutionResourceClaimSet(claims: resourceClaims).encodedJSON() ?? "[]"
     }
 
     /// Import the immutable owner ledger without submitting or admitting work.
@@ -326,11 +326,18 @@ public final class TaskTurnRequest {
         Self.decode(TaskExecutionPolicySnapshotV1.self, from: executionPolicySnapshotJSON)
     }
 
+    /// The frozen claims with the version of the rules that wrote them: the
+    /// envelope `TaskExecutionResourceClaimSet` writes, or a bare array from
+    /// before it. Nil means they cannot be read.
+    public var decodedResourceClaimSet: TaskExecutionResourceClaimSet? {
+        TaskExecutionResourceClaimSet.decode(resourceClaimsJSON)
+    }
+
     /// Nil means the frozen claims cannot be read, not a legacy empty claim
     /// set. Execution and ownership inference must reject that ambiguity.
     /// A successfully decoded empty array retains legacy exclusive admission.
     public var decodedResourceClaims: [TaskExecutionResourceClaim]? {
-        Self.decode([TaskExecutionResourceClaim].self, from: resourceClaimsJSON)
+        decodedResourceClaimSet?.claims
     }
 
     /// Compatibility projection for scheduling, whose empty-claim fallback

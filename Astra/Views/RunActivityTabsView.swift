@@ -77,8 +77,8 @@ struct RunActivityTabStrip: View {
             HStack(spacing: 5) {
                 Text(descriptor.tab.title)
                     .font(Stanford.chatSection())
-                if let count = descriptor.count, count > 0 {
-                    Text("\(count)")
+                if let count = descriptor.countText {
+                    Text(count)
                         .font(Stanford.chatMeta(10))
                         .monospacedDigit()
                         .foregroundStyle(isSelected ? Stanford.lagunita : Stanford.textTertiary)
@@ -142,10 +142,11 @@ struct RunActivitySelectedTabView<ToolsContent: View, PolicyContent: View, LogsC
         case .updates:
             RunActivityProgressTimelineView(
                 presentation: RunActivityProgressTimelinePresentation(
-                    messages: presentation.progressMessages,
+                    messages: presentation.timeline,
                     planItems: planItems,
                     historyAnchorID: updateHistoryAnchorID
                 ),
+                operations: presentation.operations,
                 isRunning: isRunning,
                 onSelectHistoryAnchor: onSelectUpdateHistoryAnchor
             )
@@ -175,8 +176,58 @@ struct RunActivitySelectedTabView<ToolsContent: View, PolicyContent: View, LogsC
     }
 }
 
+/// What the run is doing and what it has done, from its recorded operations:
+/// one compact row above the timeline. While the run is going it refreshes
+/// its ages on a timer, which changes what is displayed and nothing else.
+struct RunActivityOperationsSummaryRow: View {
+    let operations: RunOperationsPresentation
+
+    var body: some View {
+        if operations.isRunning {
+            TimelineView(.periodic(from: .now, by: 5)) { context in
+                content(now: context.date)
+            }
+        } else {
+            content(now: Date())
+        }
+    }
+
+    @ViewBuilder
+    private func content(now: Date) -> some View {
+        let live = operations.runID.flatMap { RunLiveActivityStore.shared.activity(for: $0) }
+        let lines = [
+            operations.currentActivityLine(now: now),
+            operations.summaryLine,
+            operations.freshnessLine(now: now, live: live)
+        ].compactMap { $0 }
+        if !lines.isEmpty {
+            HStack(alignment: .top, spacing: 9) {
+                Image(systemName: operations.isRunning ? "waveform.path.ecg" : "list.bullet.rectangle")
+                    .font(Stanford.ui(11))
+                    .foregroundStyle(Stanford.textTertiary)
+                    .frame(width: 14, height: 16)
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
+                        Text(line)
+                            .font(index == 0 ? Stanford.chatSection() : Stanford.chatMeta())
+                            .foregroundStyle(index == 0 ? Stanford.textSecondary : Stanford.textTertiary)
+                            .lineLimit(2)
+                            .monospacedDigit()
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.vertical, 7)
+            .padding(.horizontal, 7)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Observed activity: \(lines.joined(separator: ". "))")
+        }
+    }
+}
+
 struct RunActivityProgressTimelineView: View {
     let presentation: RunActivityProgressTimelinePresentation
+    var operations: RunOperationsPresentation = .empty
     let isRunning: Bool
     let onSelectHistoryAnchor: (UUID?) -> Void
     /// Updates the user opened: shown whole, as markdown, until closed again.
@@ -184,6 +235,7 @@ struct RunActivityProgressTimelineView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            RunActivityOperationsSummaryRow(operations: operations)
             if presentation.phases.isEmpty {
                 messageTimeline(presentation.visibleMessages)
             } else {
@@ -241,10 +293,11 @@ struct RunActivityProgressTimelineView: View {
                 let isCurrent = isRunning && message.id == messages.last?.id
                 HStack(alignment: .top, spacing: 9) {
                     VStack(spacing: 0) {
-                        Image(systemName: isCurrent ? "circle.inset.filled" : "circle.fill")
-                            .font(Stanford.ui(isCurrent ? 12 : 7))
-                            .foregroundStyle(isCurrent ? Stanford.lagunita : Stanford.textTertiary)
+                        Image(systemName: timelineIcon(message, isCurrent: isCurrent))
+                            .font(Stanford.ui(message.origin == .agent ? (isCurrent ? 12 : 7) : 10))
+                            .foregroundStyle(timelineColor(message, isCurrent: isCurrent))
                             .frame(width: 14, height: 16)
+                            .accessibilityLabel(message.origin == .agent ? "Agent update" : "Observed activity")
                         if index < messages.count - 1 {
                             Rectangle()
                                 .fill(Stanford.separator)
@@ -267,6 +320,21 @@ struct RunActivityProgressTimelineView: View {
                 .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
             }
         }
+    }
+
+    /// An agent's message is a dot; what was observed in the run's operations
+    /// has its own mark, so the two are never mistaken for each other.
+    private func timelineIcon(_ message: TaskRunProgressMessage, isCurrent: Bool) -> String {
+        switch message.origin {
+        case .agent: isCurrent ? "circle.inset.filled" : "circle.fill"
+        case .observed: "gearshape"
+        case .observedFailure: "exclamationmark.triangle"
+        }
+    }
+
+    private func timelineColor(_ message: TaskRunProgressMessage, isCurrent: Bool) -> Color {
+        if message.origin == .observedFailure { return Stanford.poppy }
+        return isCurrent ? Stanford.lagunita : Stanford.textTertiary
     }
 
     /// An update is clamped to a few lines; a long one can be opened in place

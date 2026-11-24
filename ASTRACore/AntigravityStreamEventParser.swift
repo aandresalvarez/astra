@@ -241,6 +241,8 @@ public enum AntigravityStreamEventParser {
             // frame. It would be an assistant message, not the end of the run.
             guard let summary, !summary.isEmpty else { return nil }
             return .text(text: summary)
+        case .operation(let signal):
+            return signal.monitorControlType.map { .control(type: $0) }
         default:
             return nil
         }
