@@ -347,7 +347,7 @@ struct TaskExecutionEnvironmentClaimTests {
         let path = try #require(task.workspace?.primaryPath)
 
         LaunchSSHConnectionSnapshot.pin(for: task)
-        defer { LaunchSSHConnectionSnapshot.release(taskID: task.id) }
+        defer { LaunchSSHConnectionSnapshot.release(for: task) }
         // The file changes after the launch read it: another machine.
         SSHConnectionManager.save([connection(host: "other.example.com", path: "/srv/service-b")], workspacePath: path)
 
@@ -360,10 +360,36 @@ struct TaskExecutionEnvironmentClaimTests {
 
         // Released, readers see the file again, and the next launch's check
         // stops on the folder its lease does not cover.
-        LaunchSSHConnectionSnapshot.release(taskID: task.id)
+        LaunchSSHConnectionSnapshot.release(for: task)
         #expect(LaunchSSHConnectionSnapshot.connections(for: task).map(\.host) == ["other.example.com"])
         #expect(TaskExecutionResourceClaimResolver.hasWorkspacePathDrift(
             request: request, task: task, lease: lease, workspaceAccess: .exclusive))
+    }
+
+    @Test("Tasks that share an id keep their own pinned connections, and one release does not end the other's")
+    func pinnedConnectionsSurviveSharedTaskIDs() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        // Imported rows may carry one task id in two workspaces.
+        let first = try fixture.remoteTask("a", connection(path: "/srv/service-a"))
+        let second = try fixture.remoteTask("b", connection(host: "other.example.com", path: "/srv/service-b"))
+        second.id = first.id
+
+        LaunchSSHConnectionSnapshot.pin(for: first)
+        LaunchSSHConnectionSnapshot.pin(for: second)
+        #expect(LaunchSSHConnectionSnapshot.pinnedConnections(for: first)?.map(\.host) == ["release.example.com"])
+        #expect(LaunchSSHConnectionSnapshot.pinnedConnections(for: second)?.map(\.host) == ["other.example.com"])
+
+        LaunchSSHConnectionSnapshot.release(for: second)
+        #expect(LaunchSSHConnectionSnapshot.pinnedConnections(for: first)?.map(\.host) == ["release.example.com"])
+        #expect(LaunchSSHConnectionSnapshot.pinnedConnections(for: second) == nil)
+
+        // Two launches of one id in one workspace share a pin until both end.
+        LaunchSSHConnectionSnapshot.pin(for: first)
+        LaunchSSHConnectionSnapshot.release(for: first)
+        #expect(LaunchSSHConnectionSnapshot.pinnedConnections(for: first) != nil)
+        LaunchSSHConnectionSnapshot.release(for: first)
+        #expect(LaunchSSHConnectionSnapshot.pinnedConnections(for: first) == nil)
     }
 
     @Test("A launch stops when the connections name a remote machine its lease does not cover")

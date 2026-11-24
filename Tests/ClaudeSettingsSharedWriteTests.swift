@@ -73,6 +73,31 @@ struct ClaudeSettingsSharedWriteTests {
         #expect(rewritten["_astra_policy"] != nil)
     }
 
+    @Test("Rewriting a restricted settings file keeps its permissions and extended attributes")
+    func rewriteKeepsFileMetadata() throws {
+        let checkout = try makeCheckout()
+        defer { try? FileManager.default.removeItem(atPath: checkout) }
+        let path = ClaudeSettingsStore.settingsPath(for: checkout)
+        #expect(ClaudeSettingsStore.ensureSubAgentPermissions(at: checkout, policy: .restricted, allowedTools: ["Read"]))
+        // The owner restricts the file and tags it.
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+        let tag = Array("kept".utf8)
+        #expect(setxattr(path, "com.astra.test.tag", tag, tag.count, 0, 0) == 0)
+
+        // A different projection replaces the file.
+        #expect(ClaudeSettingsStore.ensureSubAgentPermissions(at: checkout, policy: .autonomous, allowedTools: ["Read", "Bash"]))
+
+        let mode = (try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? NSNumber)?.intValue
+        #expect(mode == 0o600)
+        var buffer = [UInt8](repeating: 0, count: 16)
+        let length = getxattr(path, "com.astra.test.tag", &buffer, buffer.count, 0, 0)
+        #expect(length == tag.count)
+        #expect(Array(buffer.prefix(max(0, length))) == tag)
+        // No staging file is left beside it.
+        let siblings = try FileManager.default.contentsOfDirectory(atPath: (path as NSString).deletingLastPathComponent)
+        #expect(siblings == [(path as NSString).lastPathComponent])
+    }
+
     @Test("A symlinked settings file keeps its link")
     func symlinkedSettingsFileSurvives() throws {
         let checkout = try makeCheckout()

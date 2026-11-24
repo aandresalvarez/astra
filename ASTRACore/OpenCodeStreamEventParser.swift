@@ -192,8 +192,11 @@ public enum OpenCodeStreamEventParser {
             events.append(.toolResult(toolId: id, content: error, isError: true))
         } else if let outcome = terminalOutcome(of: state) {
             // The status ends the tool whether or not it printed anything: a
-            // completed `true` is finished, not still running.
-            events.append(.toolResult(toolId: id, content: "", isError: outcome == .failed))
+            // completed `true` is finished, not still running. Anything but
+            // success is an error result, a cancellation included, so nothing
+            // downstream takes it for work that was done; its outcome signal
+            // still says which it was.
+            events.append(.toolResult(toolId: id, content: "", isError: outcome != .succeeded))
         }
         return events
     }

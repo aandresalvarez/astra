@@ -258,10 +258,35 @@ enum ClaudeSettingsStore {
             // Replaced in one step, so a provider that starts while a sibling
             // launch rewrites the file reads the old or the new settings,
             // never a partial one. A symlinked settings file keeps its link.
-            try data.write(to: URL(fileURLWithPath: path).resolvingSymlinksInPath(), options: .atomic)
+            try replaceAtomically(URL(fileURLWithPath: path).resolvingSymlinksInPath(), with: data, fileManager: fileManager)
             return true
         } catch {
             return false
+        }
+    }
+
+    /// Writes `data` beside `target` and swaps it in. An existing file keeps
+    /// its permissions, ACL and extended attributes: a plain atomic write
+    /// replaces the file with a new one in the process's default mode, which
+    /// would loosen a settings file its owner had restricted. The new copy
+    /// takes the old permissions before the swap, so it is never readable more
+    /// widely than the file it replaces.
+    private static func replaceAtomically(_ target: URL, with data: Data, fileManager: FileManager) throws {
+        guard fileManager.fileExists(atPath: target.path) else {
+            try data.write(to: target, options: .atomic)
+            return
+        }
+        let staged = target.deletingLastPathComponent()
+            .appendingPathComponent(".\(target.lastPathComponent).astra-\(UUID().uuidString)")
+        do {
+            try data.write(to: staged)
+            if let permissions = try fileManager.attributesOfItem(atPath: target.path)[.posixPermissions] {
+                try fileManager.setAttributes([.posixPermissions: permissions], ofItemAtPath: staged.path)
+            }
+            _ = try fileManager.replaceItemAt(target, withItemAt: staged)
+        } catch {
+            try? fileManager.removeItem(at: staged)
+            throw error
         }
     }
 }

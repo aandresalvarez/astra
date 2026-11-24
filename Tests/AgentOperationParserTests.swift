@@ -200,6 +200,18 @@ struct AgentOperationParserTests {
         #expect(events.last == .toolResult(id: "part-3", content: "", isError: true))
     }
 
+    @Test("An OpenCode tool cancelled without a message is an error result that stays a cancellation")
+    func openCodeCancellationIsAnErrorResult() {
+        let line = #"{"type":"tool_use","part":{"id":"part-4","tool":"bash","state":{"status":"cancelled","input":{"command":"sleep 60"}}}}"#
+
+        let events = OpenCodeStreamEventParser.parseIdentifiedAgentEvents(line: line)
+
+        #expect(events.contains(.operation(.finished(
+            operationID: "part-4", outcome: .cancelled, exitCode: nil, providerStatus: "cancelled"
+        ))))
+        #expect(events.last == .toolResult(id: "part-4", content: "", isError: true))
+    }
+
     // MARK: - Antigravity
 
     @Test("An Antigravity DONE step without output is still a result for its step")

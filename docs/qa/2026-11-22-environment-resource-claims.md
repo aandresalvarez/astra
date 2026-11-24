@@ -40,19 +40,19 @@ enforces a folder boundary, the machine is the scope.
 
 - The machine is the route `ssh` takes: a connection with an SSH config alias
   is keyed by the alias, whatever its host fields say.
-- Different hosts, and separate folders on one host, run together.
-- If the connections file names a remote folder the admitted lease does not
-  cover when the launch starts, the run stops with the workspace-drift error,
-  as for a changed mount.
+- Tasks on different machines run together. Tasks on one machine wait for
+  each other, whatever folders their connections name.
+- If the connections file names a machine the admitted lease does not cover
+  when the launch starts, the run stops with the workspace-drift error, as for
+  a changed mount.
 - A launch reads the connections once (`LaunchSSHConnectionSnapshot`), before
   its remote-workspace preflight, and its drift check, launch grants, SSH
   route, remote job helper and prompt all use that one read until the run
   ends. A change to the file after that read does not reach the launch; the
   next launch reads it again.
-- The same folder, a folder containing it and a folder inside it conflict,
-  read-only or not.
-- Where two folders cannot be compared locally (`~/app` against `/srv/app`, or
-  a path that climbs out of a home), they are treated as overlapping.
+- Imported tasks may share one task id. The pinned read is kept per task id
+  and workspace folder and counted, so two such launches neither replace nor
+  release each other's.
 
 This is new waiting a person can notice: tasks in separate local worktrees, or separate
 workspaces, that reach the same remote machine now run one after another. "Review workspace" covers these waits as it does local
