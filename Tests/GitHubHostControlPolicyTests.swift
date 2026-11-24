@@ -18,7 +18,7 @@ struct GitHubHostControlPolicyTests {
         ["api", "--hostname", "github.com", "--cache", "1h", "repos/example/project", "-t", "{{.name}}"]
     ])
     func allowsReads(_ arguments: [String]) {
-        #expect(GitHubHostControlPolicy.denialReason(for: arguments) == nil)
+        #expect(GitHubHostControlPolicy.denialReason(for: arguments, environment: [:]) == nil)
     }
 
     /// gojq's `env` and `$ENV` read the broker's environment, and no scan of the
@@ -65,6 +65,21 @@ struct GitHubHostControlPolicyTests {
     func deniesNonReads(_ arguments: [String]) throws {
         let reason = try #require(GitHubHostControlPolicy.denialReason(for: arguments))
         #expect(reason.contains("does not allow GitHub operation"))
+    }
+
+    @Test("An inherited GH_HOST away from github.com needs an explicit github.com host")
+    func defaultHostStaysOnGitHub() throws {
+        let arguments = ["api", "user"]
+        let enterprise = ["GH_HOST": "ghe.example.com"]
+        let reason = try #require(GitHubHostControlPolicy.denialReason(for: arguments, environment: enterprise))
+        #expect(reason.contains("GH_HOST points away from github.com"))
+        #expect(GitHubHostControlPolicy.denialReason(
+            for: ["api", "--hostname", "github.com", "user"], environment: enterprise
+        ) == nil)
+        #expect(GitHubHostControlPolicy.denialReason(for: arguments, environment: ["GH_HOST": "github.com"]) == nil)
+        #expect(GitHubHostControlPolicy.denialReason(for: arguments, environment: [:]) == nil)
+        // Only `api` is new here; other reads already follow GH_HOST.
+        #expect(GitHubHostControlPolicy.denialReason(for: ["pr", "view", "1"], environment: enterprise) == nil)
     }
 
     @Test("Browser launch and token display stay denied with their own reasons")

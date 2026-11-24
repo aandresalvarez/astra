@@ -12,7 +12,13 @@ enum GitHubHostControlPolicy {
     private static let jqFlags: Set<String> = ["--jq", "-q"]
     private static let authStatusDeniedFlags: Set<String> = ["--show-token", "-t"]
 
+    /// gh inherits the broker's environment, so `GH_HOST` there is the host an
+    /// `api` call without `--hostname` reaches.
     static func denialReason(for arguments: [String]) -> String? {
+        denialReason(for: arguments, environment: ProcessInfo.processInfo.environment)
+    }
+
+    static func denialReason(for arguments: [String], environment: [String: String]) -> String? {
         let operation = normalizedOperation(arguments)
         if containsDeniedFlag(arguments, deniedFlags: tokenDisplayFlags) {
             return denial(operation, reason: "credential and token display flags are not exposed")
@@ -54,7 +60,7 @@ enum GitHubHostControlPolicy {
             if let index = commandIndex(in: arguments) {
                 apiArguments.remove(at: index)
             }
-            if let reason = apiReadDenialReason(apiArguments) {
+            if let reason = apiReadDenialReason(apiArguments, defaultHost: environment["GH_HOST"]) {
                 return denial(operation, reason: reason + ". "
                     + "For inline PR comments use pr review-threads NUMBER --repo OWNER/REPO")
             }
@@ -98,7 +104,7 @@ enum GitHubHostControlPolicy {
     /// `gh api` is exposed for a single GET (or HEAD) of one REST path on
     /// github.com: no fields or body, no GraphQL, no other host, no
     /// method-override header, and no `--verbose` (it prints the request headers).
-    private static func apiReadDenialReason(_ arguments: [String]) -> String? {
+    private static func apiReadDenialReason(_ arguments: [String], defaultHost: String?) -> String? {
         var options: [(name: String, value: String?)] = []
         var positionals: [String] = []
         var index = 0
@@ -170,6 +176,13 @@ enum GitHubHostControlPolicy {
                header[..<colon].lowercased().contains("method") {
                 return "method-override headers are not exposed"
             }
+        }
+        // Without `--hostname`, gh sends the request to `GH_HOST` with that
+        // host's credentials; hold that default to github.com as well.
+        if !options.contains(where: { $0.name == "--hostname" }),
+           let host = defaultHost?.trimmingCharacters(in: .whitespaces).lowercased(),
+           !host.isEmpty, host != "github.com" {
+            return "GH_HOST points away from github.com; pass --hostname github.com"
         }
 
         guard positionals.count == 1, let endpoint = positionals.first else {
