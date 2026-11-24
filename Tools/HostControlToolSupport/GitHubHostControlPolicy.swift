@@ -28,8 +28,13 @@ enum GitHubHostControlPolicy {
             }
             // gh evaluates `--jq` with gojq, whose `env` and `$ENV` read the
             // broker's process environment.
-            if jqFilters(in: arguments).contains(where: readsEnvironment) {
-                return denial(operation, reason: "a jq filter cannot read the environment (env, $ENV)")
+            for filter in jqFilters(in: arguments) {
+                guard let code = jqCode(filter) else {
+                    return denial(operation, reason: "jq comments are not exposed")
+                }
+                if readsEnvironment(code) {
+                    return denial(operation, reason: "a jq filter cannot read the environment (env, $ENV)")
+                }
             }
         }
 
@@ -123,9 +128,79 @@ enum GitHubHostControlPolicy {
         return filters
     }
 
-    /// `env` and `$ENV` as jq identifiers; a `.env` field access reads JSON, not the environment.
-    private static func readsEnvironment(_ filter: String) -> Bool {
-        filter.range(of: #"(?<![A-Za-z0-9_.$])\$?(env|ENV)(?![A-Za-z0-9_])"#, options: .regularExpression) != nil
+    /// The filter's code with string-literal text blanked out and `\( … )`
+    /// interpolations kept, so `"env"` is data while `"\(env)"` is still code.
+    /// Nil when the filter has a `#` comment: a comment could hide a quote
+    /// from this scan while jq still runs the code around it.
+    private static func jqCode(_ filter: String) -> String? {
+        enum Mode { case code(depth: Int), string }
+        let characters = Array(filter)
+        var stack: [Mode] = [.code(depth: 0)]
+        var code = ""
+        var index = 0
+        while index < characters.count {
+            let character = characters[index]
+            switch stack[stack.count - 1] {
+            case .string:
+                if character == "\\" {
+                    if index + 1 < characters.count, characters[index + 1] == "(" {
+                        stack.append(.code(depth: 0))
+                        code.append(" (")
+                    }
+                    index += 2
+                    continue
+                }
+                if character == "\"" {
+                    stack.removeLast()
+                    code.append(" ")
+                }
+                index += 1
+            case .code(let depth):
+                switch character {
+                case "\"":
+                    stack.append(.string)
+                    code.append(" ")
+                case "#":
+                    return nil
+                case "(":
+                    stack[stack.count - 1] = .code(depth: depth + 1)
+                    code.append(character)
+                case ")" where depth == 0 && stack.count > 1:
+                    stack.removeLast()
+                    code.append(") ")
+                case ")":
+                    stack[stack.count - 1] = .code(depth: max(0, depth - 1))
+                    code.append(character)
+                default:
+                    code.append(character)
+                }
+                index += 1
+            }
+        }
+        return code
+    }
+
+    /// `$ENV` anywhere, and `env` as a jq identifier. A `.env` field access and
+    /// an `env:` object key (after `{` or `,`) read JSON, not the environment.
+    private static func readsEnvironment(_ code: String) -> Bool {
+        if code.range(of: #"(?<![A-Za-z0-9_])\$ENV(?![A-Za-z0-9_])"#, options: .regularExpression) != nil {
+            return true
+        }
+        let characters = Array(code)
+        var searchStart = code.startIndex
+        while let match = code.range(of: #"(?<![A-Za-z0-9_.$])env(?![A-Za-z0-9_])"#,
+                                     options: .regularExpression, range: searchStart..<code.endIndex) {
+            let lower = code.distance(from: code.startIndex, to: match.lowerBound)
+            let upper = code.distance(from: code.startIndex, to: match.upperBound)
+            let previous = characters[..<lower].last { !$0.isWhitespace }
+            let next = characters[upper...].first { !$0.isWhitespace }
+            let isObjectKey = (previous == "{" || previous == ",") && next == ":"
+            if !isObjectKey {
+                return true
+            }
+            searchStart = match.upperBound
+        }
+        return false
     }
 
     // MARK: api reads
@@ -151,7 +226,8 @@ enum GitHubHostControlPolicy {
                 break
             }
             if token.hasPrefix("--") {
-                let parts = token.split(separator: "=", maxSplits: 1).map(String.init)
+                // Keep an explicit empty value (`--jq=`) so it cannot swallow the next option.
+                let parts = token.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
                 let name = parts[0]
                 if apiFlags.contains(name), parts.count == 1 {
                     options.append((name, nil))
