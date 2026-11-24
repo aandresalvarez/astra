@@ -225,6 +225,17 @@ struct RetiredBuiltInActivationCleanupTests {
         #expect(WorkspaceCapabilityActivation.activation(for: "security-auditor", in: env.workspace) != nil)
     }
 
+    @Test("A package folder stored under the ID without its manifest counts as present")
+    func manifestlessPackageFolderIsPresent() throws {
+        let env = try upgradedWorkspace(id: "google-drive-browser")
+        defer { try? FileManager.default.removeItem(at: env.root) }
+        try FileManager.default.createDirectory(
+            at: env.library.packageManifestURL(for: "google-drive-browser").deletingLastPathComponent(),
+            withIntermediateDirectories: true)
+        #expect(cleanup(env) { id, _ in Issue.record("\(id) has stored package storage") } == .init())
+        #expect(!RetiredBuiltInActivationCleanup.awaitsRetirement("google-drive-browser", library: env.library))
+    }
+
     @Test("A bundled definition counts as present")
     func bundledDefinitionIsPresent() throws {
         let env = try upgradedWorkspace(id: "google-workspace")

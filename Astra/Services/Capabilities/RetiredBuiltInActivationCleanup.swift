@@ -147,8 +147,10 @@ enum RetiredBuiltInActivationCleanup {
 
     /// A package stored under the ID that failed to decode (a local import
     /// reusing the ID, briefly unreadable) is not missing: leave it be.
+    /// The JSON file, or the package folder even without its manifest, as the
+    /// library itself counts occupied storage.
     nonisolated private static func isStored(_ id: String, in library: CapabilityLibrary) -> Bool {
-        [library.packageURL(for: id), library.packageManifestURL(for: id)]
+        [library.packageURL(for: id), library.packageManifestURL(for: id).deletingLastPathComponent()]
             .contains { FileManager.default.fileExists(atPath: $0.path) }
     }
 
