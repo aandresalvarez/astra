@@ -133,6 +133,31 @@ struct RetiredBuiltInActivationCleanupTests {
         #expect(WorkspaceCapabilityActivation.overridingRowIDs(of: env.workspace).contains(tool.id))
     }
 
+    /// Remove saved, then the rows' own save failed (or the app crashed in
+    /// between): the activation is gone but the rows are still in scope.
+    @Test("Pending V20 rows without an activation still block a queued launch until they are retired")
+    func pendingRowsWithoutActivationBlockLaunch() throws {
+        let env = try PluginOperationsTests.Environment()
+        defer { try? FileManager.default.removeItem(at: env.root) }
+        let tool = LocalTool(name: "stanford-apple-mail", toolDescription: "Mail", toolType: "cli", command: "stanford-apple-mail")
+        tool.workspace = env.workspace
+        env.context.insert(tool)
+        WorkspaceCapabilityActivation.recordPendingOverride(
+            componentID: "tool:stanford-apple-mail", rowID: tool.id, pluginID: "stanford-apple-mail", in: env.workspace)
+        try env.context.save()
+        #expect(WorkspaceCapabilityActivation.activation(for: "stanford-apple-mail", in: env.workspace) == nil)
+        let issues = { PluginQueuedContractValidation.issues(in: env.workspace, packages: [], library: env.library).map(\.packageID) }
+        // Only a request-time copy is judged.
+        #expect(issues().isEmpty)
+        env.workspace.launchPluginDefinitions = []
+        #expect(issues() == ["stanford-apple-mail"])
+
+        env.workspace.launchPluginDefinitions = nil
+        #expect(cleanup(env).retired == ["stanford-apple-mail"])
+        env.workspace.launchPluginDefinitions = []
+        #expect(issues().isEmpty)
+    }
+
     @Test("Unsaved edits in the shared context defer the pass instead of being committed with it")
     func unsavedEditsDefer() throws {
         let env = try PluginOperationsTests.Environment()

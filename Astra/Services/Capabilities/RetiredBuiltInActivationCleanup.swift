@@ -166,6 +166,13 @@ enum RetiredBuiltInActivationCleanup {
             || WorkspaceCapabilityActivation.pendingLegacyState(of: workspace).enabledPluginIDs.contains(id)
     }
 
+    /// Listed former built-ins with no stored definition whose V20 pending rows
+    /// `workspace` still holds in scope (`PluginQueuedContractValidation`).
+    nonisolated static func pendingRowPluginIDs(in workspace: Workspace,
+                                                library: CapabilityLibrary = CapabilityLibrary()) -> [String] {
+        retiredBuiltInIDs.filter { holdsPendingOverrides($0, workspace) && !isStored($0, in: library) }
+    }
+
     nonisolated private static func holdsPendingOverrides(_ id: String, _ workspace: Workspace) -> Bool {
         WorkspaceCapabilityActivation.retiredActivations(of: workspace)
             .contains { $0.pluginID == id && !($0.pendingOverrides ?? []).isEmpty }
