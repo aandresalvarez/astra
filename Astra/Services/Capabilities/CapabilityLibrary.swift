@@ -40,11 +40,46 @@ struct CapabilityLibrary {
     let fileManager: FileManager
     let publishesChanges: Bool
 
-    init(directory: URL = Self.capabilitiesDirectory(), fileManager: FileManager = .default, publishesChanges: Bool = true) {
+    init(directory: URL = Self.defaultDirectory(), fileManager: FileManager = .default, publishesChanges: Bool = true) {
         self.directory = directory
         self.fileManager = fileManager
         self.publishesChanges = publishesChanges
     }
+
+    /// Where a library made without a directory lives: the channel's
+    /// Application Support in the app, a scratch folder of this process in a
+    /// test run.
+    ///
+    /// The test binary resolves Application Support to the production folder
+    /// (`AstraDev` under `ASTRA_CHANNEL=dev`), and much of the plugin code
+    /// opens `CapabilityLibrary()` itself rather than taking one. A suite that
+    /// installs a fixture for that code to find was therefore installing it
+    /// into the person's real library: by November 2026 one test without a
+    /// cleanup had left 92 `add-commit-<uuid>.json` "Reports" plugins in the
+    /// production app's Manage Capabilities list, and a dozen other suites
+    /// wrote there for the length of a test. So the default no longer reaches
+    /// Application Support in a test run at all, not even to read.
+    static func defaultDirectory() -> URL {
+        testRunDirectory ?? capabilitiesDirectory()
+    }
+
+    /// The default library of a test run, `nil` in every other process. It is
+    /// one folder for the whole process, as the Application Support library
+    /// was, so a fixture one call installs is the one the next call reads.
+    /// Its parent is this run's alone because the library's journal,
+    /// staging and quarantine folders are siblings of it. The name carries a
+    /// UUID as well as the PID: nothing deletes the folder when the process
+    /// exits, and a later run that is handed a recycled PID would otherwise
+    /// reopen its packages, approvals and journals.
+    static let testRunDirectory: URL? = AppLogger.isRunningTests
+        ? FileManager.default.temporaryDirectory
+            .appendingPathComponent("AstraTests", isDirectory: true)
+            .appendingPathComponent(
+                "AppSupport-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString)",
+                isDirectory: true
+            )
+            .appendingPathComponent("Capabilities", isDirectory: true)
+        : nil
 
     static func capabilitiesDirectory(
         for channel: AppChannel = .current,

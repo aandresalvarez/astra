@@ -238,7 +238,11 @@ struct PluginStartupCredentialMigrationTests {
             var package = env.package
             package.connectors[0].credentialHints.append(.init(key: "SECOND_TOKEN", hint: "Second token",
                 format: .init(pattern: "[A-F0-9]{32}", expectation: "32 hexadecimal characters")))
-            try CapabilityLibrary().install(package)
+            // The migration reads its creator from the default library, which
+            // the whole test process shares: leave nothing in it.
+            let library = CapabilityLibrary()
+            try library.install(package)
+            defer { _ = try? library.removePackage(id: package.id) }
             let accepted = "A19F2C8D4B6E7A03C5D9F1B2468E0A7C"
             let raw = valid ? "  " + accepted + "  " : "legacy-wrong-shape"
             account.credentialKeys.append("SECOND_TOKEN")

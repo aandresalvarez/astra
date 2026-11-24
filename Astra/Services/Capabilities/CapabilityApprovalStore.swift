@@ -113,10 +113,21 @@ struct CapabilityApprovalStore {
     private let fileManager: FileManager
     private let publishesChanges: Bool
 
-    init(directory: URL = Self.approvalsDirectory(), fileManager: FileManager = .default, publishesChanges: Bool = true) {
+    init(directory: URL = Self.defaultDirectory(), fileManager: FileManager = .default, publishesChanges: Bool = true) {
         self.directory = directory
         self.fileManager = fileManager
         self.publishesChanges = publishesChanges
+    }
+
+    /// Where a store made without a directory lives: the channel's
+    /// Application Support in the app, and in a test run a scratch folder
+    /// beside the default library's (`CapabilityLibrary.defaultDirectory`).
+    /// The test binary resolves Application Support to the production folder,
+    /// where suites had left over a thousand "approved by user" records for
+    /// their fixtures.
+    static func defaultDirectory() -> URL {
+        CapabilityLibrary.testRunDirectory?.deletingLastPathComponent()
+            .appendingPathComponent("CapabilityApprovals", isDirectory: true) ?? approvalsDirectory()
     }
 
     static func approvalsDirectory(

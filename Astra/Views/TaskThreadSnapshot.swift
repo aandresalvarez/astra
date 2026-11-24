@@ -19,6 +19,9 @@ enum TaskConversationItem: Identifiable, Sendable {
     case recapResult(text: String, timestamp: Date)
     /// Something ASTRA did outside the machine, read from its receipt.
     case externalAction(ExternalActionRecord)
+    /// An error event with no run (a refused turn, or a check after the run),
+    /// so no run's activity shows it. `count` > 1: the same error repeated.
+    case systemError(eventID: UUID, text: String, timestamp: Date, count: Int)
 
     var id: String {
         switch self {
@@ -31,6 +34,7 @@ enum TaskConversationItem: Identifiable, Sendable {
         case .systemInfo(_, let timestamp, _): return "system-\(timestamp.timeIntervalSince1970)"
         case .recapResult(_, let timestamp): return "recap-\(timestamp.timeIntervalSince1970)"
         case .externalAction(let record): return "external-\(record.id.uuidString)"
+        case .systemError(let eventID, _, _, _): return "system-error-\(eventID.uuidString)"
         }
     }
 
@@ -1245,6 +1249,8 @@ struct TaskThreadSnapshot: Sendable {
                 }
             case "recap.result":
                 items.append(.recapResult(text: event.payload, timestamp: event.timestamp))
+            case "error":
+                items.append(.systemError(eventID: event.id, text: event.payload, timestamp: event.timestamp, count: 1))
             default:
                 break
             }
@@ -1268,6 +1274,12 @@ struct TaskThreadSnapshot: Sendable {
     static func coalescedSystemTimelineItems(_ items: [TaskConversationItem]) -> [TaskConversationItem] {
         var output: [TaskConversationItem] = []
         for item in items {
+            if case let .systemError(_, text, timestamp, count) = item,
+               case let .systemError(firstID, previousText, _, previousCount)? = output.last, text == previousText {
+                output[output.count - 1] = .systemError(
+                    eventID: firstID, text: text, timestamp: timestamp, count: previousCount + count)
+                continue
+            }
             guard case let .systemInfo(text, timestamp, count) = item,
                   case let .systemInfo(previousText, _, previousCount)? = output.last else {
                 output.append(item)
@@ -1304,6 +1316,9 @@ struct TaskThreadSnapshot: Sendable {
         switch event.type {
         case "user.message":
             return !isBrokerRuntimePermissionResumePrompt(event.payload)
+        case "error":
+            // An error inside a run is shown by that run's activity.
+            return event.runID == nil
         case "agent.response",
              TaskPlanConversationEventTypes.userMessage,
              TaskPlanConversationEventTypes.assistantMessage,
@@ -1592,6 +1607,8 @@ struct TaskThreadTranscriptMetrics: Equatable, Sendable {
                 agentResponseCount += 1
             case .externalAction(let record):
                 text = record.contextLine
+            case .systemError(_, let value, _, _):
+                text = value
             }
             let scan = try Self.scan(text, cancellationCheck: cancellationCheck)
             textBytes += scan.bytes
