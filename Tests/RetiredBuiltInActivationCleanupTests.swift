@@ -111,6 +111,28 @@ struct RetiredBuiltInActivationCleanupTests {
             .map(\.packageID) == ["security-auditor"])
     }
 
+    /// Until the pass retires them, a V20 migration's pending rows are still
+    /// in scope; a launch must not run them, so the contract keeps failing.
+    @Test("A retired built-in with pending V20 rows still fails the launch contract until they are retired")
+    func pendingRowsKeepTheLaunchBlocked() throws {
+        let env = try upgradedWorkspace(id: "stanford-healthcare-graph-mail")
+        defer { try? FileManager.default.removeItem(at: env.root) }
+        let tool = LocalTool(name: "stanford-graph-mail", toolDescription: "Mail", toolType: "cli", command: "stanford-graph-mail")
+        tool.workspace = env.workspace
+        env.context.insert(tool)
+        WorkspaceCapabilityActivation.recordPendingOverride(
+            componentID: "tool:stanford-graph-mail", rowID: tool.id, pluginID: "stanford-healthcare-graph-mail", in: env.workspace)
+        try env.context.save()
+        let activation = try #require(WorkspaceCapabilityActivation.activation(for: "stanford-healthcare-graph-mail", in: env.workspace))
+        activation.launchWorkspaceID = env.workspace.id
+        let issues = { PluginQueuedContractValidation.issues(in: env.workspace, packages: [], library: env.library).map(\.packageID) }
+        #expect(issues() == ["stanford-healthcare-graph-mail"])
+        activation.launchWorkspaceID = nil
+
+        #expect(cleanup(env).retired == ["stanford-healthcare-graph-mail"])
+        #expect(WorkspaceCapabilityActivation.overridingRowIDs(of: env.workspace).contains(tool.id))
+    }
+
     @Test("Unsaved edits in the shared context defer the pass instead of being committed with it")
     func unsavedEditsDefer() throws {
         let env = try PluginOperationsTests.Environment()
@@ -233,7 +255,7 @@ struct RetiredBuiltInActivationCleanupTests {
             at: env.library.packageManifestURL(for: "google-drive-browser").deletingLastPathComponent(),
             withIntermediateDirectories: true)
         #expect(cleanup(env) { id, _ in Issue.record("\(id) has stored package storage") } == .init())
-        #expect(!RetiredBuiltInActivationCleanup.awaitsRetirement("google-drive-browser", library: env.library))
+        #expect(!RetiredBuiltInActivationCleanup.awaitsRetirement("google-drive-browser", in: env.workspace, library: env.library))
     }
 
     @Test("A bundled definition counts as present")

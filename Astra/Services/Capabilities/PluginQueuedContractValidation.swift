@@ -17,7 +17,7 @@ enum PluginQueuedContractValidation {
             // its ID: nothing of it can run, and startup retires the activation
             // (`RetiredBuiltInActivationCleanup`). Until it has, a launch goes
             // on without it instead of failing.
-            if package == nil, RetiredBuiltInActivationCleanup.awaitsRetirement(activation.pluginID, library: library) {
+            if package == nil, RetiredBuiltInActivationCleanup.awaitsRetirement(activation.pluginID, in: workspace, library: library) {
                 return nil
             }
             guard package.map({ PluginRuntimeProjection.awaitsUpdate(activation, to: $0) }) ?? true else { return nil }

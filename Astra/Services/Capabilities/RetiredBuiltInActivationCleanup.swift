@@ -48,8 +48,14 @@ enum RetiredBuiltInActivationCleanup {
     /// can run. A stored package that failed to decode is a local plugin, not a
     /// retired one, and keeps failing the launch contract
     /// (`PluginQueuedContractValidation`).
-    nonisolated static func awaitsRetirement(_ pluginID: String, library: CapabilityLibrary = CapabilityLibrary()) -> Bool {
+    ///
+    /// Not while `workspace` still holds rows a V20 migration kept as the
+    /// plugin's pending overrides: those stay in scope as authored rows until
+    /// this pass retires them, so the launch keeps failing rather than run them.
+    nonisolated static func awaitsRetirement(_ pluginID: String, in workspace: Workspace,
+                                             library: CapabilityLibrary = CapabilityLibrary()) -> Bool {
         retiredBuiltInIDs.contains(pluginID) && !isStored(pluginID, in: library)
+            && !holdsPendingOverrides(pluginID, workspace)
     }
 
     /// The listed IDs with no definition that still hold something in a
@@ -160,7 +166,7 @@ enum RetiredBuiltInActivationCleanup {
             || WorkspaceCapabilityActivation.pendingLegacyState(of: workspace).enabledPluginIDs.contains(id)
     }
 
-    private static func holdsPendingOverrides(_ id: String, _ workspace: Workspace) -> Bool {
+    nonisolated private static func holdsPendingOverrides(_ id: String, _ workspace: Workspace) -> Bool {
         WorkspaceCapabilityActivation.retiredActivations(of: workspace)
             .contains { $0.pluginID == id && !($0.pendingOverrides ?? []).isEmpty }
     }
