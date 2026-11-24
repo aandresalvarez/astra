@@ -131,8 +131,8 @@ def discover_package_paths(path):
             if any(part.startswith(".") for part in relative_parts):
                 continue
             # Archived packages are kept for later, not installed, also when
-            # the archive folder itself is the input.
-            if "archived" in (path.resolve().name,) + relative_parts[:-1]:
+            # the input is the archive folder or a folder inside it.
+            if "archived" in path.resolve().parts + relative_parts[:-1]:
                 continue
             files.append(candidate)
         if not files:
