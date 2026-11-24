@@ -309,6 +309,36 @@ struct WorkspaceConfigCapabilityImportTrustTests {
         withExtendedLifetime(container) {}
     }
 
+    @Test("A universal skill restored from a task snapshot stays out of the workspace's lists, and the task keeps it")
+    @MainActor
+    func restoredUniversalSkillIsHiddenAndStillPinned() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        var config = minimalConfig()
+        let snapshotID = UUID().uuidString
+        let now = Date()
+        config.tasks = [Manager.TaskConfig(
+            title: "Old task", goal: "Export", status: "completed", inputs: [], constraints: [],
+            acceptanceCriteria: [], tokenBudget: 1000, tokensUsed: 0, model: "m", costUSD: 0, maxTurns: 5,
+            createdAt: now, updatedAt: now, runs: [], events: [],
+            skillIDs: [snapshotID], skillNames: [],
+            skillSnapshots: [SkillSnapshotConfig(
+                id: snapshotID, name: "Read-Only", icon: "eye", description: "", allowedTools: ["Read", "Glob", "Grep"],
+                disallowedTools: [], customTools: [], behaviorInstructions: "Do not modify files.", environmentKeys: [],
+                environmentValues: [], isGlobal: false, connectorIDs: [], localToolIDs: [],
+                connectorSnapshots: [], localToolSnapshots: [], createdAt: now, updatedAt: now
+            )]
+        )]
+
+        let workspace = Manager.importWorkspaceResult(from: config, modelContext: context, capabilityTrust: .validate(verifier)).workspace
+        let restored = try #require(workspace.skills.first { $0.name == "Read-Only" + Skill.restoredNameSuffix })
+        #expect(restored.isSystemBuiltIn)
+        #expect(!restored.isGlobal && !restored.isBuiltIn)
+        #expect(WorkspaceCapabilities(workspace: workspace).workspaceSkills.isEmpty)
+        #expect(workspace.tasks.first?.skills.map(\.id) == [restored.id])
+        withExtendedLifetime(container) {}
+    }
+
     @Test("Templates and schedules follow the fresh IDs of the skills a validated import creates")
     @MainActor
     func validatedImportRemapsTemplateAndScheduleSkills() throws {

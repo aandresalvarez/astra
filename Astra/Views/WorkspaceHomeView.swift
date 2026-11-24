@@ -480,7 +480,7 @@ struct WorkspaceHomeView: View {
 
             if capabilityRowCount > 0 {
                 VStack(alignment: .leading, spacing: 2) {
-                    ForEach(Array(workspace.skills.enumerated()), id: \.offset) { _, skill in
+                    ForEach(Array(listedSkills.enumerated()), id: \.offset) { _, skill in
                         capabilityRow(icon: skill.icon, fallbackIcon: "sparkles", name: skill.name, kind: "Skill")
                     }
                     ForEach(Array(workspace.connectors.enumerated()), id: \.offset) { _, connector in
@@ -1245,8 +1245,14 @@ struct WorkspaceHomeView: View {
         return "\(words) word\(words == 1 ? "" : "s")"
     }
 
+    /// The workspace's skills as its capability lists show them: without the
+    /// universal ones every workspace has (`Skill.isSystemBuiltIn`).
+    private var listedSkills: [Skill] {
+        workspace.skills.filter { !$0.isSystemBuiltIn }
+    }
+
     private var capabilityRowCount: Int {
-        workspace.skills.count + workspace.connectors.count + workspace.localTools.count
+        listedSkills.count + workspace.connectors.count + workspace.localTools.count
     }
 
     private var capabilityCount: Int {
@@ -1255,7 +1261,7 @@ struct WorkspaceHomeView: View {
 
     private var capabilitySubtitle: String {
         let parts: [String] = [
-            countPhrase(workspace.skills.count, singular: "skill", plural: "skills"),
+            countPhrase(listedSkills.count, singular: "skill", plural: "skills"),
             countPhrase(workspace.connectors.count, singular: "connector", plural: "connectors"),
             countPhrase(workspace.localTools.count, singular: "tool", plural: "tools")
         ].compactMap { $0 }

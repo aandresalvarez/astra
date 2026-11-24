@@ -45,6 +45,23 @@ struct SkillModelTests {
         #expect(skill.tasks.isEmpty)
     }
 
+    @Test("A restored copy of a universal skill is hidden like the one it copies",
+          arguments: ["Read-Only (Restored)", "Safe Bash (Restored)", "Test Runner (Restored)", "  Read-Only (Restored) "])
+    func restoredUniversalSkillIsSystemBuiltIn(name: String) {
+        #expect(Skill.isRestoredBuiltInName(name))
+        #expect(Skill(name: name).isSystemBuiltIn)
+        // Not a built-in name: a run keeps a task's pin of the copy by the
+        // request's wording, not unconditionally.
+        #expect(!Skill.isBuiltInName(name))
+    }
+
+    @Test("Only a universal skill's restored copy is hidden",
+          arguments: ["GCloud Agent (Restored)", "Read-Only (Restored) notes", "Read-Only(Restored)", "(Restored)", "Local Analyst"])
+    func otherNamesAreNotRestoredUniversalSkills(name: String) {
+        #expect(!Skill.isRestoredBuiltInName(name))
+        #expect(!Skill(name: name).isSystemBuiltIn)
+    }
+
     @Test("Skill stores custom values")
     func skillCustomValues() {
         let skill = Skill(

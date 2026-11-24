@@ -39,12 +39,27 @@ public final class Skill {
         "Safe Executor"
     ]
 
+    /// What a workspace import appends to the name of a skill it recreates
+    /// from a task's saved snapshot.
+    public static let restoredNameSuffix = " (Restored)"
+
     public var isSystemBuiltIn: Bool {
-        isBuiltIn || Self.isBuiltInName(name)
+        isBuiltIn || Self.isBuiltInName(name) || Self.isRestoredBuiltInName(name)
     }
 
     public static func isBuiltInName(_ name: String) -> Bool {
         builtInNames.contains(name.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// A universal skill an import recreated from a task snapshot, as the
+    /// workspace's own row named "<built-in name> (Restored)": the same skill
+    /// every workspace already has, so it is hidden like the one it copies.
+    /// Not a built-in name: the row stays the workspace's, and a run keeps a
+    /// task's pin of it by the request's wording, as before.
+    public static func isRestoredBuiltInName(_ name: String) -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasSuffix(restoredNameSuffix) else { return false }
+        return isBuiltInName(String(trimmed.dropLast(restoredNameSuffix.count)))
     }
 
     public var workspace: Workspace?

@@ -86,6 +86,38 @@ struct WorkspaceCapabilitiesTests {
         #expect(capabilities.availableGlobalSkills.map(\.name) == ["Disabled Shared", "Shared Analyst"])
     }
 
+    @Test("A workspace's restored copies of the universal skills are not listed as its capabilities")
+    @MainActor
+    func restoredUniversalSkillCopiesAreNotListed() {
+        let workspace = Workspace(name: "Restored", primaryPath: "/tmp/restored-universal-skills")
+        for name in ["Read-Only (Restored)", "Safe Bash (Restored)", "Test Runner (Restored)",
+                     "GCloud Agent (Restored)", "Local Analyst"] {
+            Skill(name: name, allowedTools: ["Read"]).workspace = workspace
+        }
+        let capabilities = WorkspaceCapabilities(workspace: workspace)
+        let listed = ["GCloud Agent (Restored)", "Local Analyst"]
+
+        #expect(capabilities.workspaceSkills.map(\.name) == listed)
+        #expect(capabilities.activeSkills.map(\.name) == listed)
+        // What the rail and Manage Capabilities show.
+        let packages = CapabilityCatalogInventory.packages(catalogPackages: [], capabilities: capabilities)
+        #expect(packages.map(\.name) == listed)
+        #expect(workspace.skills.count == 5)
+    }
+
+    @Test("The workspace home and the workspace editor list skills without the universal ones")
+    func workspaceScreensListSkillsThroughTheUniversalFilter() throws {
+        let views = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Astra/Views")
+        for file in ["WorkspaceHomeView.swift", "WorkspaceDetailView.swift"] {
+            let source = try String(contentsOf: views.appendingPathComponent(file), encoding: .utf8)
+            let filtered = "workspace.skills.filter { !$0.isSystemBuiltIn }"
+            #expect(source.components(separatedBy: filtered).count == 2, "\(file) declares one filtered list")
+            #expect(!source.replacingOccurrences(of: filtered, with: "").contains("workspace.skills"),
+                    "\(file) lists the workspace's skills only through that list")
+        }
+    }
+
     @Test("active connectors include local, enabled shared, and explicitly enabled skill attachments")
     @MainActor
     func activeConnectorsMergeAllSources() {
