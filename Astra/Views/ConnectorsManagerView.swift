@@ -992,6 +992,9 @@ struct ConnectorEditorView: View {
                     isAwaitingKeychainAccess = false
                     try Task.checkCancellation()
                     guard oauthSignInGeneration == generation, !Self.isGone(connector) else { throw CancellationError() }
+                    // The refresh on becoming active was skipped while waiting,
+                    // and publishing does not refresh these itself.
+                    refreshUnreadableCredentialKeys()
                     if case .refused(let diagnosis) = outcome {
                         throw KeychainAccessRefused(errorDescription: presentation(
                             for: .keychainWriteFailed(diagnosis: diagnosis), key: "the sign-in").message)
@@ -1161,8 +1164,13 @@ struct ConnectorEditorView: View {
             // The account can be deleted behind the dialog.
             guard !Self.isGone(connector) else { return }
             switch outcome {
-            case .open: save()
-            case .refused(let diagnosis): refused(diagnosis)
+            case .open:
+                save()
+            case .refused(let diagnosis):
+                // No save runs to refresh these, and the refresh on becoming
+                // active was skipped while waiting.
+                refreshUnreadableCredentialKeys()
+                refused(diagnosis)
             }
         }
     }
