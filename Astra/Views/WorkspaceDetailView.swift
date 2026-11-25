@@ -329,10 +329,10 @@ struct WorkspaceDetailView: View {
         }
     }
 
-    /// The workspace's skills as its capability lists show them: without the
-    /// universal ones every workspace has (`Skill.isSystemBuiltIn`).
+    /// The workspace's own skill rows, without the universal skills and the
+    /// rows restored under their names.
     private var listedSkills: [Skill] {
-        workspace.skills.filter { !$0.isSystemBuiltIn }.sorted { $0.name < $1.name }
+        WorkspaceCapabilities.listedSkillRows(of: workspace).sorted { $0.name < $1.name }
     }
 
     /// Shared reachability carried in the section heading instead of a status

@@ -314,6 +314,12 @@ struct WorkspaceConfigCapabilityImportTrustTests {
     func restoredUniversalSkillIsHiddenAndStillPinned() throws {
         let container = try makeContainer()
         let context = container.mainContext
+        // As in every real store: the shared universal skill already exists.
+        let universal = Skill(name: "Read-Only", allowedTools: ["Read", "Glob", "Grep"])
+        universal.isGlobal = true
+        universal.isBuiltIn = true
+        context.insert(universal)
+        try context.save()
         var config = minimalConfig()
         let snapshotID = UUID().uuidString
         let now = Date()
@@ -332,10 +338,18 @@ struct WorkspaceConfigCapabilityImportTrustTests {
 
         let workspace = Manager.importWorkspaceResult(from: config, modelContext: context, capabilityTrust: .validate(verifier)).workspace
         let restored = try #require(workspace.skills.first { $0.name == "Read-Only" + Skill.restoredNameSuffix })
-        #expect(restored.isSystemBuiltIn)
-        #expect(!restored.isGlobal && !restored.isBuiltIn)
-        #expect(WorkspaceCapabilities(workspace: workspace).workspaceSkills.isEmpty)
-        #expect(workspace.tasks.first?.skills.map(\.id) == [restored.id])
+        #expect(restored.isHiddenFromCapabilityLists)
+        #expect(!restored.isGlobal && !restored.isBuiltIn && !restored.isSystemBuiltIn)
+        let capabilities = WorkspaceCapabilities(workspace: workspace)
+        #expect(capabilities.listedWorkspaceSkills.isEmpty)
+        #expect(capabilities.workspaceSkills.map(\.id) == [restored.id])
+        // The task keeps its pin of the workspace's row, not of the shared
+        // skill, and that row still reaches a run.
+        let task = try #require(workspace.tasks.first)
+        #expect(task.skills.map(\.id) == [restored.id])
+        #expect(restored.id != universal.id)
+        let scope = TaskCapabilityResolver(task: task, secretStore: MockSecretStore()).resolvedScope(.fullInventory)
+        #expect(scope.resolver.effectiveSnapshots.map(\.name) == [restored.name])
         withExtendedLifetime(container) {}
     }
 

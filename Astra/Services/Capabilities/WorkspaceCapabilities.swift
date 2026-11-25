@@ -43,6 +43,31 @@ struct WorkspaceCapabilities {
         sortedSkills(workspace.skills.filter { !$0.isGlobal && !$0.isSystemBuiltIn })
     }
 
+    /// `workspaceSkills` as a person browses them: without a row restored
+    /// under a universal skill's name (`Skill.isHiddenFromCapabilityLists`).
+    /// Lists only; what is active, what the composer attaches and what a
+    /// saved ID resolves to stay `workspaceSkills`.
+    var listedWorkspaceSkills: [Skill] {
+        workspaceSkills.filter { !$0.isHiddenFromCapabilityLists }
+    }
+
+    /// A workspace's own skill rows, for a screen that lists just those:
+    /// without the universal skills and the rows restored under their names.
+    static func listedSkillRows(of workspace: Workspace) -> [Skill] {
+        workspace.skills.filter { !$0.isHiddenFromCapabilityLists }
+    }
+
+    /// What a routine or template editor offers to pick from: `skills`, less
+    /// the rows restored under a universal skill's name, except one already
+    /// selected, which stays so it can be seen and unselected. Only those
+    /// rows: `skills` is `routineSkills`, which already decides what else is
+    /// offered (a plugin's skill may carry a universal skill's name). Saving
+    /// and firing keep resolving against the full list, so a saved ID is
+    /// never dropped for being hidden.
+    static func offeredForSelection(_ skills: [Skill], selected: Set<String>) -> [Skill] {
+        skills.filter { !$0.isBareRestoredBuiltIn || selected.contains($0.id.uuidString) }
+    }
+
     var enabledGlobalSkills: [Skill] {
         let enabledIDs = Set(workspace.enabledGlobalSkillIDs)
         return sortedSkills(globalSkills.filter {

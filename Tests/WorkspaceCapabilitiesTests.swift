@@ -96,25 +96,102 @@ struct WorkspaceCapabilitiesTests {
         }
         let capabilities = WorkspaceCapabilities(workspace: workspace)
         let listed = ["GCloud Agent (Restored)", "Local Analyst"]
+        let all = ["GCloud Agent (Restored)", "Local Analyst", "Read-Only (Restored)", "Safe Bash (Restored)", "Test Runner (Restored)"]
 
-        #expect(capabilities.workspaceSkills.map(\.name) == listed)
-        #expect(capabilities.activeSkills.map(\.name) == listed)
-        // What the rail and Manage Capabilities show.
+        // What the rail, Manage Capabilities and Plugins show, and the plain
+        // lists of a workspace's skills (workspace home, workspace editor).
+        #expect(capabilities.listedWorkspaceSkills.map(\.name) == listed)
         let packages = CapabilityCatalogInventory.packages(catalogPackages: [], capabilities: capabilities)
         #expect(packages.map(\.name) == listed)
-        #expect(workspace.skills.count == 5)
+        #expect(Set(WorkspaceCapabilities.listedSkillRows(of: workspace).map(\.name)) == Set(listed))
+        // Hidden, not gone: what is active, what a saved ID resolves to and
+        // what the composer attaches to a new task still include the copies.
+        #expect(capabilities.workspaceSkills.map(\.name) == all)
+        #expect(capabilities.activeSkills.map(\.name) == all)
+        let composer = ComposerCapabilitySnapshotBuilder.make(
+            workspace: workspace, globalSkills: [], globalConnectors: [], globalTools: [],
+            packageDefinitions: [], packPolicy: .empty
+        )
+        #expect(composer.selectedSkills(excluding: []).map(\.name) == all)
     }
 
-    @Test("The workspace home and the workspace editor list skills without the universal ones")
-    func workspaceScreensListSkillsThroughTheUniversalFilter() throws {
+    @Test("A plain list of a workspace's skills leaves out the universal ones as well")
+    @MainActor
+    func listedSkillRowsLeaveOutUniversalSkills() {
+        let workspace = Workspace(name: "Rows", primaryPath: "/tmp/listed-skill-rows")
+        for name in ["Read-Only", "Safe Bash", "Test Runner", "Read-Only (Restored)", "Local Analyst"] {
+            Skill(name: name, allowedTools: ["Read"]).workspace = workspace
+        }
+        #expect(WorkspaceCapabilities.listedSkillRows(of: workspace).map(\.name) == ["Local Analyst"])
+    }
+
+    @Test("A picker leaves a hidden skill out unless it is already selected")
+    @MainActor
+    func hiddenSkillIsOfferedOnlyWhileSelected() {
+        let copy = Skill(name: "Read-Only (Restored)", allowedTools: ["Read"])
+        let local = Skill(name: "Local Analyst", allowedTools: ["Read"])
+        #expect(WorkspaceCapabilities.offeredForSelection([copy, local], selected: []).map(\.id) == [local.id])
+        // Selected: it stays, so a person can see it and unselect it.
+        #expect(WorkspaceCapabilities.offeredForSelection([copy, local], selected: [copy.id.uuidString]).map(\.id) == [copy.id, local.id])
+        // Only restored rows are taken out: a plugin's skill that carries a
+        // universal skill's name is offered as before.
+        let pluginSkill = Skill(name: "Test Runner", allowedTools: ["Read", "Bash"])
+        pluginSkill.isGlobal = true
+        pluginSkill.originPackageID = "some-plugin"
+        #expect(WorkspaceCapabilities.offeredForSelection([pluginSkill], selected: []).map(\.id) == [pluginSkill.id])
+    }
+
+    @Test("A routine and a template keep a saved pin of a restored universal skill")
+    @MainActor
+    func savedRoutineAndTemplatePinsOfARestoredCopyStillResolve() throws {
+        let container = try makeCapabilitiesPersistenceContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Pinned", primaryPath: "/tmp/pinned-restored-copy")
+        context.insert(workspace)
+        let copy = Skill(name: "Read-Only (Restored)", allowedTools: ["Read", "Glob", "Grep"],
+                         behaviorInstructions: "Do not modify files.")
+        copy.workspace = workspace
+        context.insert(copy)
+        let id = copy.id.uuidString
+
+        // A routine that names the copy itself.
+        let pinned = TaskSchedule(name: "Pinned", goal: "Audit", workspace: workspace)
+        pinned.skillIDs = [id]
+        context.insert(pinned)
+        // A routine that takes its skills from a template's defaults.
+        let template = TaskTemplate(name: "Audit", mainGoal: "Audit", workspace: workspace)
+        template.defaultSkillIDs = [id]
+        context.insert(template)
+        let templated = TaskSchedule(name: "Templated", goal: "Audit", workspace: workspace)
+        templated.templateID = template.id
+        context.insert(templated)
+        try context.save()
+
+        #expect(TaskScheduler.resolvedSkills(for: pinned, globalSkills: []).map(\.id) == [copy.id])
+        #expect(TaskScheduler.resolvedSkills(for: templated, globalSkills: []).map(\.id) == [copy.id])
+        // Saving the routine again keeps the ID.
+        #expect(RoutineSkillCatalog.validatedSelection([id], in: workspace, globalSkills: []) == [id])
+        // It is not offered for a new selection, and stays listed where it is selected.
+        let routineSkills = WorkspaceCapabilities.routineSkills(in: workspace, globalSkills: [])
+        #expect(WorkspaceCapabilities.offeredForSelection(routineSkills, selected: []).isEmpty)
+        #expect(WorkspaceCapabilities.offeredForSelection(routineSkills, selected: [id]).map(\.id) == [copy.id])
+        withExtendedLifetime(container) {}
+    }
+
+    /// A check of the sources, not of behaviour: the behaviour of the two
+    /// helpers is pinned above; this only says which screens call them.
+    @Test("Source check: the workspace home, the workspace editor and the routine and template editors call the list rule")
+    func skillListsCallTheListRule() throws {
         let views = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Astra/Views")
+        func source(_ file: String) throws -> String {
+            try String(contentsOf: views.appendingPathComponent(file), encoding: .utf8)
+        }
         for file in ["WorkspaceHomeView.swift", "WorkspaceDetailView.swift"] {
-            let source = try String(contentsOf: views.appendingPathComponent(file), encoding: .utf8)
-            let filtered = "workspace.skills.filter { !$0.isSystemBuiltIn }"
-            #expect(source.components(separatedBy: filtered).count == 2, "\(file) declares one filtered list")
-            #expect(!source.replacingOccurrences(of: filtered, with: "").contains("workspace.skills"),
-                    "\(file) lists the workspace's skills only through that list")
+            #expect(try source(file).contains("WorkspaceCapabilities.listedSkillRows(of: workspace)"), "\(file)")
+        }
+        for file in ["ScheduleEditorView.swift", "ConfigureView.swift"] {
+            #expect(try source(file).contains("WorkspaceCapabilities.offeredForSelection("), "\(file)")
         }
     }
 
