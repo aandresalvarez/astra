@@ -778,9 +778,14 @@ struct ConnectorEditorView: View {
         .task(id: connector.id) { refreshUnreadableCredentialKeys() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             // Answering macOS's Keychain dialog brings the app forward too. The
-            // save that waited for it refreshes these once it has run.
+            // end of the wait refreshes these, below.
             guard !isAwaitingKeychainAccess else { return }
             refreshUnreadableCredentialKeys()
+        }
+        // However the wait ended: saved, refused, or a sign-in cancelled behind
+        // the dialog. Run from here, it reads the account shown by then.
+        .onChange(of: isAwaitingKeychainAccess) { _, waiting in
+            if !waiting { refreshUnreadableCredentialKeys() }
         }
         .onDisappear {
             cancelOutlookSignIn()
@@ -992,9 +997,6 @@ struct ConnectorEditorView: View {
                     isAwaitingKeychainAccess = false
                     try Task.checkCancellation()
                     guard oauthSignInGeneration == generation, !Self.isGone(connector) else { throw CancellationError() }
-                    // The refresh on becoming active was skipped while waiting,
-                    // and publishing does not refresh these itself.
-                    refreshUnreadableCredentialKeys()
                     if case .refused(let diagnosis) = outcome {
                         throw KeychainAccessRefused(errorDescription: presentation(
                             for: .keychainWriteFailed(diagnosis: diagnosis), key: "the sign-in").message)
@@ -1167,9 +1169,6 @@ struct ConnectorEditorView: View {
             case .open:
                 save()
             case .refused(let diagnosis):
-                // No save runs to refresh these, and the refresh on becoming
-                // active was skipped while waiting.
-                refreshUnreadableCredentialKeys()
                 refused(diagnosis)
             }
         }
