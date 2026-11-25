@@ -1,4 +1,5 @@
 import SwiftUI
+import ASTRAPersistence
 
 enum MacOSPermissionCheckID: String, CaseIterable {
     case browserControl
@@ -134,10 +135,21 @@ final class MacOSPermissionsViewModel: ObservableObject {
             return copy
         }
 
-        let keychainIssue = MacOSPermissionDiagnostics.checkKeychainAccess(
-            appDisplayName: appDisplayName,
-            allowUserInteraction: allowKeychainUserInteraction
-        )
+        // macOS's access dialog is answered off the main actor. The check that
+        // follows finds the keychain open. After a refusal nothing is written,
+        // so nothing asks again: the issue is the one a failed check reports.
+        var keychainRefused = false
+        if allowKeychainUserInteraction, !AstraSecureKeychainStore.isOpen {
+            keychainRefused = await !AstraSecureKeychainStore.openAllowingUserInteraction().isOpen
+        }
+        let keychainIssue = keychainRefused
+            ? MacOSPermissionDiagnostics.keychainIssue(
+                appDisplayName: appDisplayName,
+                detail: "ASTRA could not write to its dedicated keychain.")
+            : MacOSPermissionDiagnostics.checkKeychainAccess(
+                appDisplayName: appDisplayName,
+                allowUserInteraction: allowKeychainUserInteraction
+            )
         setState(keychainIssue.map(MacOSPermissionCheckState.needsAction) ?? .ready, for: .keychain)
 
         let workspaceIssue = MacOSPermissionDiagnostics.checkWorkspaceRootAccess(

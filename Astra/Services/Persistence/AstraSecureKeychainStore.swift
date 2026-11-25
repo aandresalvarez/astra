@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import os
 import AstraObjCSupport
 import ASTRACore
 
@@ -172,6 +173,7 @@ public enum AstraSecureKeychainStore {
         allowUserInteraction: Bool = false
     ) -> KeychainWriteOutcome {
         guard !shouldBlockUnscopedTestKeychainAccess else { return .failed(diagnosis: nil) }
+        guard !mainThreadSeesClosedKeychain else { return .failed(diagnosis: nil) }
         writeLock.lock()
         defer { writeLock.unlock() }
         let saved: Bool
@@ -218,6 +220,7 @@ public enum AstraSecureKeychainStore {
     public static func saveAtomically(service: String, account: String, value: String,
                                       label: String?, allowUserInteraction: Bool = false) -> Bool {
         guard !shouldBlockUnscopedTestKeychainAccess else { return false }
+        guard !mainThreadSeesClosedKeychain else { return false }
         writeLock.lock()
         defer { writeLock.unlock() }
         let saved = AstraSecureKeychain.replaceSecretAtomically(value, forAccount: account, service: service,
@@ -231,6 +234,7 @@ public enum AstraSecureKeychainStore {
     /// The status belongs to this read, never a shared last-error slot.
     public static func read(service: String, account: String, allowUserInteraction: Bool = false) -> SecretReadOutcome {
         guard !shouldBlockUnscopedTestKeychainAccess else { return .unavailable }
+        guard !mainThreadSeesClosedKeychain else { return .unavailable }
         var status: OSStatus = errSecNotAvailable
         let value = AstraSecureKeychain.secret(forAccount: account, service: service,
             keychainPath: keychainPath, bootstrapService: bootstrapService, status: &status,
@@ -242,8 +246,114 @@ public enum AstraSecureKeychainStore {
         }
     }
 
+    // MARK: - Interactive access off the main thread
+
+    /// Whether this process holds the keychain open, so that an access asks
+    /// macOS nothing. A read that may not ask never raises the access dialog.
+    public static var isOpen: Bool {
+        read(service: accessProbeService, account: accessProbeAccount) != .unavailable
+    }
+
+    /// What an interactive open ended with.
+    public enum InteractiveOpenOutcome: Equatable, Sendable {
+        case open
+        /// macOS's dialog was refused, or the keychain cannot be opened.
+        /// `diagnosis` is what a failed write would have reported.
+        case refused(diagnosis: KeychainWriteDiagnosis?)
+
+        public var isOpen: Bool { self == .open }
+    }
+
+    /// Opens the keychain with macOS's access dialog allowed, on a thread of
+    /// its own, and returns once macOS has answered or had nothing to ask.
+    ///
+    /// The first access a build has not been allowed yet makes macOS show a
+    /// dialog, and the call that asked does not return until the person
+    /// answers. Asked from the main thread, the app is frozen for as long as
+    /// the dialog is up. Once this succeeds the keychain stays open for the
+    /// session (`AstraSecureKeychain` caches the handle), so an interactive
+    /// save that follows on the main actor asks nothing. When it is refused
+    /// the dialog has been offered once: the caller reports the failure from
+    /// the diagnosis and does not write, so nothing asks again.
+    ///
+    /// `AstraSecureKeychain` holds its lock for as long as the dialog is up.
+    /// The main thread does not wait behind it: until the open settles it
+    /// sees a closed keychain (`mainThreadSeesClosedKeychain`).
+    public static func openAllowingUserInteraction() async -> InteractiveOpenOutcome {
+        guard !shouldBlockUnscopedTestKeychainAccess else { return .refused(diagnosis: nil) }
+        // Resolved here: a new thread does not see a test's task-local vault.
+        let path = keychainPath, bootstrap = bootstrapService
+        let service = accessProbeService, account = accessProbeAccount
+        // Already open: nothing to ask, and nothing for the main thread to
+        // miss. Not asked while another open is in flight: the question would
+        // wait behind that open's dialog on a pooled thread. The thread below
+        // waits there instead.
+        if !isInteractiveOpenInFlight(path), isOpen { return .open }
+        return await inFlightOnOwnThread(path: path) {
+            // The attempt and the drain of its failure stay together, as a
+            // failed write's do (`saveReportingFailure`).
+            writeLock.lock()
+            defer { writeLock.unlock() }
+            var status: OSStatus = errSecNotAvailable
+            _ = AstraSecureKeychain.secret(forAccount: account, service: service,
+                keychainPath: path, bootstrapService: bootstrap, status: &status,
+                allowUserInteraction: true)
+            // Nothing is stored under the probe, so "not found" is the open keychain answering.
+            if status == errSecSuccess || status == errSecItemNotFound { return .open }
+            return .refused(diagnosis: drainPendingKeychainFailureLocked(scope: "keychain_open")?.diagnosis)
+        }
+    }
+
+    /// Runs `work` on a thread of its own, counted as an interactive open in
+    /// flight for the keychain at `path` from this call until `work` returns.
+    static func inFlightOnOwnThread<T: Sendable>(path: String, _ work: @escaping @Sendable () -> T) async -> T {
+        interactiveOpensInFlight.withLock { $0[path, default: 0] += 1 }
+        return await onOwnThread {
+            defer {
+                interactiveOpensInFlight.withLock { counts in
+                    let left = (counts[path] ?? 1) - 1
+                    counts[path] = left > 0 ? left : nil
+                }
+            }
+            return work()
+        }
+    }
+
+    /// Runs blocking keychain work on a thread of its own: not the main
+    /// thread, and not one the cooperative pool needs back.
+    static func onOwnThread<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
+        await withCheckedContinuation { continuation in
+            Thread.detachNewThread { continuation.resume(returning: work()) }
+        }
+    }
+
+    /// Interactive opens in flight on their own thread, by keychain path.
+    private static let interactiveOpensInFlight = OSAllocatedUnfairLock(initialState: [String: Int]())
+
+    static func isInteractiveOpenInFlight(_ path: String) -> Bool {
+        interactiveOpensInFlight.withLock { ($0[path] ?? 0) > 0 }
+    }
+
+    /// While an interactive open is in flight the keychain is not open yet,
+    /// and `AstraSecureKeychain` holds its lock until macOS's dialog is
+    /// answered. A call from the main thread would wait behind that lock: a
+    /// frozen app, behind a dialog. Until the open settles the main thread
+    /// gets what a closed keychain answers, which is what it answered a
+    /// moment before the dialog went up: a read finds nothing available, a
+    /// write or a delete fails, no failure report is taken. Writes are
+    /// included so that a read that found nothing is never followed by a
+    /// write that lands. Other threads wait, as they always did.
+    private static var mainThreadSeesClosedKeychain: Bool {
+        Thread.isMainThread && isInteractiveOpenInFlight(keychainPath)
+    }
+
+    /// Nothing is stored under this item: reading it only opens the keychain.
+    private static let accessProbeService = "\(AppChannel.current.keychainConnectorPrefix)-access-probe"
+    private static let accessProbeAccount = "open"
+
     public static func load(service: String, account: String) -> String? {
         guard !shouldBlockUnscopedTestKeychainAccess else { return nil }
+        guard !mainThreadSeesClosedKeychain else { return nil }
         return AstraSecureKeychain.secret(
             forAccount: account,
             service: service,
@@ -255,6 +365,7 @@ public enum AstraSecureKeychainStore {
     @discardableResult
     public static func delete(service: String, account: String) -> Bool {
         guard !shouldBlockUnscopedTestKeychainAccess else { return false }
+        guard !mainThreadSeesClosedKeychain else { return false }
         return AstraSecureKeychain.deleteSecret(
             forAccount: account,
             service: service,
@@ -266,6 +377,7 @@ public enum AstraSecureKeychainStore {
     @discardableResult
     public static func deleteAll(service: String) -> Bool {
         guard !shouldBlockUnscopedTestKeychainAccess else { return false }
+        guard !mainThreadSeesClosedKeychain else { return false }
         return AstraSecureKeychain.deleteAllSecrets(
             forService: service,
             keychainPath: keychainPath,
@@ -275,6 +387,7 @@ public enum AstraSecureKeychainStore {
 
     public static func exists(service: String, account: String) -> Bool {
         guard !shouldBlockUnscopedTestKeychainAccess else { return false }
+        guard !mainThreadSeesClosedKeychain else { return false }
         return AstraSecureKeychain.hasSecret(
             forAccount: account,
             service: service,
@@ -301,6 +414,7 @@ public enum AstraSecureKeychainStore {
     @discardableResult
     public static func migrateServiceFromLoginKeychain(service: String) -> Int {
         guard !shouldBlockUnscopedTestKeychainAccess else { return -1 }
+        guard !mainThreadSeesClosedKeychain else { return -1 }
         writeLock.lock()
         defer { writeLock.unlock() }
         return AstraSecureKeychain.migrateService(
@@ -357,6 +471,8 @@ public enum AstraSecureKeychainStore {
     /// keeps a degraded keychain from writing a log line per credential.
     @discardableResult
     public static func logPendingKeychainFailure(scope: String) -> AstraKeychainFailureReport? {
+        // Taken once the open settles: its thread holds `writeLock` until then.
+        guard !mainThreadSeesClosedKeychain else { return nil }
         writeLock.lock()
         defer { writeLock.unlock() }
         return drainPendingKeychainFailureLocked(scope: scope)
