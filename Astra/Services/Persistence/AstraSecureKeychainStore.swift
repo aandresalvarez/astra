@@ -1,6 +1,5 @@
 import Foundation
 import Security
-import os
 import AstraObjCSupport
 import ASTRACore
 
@@ -281,42 +280,57 @@ public enum AstraSecureKeychainStore {
     /// sees a closed keychain (`mainThreadSeesClosedKeychain`).
     public static func openAllowingUserInteraction() async -> InteractiveOpenOutcome {
         guard !shouldBlockUnscopedTestKeychainAccess else { return .refused(diagnosis: nil) }
-        // Resolved here: a new thread does not see a test's task-local vault.
+        // Resolved here, on the calling task: a test's vault is task-local.
         let path = keychainPath, bootstrap = bootstrapService
         let service = accessProbeService, account = accessProbeAccount
-        // Already open: nothing to ask, and nothing for the main thread to
-        // miss. Not asked while another open is in flight: the question would
-        // wait behind that open's dialog on a pooled thread. The thread below
-        // waits there instead.
-        if !isInteractiveOpenInFlight(path), isOpen { return .open }
-        return await inFlightOnOwnThread(path: path) {
-            // The attempt and the drain of its failure stay together, as a
-            // failed write's do (`saveReportingFailure`).
-            writeLock.lock()
-            defer { writeLock.unlock() }
-            var status: OSStatus = errSecNotAvailable
-            _ = AstraSecureKeychain.secret(forAccount: account, service: service,
-                keychainPath: path, bootstrapService: bootstrap, status: &status,
-                allowUserInteraction: true)
-            // Nothing is stored under the probe, so "not found" is the open keychain answering.
-            if status == errSecSuccess || status == errSecItemNotFound { return .open }
-            return .refused(diagnosis: drainPendingKeychainFailureLocked(scope: "keychain_open")?.diagnosis)
-        }
+        return await sharedInteractiveOpen(
+            path: path,
+            alreadyOpen: {
+                var status: OSStatus = errSecNotAvailable
+                _ = AstraSecureKeychain.secret(forAccount: account, service: service,
+                    keychainPath: path, bootstrapService: bootstrap, status: &status)
+                // Nothing is stored under the probe, so "not found" is the open keychain answering.
+                return status == errSecSuccess || status == errSecItemNotFound
+            },
+            open: {
+                // The attempt and the drain of its failure stay together, as a
+                // failed write's do (`saveReportingFailure`).
+                writeLock.lock()
+                defer { writeLock.unlock() }
+                var status: OSStatus = errSecNotAvailable
+                _ = AstraSecureKeychain.secret(forAccount: account, service: service,
+                    keychainPath: path, bootstrapService: bootstrap, status: &status,
+                    allowUserInteraction: true)
+                if status == errSecSuccess || status == errSecItemNotFound { return .open }
+                return .refused(diagnosis: drainPendingKeychainFailureLocked(scope: "keychain_open")?.diagnosis)
+            })
     }
 
-    /// Runs `work` on a thread of its own, counted as an interactive open in
-    /// flight for the keychain at `path` from this call until `work` returns.
-    static func inFlightOnOwnThread<T: Sendable>(path: String, _ work: @escaping @Sendable () -> T) async -> T {
-        interactiveOpensInFlight.withLock { $0[path, default: 0] += 1 }
-        return await onOwnThread {
-            defer {
-                interactiveOpensInFlight.withLock { counts in
-                    let left = (counts[path] ?? 1) - 1
-                    counts[path] = left > 0 ? left : nil
-                }
-            }
-            return work()
+    /// One interactive open per keychain: callers that overlap share it and
+    /// its answer.
+    ///
+    /// On the main actor, so that registering the open cannot interleave with
+    /// a keychain call made from the main thread. Such a call either returns
+    /// before the open is registered, and so before the thread that will hold
+    /// the lock exists, or finds the open registered and does not wait. The
+    /// entry is removed on the main actor before any caller resumes, so the
+    /// save that follows `.open` finds the keychain open, not in flight.
+    @MainActor
+    static func sharedInteractiveOpen(
+        path: String,
+        alreadyOpen: @MainActor () -> Bool,
+        open: @escaping @Sendable () -> InteractiveOpenOutcome
+    ) async -> InteractiveOpenOutcome {
+        if let running = interactiveOpens[path] { return await running.value }
+        // Already open: nothing to ask, and nothing for the main thread to miss.
+        if alreadyOpen() { return .open }
+        let running = Task { @MainActor in
+            let outcome = await onOwnThread(open)
+            interactiveOpens[path] = nil
+            return outcome
         }
+        interactiveOpens[path] = running
+        return await running.value
     }
 
     /// Runs blocking keychain work on a thread of its own: not the main
@@ -327,11 +341,12 @@ public enum AstraSecureKeychainStore {
         }
     }
 
-    /// Interactive opens in flight on their own thread, by keychain path.
-    private static let interactiveOpensInFlight = OSAllocatedUnfairLock(initialState: [String: Int]())
+    /// The interactive open in flight for each keychain path, if any.
+    @MainActor private static var interactiveOpens: [String: Task<InteractiveOpenOutcome, Never>] = [:]
 
+    @MainActor
     static func isInteractiveOpenInFlight(_ path: String) -> Bool {
-        interactiveOpensInFlight.withLock { ($0[path] ?? 0) > 0 }
+        interactiveOpens[path] != nil
     }
 
     /// While an interactive open is in flight the keychain is not open yet,
@@ -344,7 +359,9 @@ public enum AstraSecureKeychainStore {
     /// included so that a read that found nothing is never followed by a
     /// write that lands. Other threads wait, as they always did.
     private static var mainThreadSeesClosedKeychain: Bool {
-        Thread.isMainThread && isInteractiveOpenInFlight(keychainPath)
+        guard Thread.isMainThread else { return false }
+        let path = keychainPath
+        return MainActor.assumeIsolated { interactiveOpens[path] != nil }
     }
 
     /// Nothing is stored under this item: reading it only opens the keychain.
