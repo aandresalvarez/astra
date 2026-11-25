@@ -133,6 +133,68 @@ struct PendingTaskCredentialCleanupTests {
         #expect(!released.holdsAccount(cleanup))
     }
 
+    @Test("Failed requests hold nothing unless their task is paused for an approval, however their tasks are read",
+          arguments: [1, 2, 500])
+    func failedRequestsHoldOnlyThroughAPausedTask(batch: Int) throws {
+        let fixture = try Fixture(onDisk: true)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let context = fixture.context
+        let first = try #require(try context.fetch(FetchDescriptor<AgentTask>()).first { $0.id == fixture.request.taskID })
+        // Five more tasks, each with a request that carries the same accepted context.
+        var owners: [(task: AgentTask, request: TaskTurnRequest, run: TaskRun)] = []
+        for index in 1...6 {
+            let task = index == 1 ? first : AgentTask(title: "Failed \(index)", goal: "Use the accepted plugin", workspace: first.workspace)
+            if index > 1 { context.insert(task) }
+            let request = index == 1 ? fixture.request
+                : TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 1, pluginDefinitions: [])
+            if index > 1 { context.insert(request) }
+            // Every one of them ran and failed.
+            let run = TaskRun(task: task)
+            context.insert(run)
+            run.status = .failed
+            request.runID = run.id
+            request.state = .failed
+            request.terminalAt = Date()
+            owners.append((task, request, run))
+        }
+        try context.save()
+        // One failed request outlives its task: the row is saved, then deleted.
+        let orphan = owners.removeLast()
+        let orphanRequestID = orphan.request.id, orphanTaskID = orphan.task.id
+        context.delete(orphan.task)
+        try context.save()
+        let cleanup = fixture.account.keychainCleanup
+        func references() throws -> PendingTaskCredentialReferences {
+            try #require(PendingTaskCredentialReferences.capture(modelContext: ModelContext(fixture.container), taskReadBatch: batch))
+        }
+        let reopened = ModelContext(fixture.container)
+        #expect(try TaskTurnRequestRepository.request(id: orphanRequestID, in: reopened) != nil)
+        #expect(try !reopened.fetch(FetchDescriptor<AgentTask>()).contains { $0.id == orphanTaskID })
+        #expect(try !references().holdsSkill(fixture.namespace, key: "API_TOKEN"))
+        #expect(try !references().holdsAccount(cleanup))
+
+        // Each task in turn stops for the person's approval: that alone holds
+        // the context, whichever piece of the read its task falls in.
+        let label = "connector:\(fixture.account.id.uuidString):API_TOKEN"
+        for (index, paused) in owners.enumerated() {
+            paused.run.typedStopReason = .permissionApprovalRequired
+            paused.task.status = .pendingUser
+            let binding = TaskPermissionContinuation.capture(task: paused.task, run: paused.run, modelContext: context)
+            let payload = try #require(PermissionBroker.approvalPayload(providerID: paused.task.resolvedRuntimeID,
+                request: .connectorCredentials(connectorID: fixture.account.id, displayName: "Account", labels: [label]),
+                reason: "Blocked pending approval", grants: [.credential(label: label)], requestID: "permission-hold-\(index)").encodedString())
+            TaskRuntimePermissionOpenRequestStore.recordOpenRequest(
+                payload: TaskPermissionContinuation.attach(payload, continuation: binding), task: paused.task)
+            try context.save()
+            #expect(try references().holdsSkill(fixture.namespace, key: "API_TOKEN"), "task \(index) paused")
+            #expect(try references().holdsAccount(cleanup), "task \(index) paused")
+            // No longer waiting on the person: nothing holds it again.
+            paused.task.status = .failed
+            try context.save()
+            #expect(try !references().holdsSkill(fixture.namespace, key: "API_TOKEN"), "task \(index) no longer paused")
+        }
+    }
+
     @Test("An unknown request state or policy version holds cleanup closed", arguments: ["state", "version"])
     func unknownEvidenceIsConservative(kind: String) throws {
         let fixture = try Fixture(onDisk: false)
