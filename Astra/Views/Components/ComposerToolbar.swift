@@ -791,19 +791,7 @@ struct ComposerToolbar: View {
     }
 
     private var composerMenuCapabilities: [Skill] {
-        let configuredSkills = availableSkills.isEmpty
-            ? (workspace?.skills ?? []).filter { !$0.isSystemBuiltIn }
-            : availableSkills
-        var seenIDs = Set<UUID>()
-        var merged: [Skill] = []
-
-        for skill in configuredSkills + skills {
-            guard !seenIDs.contains(skill.id) else { continue }
-            seenIDs.insert(skill.id)
-            merged.append(skill)
-        }
-
-        return merged.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        WorkspaceCapabilities.composerMenuSkills(offered: availableSkills, workspace: workspace, pinned: skills)
     }
 
     private var capabilitiesMenuTitle: String {

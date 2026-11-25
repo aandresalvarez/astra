@@ -52,7 +52,10 @@ struct ScheduleEditorView: View {
     @State private var routineCatalog = RoutineSkillCatalog.builtIns
 
     private var availableSkills: [Skill] {
-        WorkspaceCapabilities.routineSkills(in: workspace, globalSkills: globalSkills, catalog: routineCatalog)
+        WorkspaceCapabilities.offeredForSelection(
+            WorkspaceCapabilities.routineSkills(in: workspace, globalSkills: globalSkills, catalog: routineCatalog),
+            selected: selectedSkillIDs
+        )
     }
 
     private let budgetPresets = TaskExecutionDefaults.budgetPresets

@@ -45,6 +45,62 @@ struct SkillModelTests {
         #expect(skill.tasks.isEmpty)
     }
 
+    @Test("A row restored under a universal skill's name is left out of capability lists, and is otherwise an ordinary skill",
+          arguments: ["Read-Only (Restored)", "Safe Bash (Restored)", "Test Runner (Restored)",
+                      "Read-Only Explorer (Restored)", "Safe Executor (Restored)", "  Read-Only (Restored) "])
+    func restoredUniversalSkillIsHiddenFromLists(name: String) {
+        #expect(Skill.isRestoredBuiltInName(name))
+        #expect(Skill(name: name).isHiddenFromCapabilityLists)
+        #expect(Skill(name: name).isBareRestoredBuiltIn)
+        // Visibility only: it is not a system built-in (it resolves and can
+        // be deleted like the workspace's other skills), and not a built-in
+        // name (a run keeps a task's pin of it by the request's wording).
+        #expect(!Skill(name: name).isSystemBuiltIn)
+        #expect(!Skill.isBuiltInName(name))
+    }
+
+    @Test("A universal skill itself is left out of capability lists", arguments: Array(Skill.builtInNames).sorted())
+    func universalSkillIsHiddenFromLists(name: String) {
+        #expect(Skill(name: name).isSystemBuiltIn)
+        #expect(Skill(name: name).isHiddenFromCapabilityLists)
+        #expect(!Skill(name: name).isBareRestoredBuiltIn)
+        #expect(!Skill.isRestoredBuiltInName(name))
+    }
+
+    @Test("A restored row with something of its own to manage stays listed")
+    func restoredRowWithItsOwnResourcesStaysListed() {
+        let plain = Skill(name: "Safe Bash (Restored)")
+        #expect(plain.isHiddenFromCapabilityLists)
+
+        let withAccount = Skill(name: "Safe Bash (Restored)")
+        withAccount.connectors = [Connector(name: "Snapshot account", serviceType: "jira")]
+        #expect(!withAccount.isHiddenFromCapabilityLists)
+
+        let withTool = Skill(name: "Safe Bash (Restored)")
+        withTool.localTools = [LocalTool(name: "Snapshot tool", toolDescription: "", icon: "wrench", toolType: "cli", command: "true")]
+        #expect(!withTool.isHiddenFromCapabilityLists)
+
+        // An inline tool the row grants (an MCP tool, say) is managed on the row too.
+        let withCustomTool = Skill(name: "Safe Bash (Restored)", customTools: ["mcp__server__tool"])
+        #expect(!withCustomTool.isHiddenFromCapabilityLists)
+
+        let withSetting = Skill(name: "Safe Bash (Restored)")
+        withSetting.environmentKeys = ["TOKEN"]
+        #expect(!withSetting.isHiddenFromCapabilityLists)
+
+        // A shared row is turned on and off from the lists, so it stays in them.
+        let shared = Skill(name: "Safe Bash (Restored)")
+        shared.isGlobal = true
+        #expect(!shared.isHiddenFromCapabilityLists)
+    }
+
+    @Test("Only a universal skill's restored copy is left out",
+          arguments: ["GCloud Agent (Restored)", "Read-Only (Restored) notes", "Read-Only(Restored)", "(Restored)", "Local Analyst"])
+    func otherNamesStayListed(name: String) {
+        #expect(!Skill.isRestoredBuiltInName(name))
+        #expect(!Skill(name: name).isHiddenFromCapabilityLists)
+    }
+
     @Test("Skill stores custom values")
     func skillCustomValues() {
         let skill = Skill(

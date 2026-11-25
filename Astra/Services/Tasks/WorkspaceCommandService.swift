@@ -202,7 +202,7 @@ enum WorkspaceCommandService {
         TaskStateMachine.enqueueFromWorkspaceCommand(mainTask, modelContext: modelContext)
         mainTask.templateID = template.id
         mainTask.templateHooksJSON = template.hooksJSON
-        mainTask.skills = AgentTask.storableSkills(skills(for: template, selectedSkills: selectedSkills), in: mainTask.workspace)
+        mainTask.skills = AgentTask.storableSkills(skills(for: template, selectedSkills: selectedSkills, in: workspace), in: mainTask.workspace)
         TaskCapabilitySnapshotter.capture(for: mainTask)
 
         if template.hasAfterPhase {
@@ -304,9 +304,20 @@ enum WorkspaceCommandService {
         }
     }
 
-    private static func skills(for template: TaskTemplate, selectedSkills: [Skill]) -> [Skill] {
+    /// The template's defaults out of the composer's selection, or all of the
+    /// selection when it names none. The composer does not offer a row
+    /// restored under a universal skill's name (`composerSkills`), so a
+    /// default that names one is read from the workspace: a saved choice
+    /// keeps resolving.
+    static func skills(for template: TaskTemplate, selectedSkills: [Skill], in workspace: Workspace) -> [Skill] {
         guard !template.defaultSkillIDs.isEmpty else { return selectedSkills }
         let idSet = Set(template.defaultSkillIDs)
-        return selectedSkills.filter { idSet.contains($0.id.uuidString) }
+        let selected = selectedSkills.filter { idSet.contains($0.id.uuidString) }
+        let unoffered = workspace.skills.filter { row in
+            !row.isDeleted && row.isBareRestoredBuiltIn && idSet.contains(row.id.uuidString)
+                && !selected.contains { $0.id == row.id }
+        }
+        guard !unoffered.isEmpty else { return selected }
+        return (selected + unoffered).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 }

@@ -39,12 +39,49 @@ public final class Skill {
         "Safe Executor"
     ]
 
+    /// What a workspace import appends to the name of a skill it recreates
+    /// from a task's saved snapshot.
+    public static let restoredNameSuffix = " (Restored)"
+
     public var isSystemBuiltIn: Bool {
         isBuiltIn || Self.isBuiltInName(name)
     }
 
+    /// Left out of the lists a person browses capabilities in: a universal
+    /// skill, or a workspace's own row an import restored under a universal
+    /// skill's name, while that row carries nothing to manage (no account,
+    /// local or custom tool, or setting of its own).
+    ///
+    /// Visibility only. The row stays the workspace's: whatever a task,
+    /// routine or template already names keeps resolving, and the Skills tab
+    /// keeps listing it, where it can be edited or deleted.
+    public var isHiddenFromCapabilityLists: Bool {
+        isSystemBuiltIn || isBareRestoredBuiltIn
+    }
+
+    /// The restored half of that rule alone: the workspace's own row, named
+    /// after a universal skill by an import, with nothing of its own to
+    /// manage. A universal skill under another name: like those, it is not
+    /// offered for a new selection or attached to a new task
+    /// (`WorkspaceCapabilities.composerSkills`, `offeredForSelection`).
+    public var isBareRestoredBuiltIn: Bool {
+        !isGlobal && Self.isRestoredBuiltInName(name)
+            && connectors.isEmpty && localTools.isEmpty && customTools.isEmpty && environmentKeys.isEmpty
+    }
+
     public static func isBuiltInName(_ name: String) -> Bool {
         builtInNames.contains(name.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// The name an import gives a row it recreates from a task's snapshot of
+    /// a universal skill: "<built-in name> (Restored)". By name only; the row
+    /// keeps its snapshot's own tools and instructions. Neither a built-in
+    /// name nor a system built-in: it resolves, runs and can be deleted like
+    /// any other of the workspace's skills.
+    public static func isRestoredBuiltInName(_ name: String) -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasSuffix(restoredNameSuffix) else { return false }
+        return isBuiltInName(String(trimmed.dropLast(restoredNameSuffix.count)))
     }
 
     public var workspace: Workspace?

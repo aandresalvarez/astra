@@ -15,7 +15,9 @@ struct CapabilityCatalogInventory {
         let ownedPluginIDs = Set(state.pluginIDs)
             .union(WorkspaceCapabilityActivation.pendingLegacyInstallations(in: workspace).map(\.id))
         let represented = ownedPluginIDs.intersection(catalogPackages.map(\.id))
-        let standaloneSkillPackages = uniqueSkills(capabilities.workspaceSkills + capabilities.availableGlobalSkills)
+        // A list of capabilities: a row restored under a universal skill's
+        // name is not shown as one (`listedWorkspaceSkills`).
+        let standaloneSkillPackages = uniqueSkills(capabilities.listedWorkspaceSkills + capabilities.availableGlobalSkills)
             .filter { skill in
                 guard !overrides.contains(skill.id) else { return false }
                 let origin = skill.originPackageID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

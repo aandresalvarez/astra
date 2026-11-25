@@ -217,13 +217,13 @@ struct WorkspaceDetailView: View {
                     // Skills
                     GroupBox {
                         VStack(alignment: .leading, spacing: 8) {
-                            if workspace.skills.isEmpty {
+                            if listedSkills.isEmpty {
                                 Text("No skills configured. Open Skills Manager to add some.")
                                     .font(Stanford.caption(12))
                                     .foregroundStyle(.secondary)
                             } else {
                                 FlowLayout(spacing: 6) {
-                                    ForEach(workspace.skills.sorted { $0.name < $1.name }) { skill in
+                                    ForEach(listedSkills) { skill in
                                         Label(skill.name, systemImage: skill.icon)
                                             .font(Stanford.caption(12))
                                             .foregroundStyle(.secondary)
@@ -240,7 +240,7 @@ struct WorkspaceDetailView: View {
                         HStack {
                             Text("Skills")
                             Spacer()
-                            Text("\(workspace.skills.count)")
+                            Text("\(listedSkills.count)")
                                 .font(Stanford.caption(12))
                                 .foregroundStyle(.secondary)
                         }
@@ -327,6 +327,12 @@ struct WorkspaceDetailView: View {
         .onDisappear {
             WorkspacePersistenceCoordinator.flushPendingExport(workspace: workspace, modelContext: modelContext)
         }
+    }
+
+    /// The workspace's own skill rows, without the universal skills and the
+    /// rows restored under their names.
+    private var listedSkills: [Skill] {
+        WorkspaceCapabilities.listedSkillRows(of: workspace).sorted { $0.name < $1.name }
     }
 
     /// Shared reachability carried in the section heading instead of a status

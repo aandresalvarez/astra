@@ -2071,7 +2071,7 @@ public enum WorkspaceConfigManager {
     }
 
     private static func makeRestoredSkill(from snapshot: SkillSnapshotConfig, workspace: Workspace, freshID: Bool = false) -> Skill {
-        let restoredName = snapshot.name.hasSuffix(" (Restored)") ? snapshot.name : "\(snapshot.name) (Restored)"
+        let restoredName = snapshot.name.hasSuffix(Skill.restoredNameSuffix) ? snapshot.name : snapshot.name + Skill.restoredNameSuffix
         let restoredDescription = snapshot.description.isEmpty
             ? "Restored from task history snapshot."
             : "\(snapshot.description)\n\nRestored from task history snapshot."

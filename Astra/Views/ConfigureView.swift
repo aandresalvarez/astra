@@ -1873,7 +1873,10 @@ struct TemplateEditorView: View {
 
     private var availableSkills: [Skill] {
         guard let workspace = template.workspace else { return [] }
-        return WorkspaceCapabilities.routineSkills(in: workspace, globalSkills: globalSkills, catalog: routineCatalog)
+        return WorkspaceCapabilities.offeredForSelection(
+            WorkspaceCapabilities.routineSkills(in: workspace, globalSkills: globalSkills, catalog: routineCatalog),
+            selected: Set(template.defaultSkillIDs)
+        )
     }
 
     enum TemplatePhase: String, CaseIterable {

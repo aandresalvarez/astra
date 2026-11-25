@@ -52,7 +52,7 @@ enum ComposerCapabilitySnapshotBuilder {
             approvalRecords: approvalRecords,
             packPolicy: packPolicy
         )
-        return ComposerCapabilitySnapshot(availableSkills: capabilities.activeSkills, workspaceModelID: workspace.persistentModelID)
+        return ComposerCapabilitySnapshot(availableSkills: capabilities.composerSkills, workspaceModelID: workspace.persistentModelID)
     }
 }
 
