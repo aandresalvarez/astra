@@ -28,7 +28,8 @@ struct PendingTaskCredentialReferences {
             || !accountNamespaces.isDisjoint(with: owned)
     }
 
-    static func capture(modelContext: ModelContext) -> Self? {
+    static func capture(modelContext: ModelContext,
+                        taskReadBatch: Int = TaskTurnRequestOwnership.candidateLookupBatch) -> Self? {
         // Unsaved changes, including a terminal transition that might roll
         // back, cannot authorize deleting credentials.
         let saved = ModelContext(modelContext.container)
@@ -36,11 +37,14 @@ struct PendingTaskCredentialReferences {
             $0.stateRawValue != "completed" && $0.stateRawValue != "cancelled"
         })
         guard let requests = try? saved.fetch(descriptor) else { return nil }
+        // Failed requests are never removed, and each can still hold its
+        // context through its task. Their tasks are read once, up front.
+        guard let tasks = try? tasksOfFailedRequests(requests, in: saved, batch: taskReadBatch) else { return nil }
         var result = Self()
         for request in requests {
             guard let state = TaskTurnRequestState(rawValue: request.stateRawValue) else { return nil }
             if state.isTerminal {
-                guard let held = try? retainsPermissionContext(request, in: saved) else { return nil }
+                guard let held = try? retainsPermissionContext(request, task: tasks[request.taskID], in: saved) else { return nil }
                 if !held { continue }
             }
             // Requests before policy snapshots use live rows, already covered
@@ -54,12 +58,9 @@ struct PendingTaskCredentialReferences {
     /// A failed provider run may still own an accepted context: approving its
     /// blocked permission creates a new request from this exact snapshot.
     /// Read the saved approval and current-turn policy, not transient UI state.
-    private static func retainsPermissionContext(_ request: TaskTurnRequest, in context: ModelContext) throws -> Bool {
+    private static func retainsPermissionContext(_ request: TaskTurnRequest, task: AgentTask?, in context: ModelContext) throws -> Bool {
         guard request.state == .failed, let runID = request.runID else { return false }
-        let taskID = request.taskID
-        var descriptor = FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == taskID })
-        descriptor.fetchLimit = 1
-        guard let task = try context.fetch(descriptor).first, task.status == .pendingUser,
+        guard let task, task.status == .pendingUser,
               let run = task.runs.first(where: { $0.id == runID }), run.typedStopReason == .permissionApprovalRequired
         else { return false }
         for payload in TaskRuntimePermissionOpenRequestStore.openRequestPayloads(for: task) {
@@ -68,6 +69,21 @@ struct PendingTaskCredentialReferences {
             if try TaskPermissionContinuation.isCurrent(binding, task: task, modelContext: context) { return true }
         }
         return false
+    }
+
+    /// The tasks `retainsPermissionContext` asks about, by ID: those of the
+    /// failed requests that ran, in one lookup for all of them
+    /// (`TaskTurnRequestOwnership.candidates(taskIDs:)`). A task ID has no
+    /// index, so looking each one up walks the task table once per request,
+    /// and this runs on the main actor at every launch, once per pending
+    /// cleanup. The first row found for an ID stands for it, as a lookup of
+    /// that one ID returned.
+    private static func tasksOfFailedRequests(_ requests: [TaskTurnRequest], in context: ModelContext, batch: Int) throws -> [UUID: AgentTask] {
+        let failed = TaskTurnRequestState.failed.rawValue
+        let ids = requests.lazy.filter { $0.stateRawValue == failed && $0.runID != nil }.map(\.taskID)
+        guard !ids.isEmpty else { return [:] }
+        let found = try TaskTurnRequestOwnership.candidates(taskIDs: Array(ids), in: context, batch: batch)
+        return Dictionary(found.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
     }
 
     mutating func includePolicyJSON(_ json: String, in context: ModelContext) -> Bool {
