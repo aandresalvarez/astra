@@ -104,15 +104,38 @@ struct WorkspaceCapabilitiesTests {
         let packages = CapabilityCatalogInventory.packages(catalogPackages: [], capabilities: capabilities)
         #expect(packages.map(\.name) == listed)
         #expect(Set(WorkspaceCapabilities.listedSkillRows(of: workspace).map(\.name)) == Set(listed))
-        // Hidden, not gone: what is active, what a saved ID resolves to and
-        // what the composer attaches to a new task still include the copies.
+        // Hidden, not gone: what is active and what a saved ID resolves to
+        // still include the copies.
         #expect(capabilities.workspaceSkills.map(\.name) == all)
         #expect(capabilities.activeSkills.map(\.name) == all)
+        // The composer neither offers them nor attaches them to a new task.
+        #expect(capabilities.composerSkills.map(\.name) == listed)
         let composer = ComposerCapabilitySnapshotBuilder.make(
             workspace: workspace, globalSkills: [], globalConnectors: [], globalTools: [],
             packageDefinitions: [], packPolicy: .empty
         )
-        #expect(composer.selectedSkills(excluding: []).map(\.name) == all)
+        #expect(composer.availableSkills.map(\.name) == listed)
+        #expect(composer.selectedSkills(excluding: []).map(\.name) == listed)
+    }
+
+    @Test("The composer menu keeps a restored copy a task already pins, and offers none otherwise")
+    @MainActor
+    func composerMenuKeepsAPinnedRestoredCopy() {
+        let workspace = Workspace(name: "Menu", primaryPath: "/tmp/composer-menu-restored")
+        let copy = Skill(name: "Safe Bash (Restored)", allowedTools: ["Read", "Bash"])
+        let local = Skill(name: "Local Analyst", allowedTools: ["Read"])
+        copy.workspace = workspace
+        local.workspace = workspace
+        let offered = WorkspaceCapabilities(workspace: workspace).composerSkills
+        #expect(offered.map(\.id) == [local.id])
+
+        // A new task, or a task that does not pin the copy: it is not in the menu.
+        #expect(WorkspaceCapabilities.composerMenuSkills(offered: offered, workspace: workspace, pinned: []).map(\.id) == [local.id])
+        // A task that pins it: it stays, so it can be seen and removed.
+        #expect(WorkspaceCapabilities.composerMenuSkills(offered: offered, workspace: workspace, pinned: [copy]).map(\.id)
+            == [local.id, copy.id])
+        // Nothing offered yet: the workspace's listed rows, still without the copy.
+        #expect(WorkspaceCapabilities.composerMenuSkills(offered: [], workspace: workspace, pinned: []).map(\.id) == [local.id])
     }
 
     @Test("A plain list of a workspace's skills leaves out the universal ones as well")

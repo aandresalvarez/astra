@@ -80,6 +80,10 @@ struct SkillModelTests {
         withTool.localTools = [LocalTool(name: "Snapshot tool", toolDescription: "", icon: "wrench", toolType: "cli", command: "true")]
         #expect(!withTool.isHiddenFromCapabilityLists)
 
+        // An inline tool the row grants (an MCP tool, say) is managed on the row too.
+        let withCustomTool = Skill(name: "Safe Bash (Restored)", customTools: ["mcp__server__tool"])
+        #expect(!withCustomTool.isHiddenFromCapabilityLists)
+
         let withSetting = Skill(name: "Safe Bash (Restored)")
         withSetting.environmentKeys = ["TOKEN"]
         #expect(!withSetting.isHiddenFromCapabilityLists)

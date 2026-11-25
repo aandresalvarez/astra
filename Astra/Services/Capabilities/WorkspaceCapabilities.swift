@@ -45,8 +45,8 @@ struct WorkspaceCapabilities {
 
     /// `workspaceSkills` as a person browses them: without a row restored
     /// under a universal skill's name (`Skill.isHiddenFromCapabilityLists`).
-    /// Lists only; what is active, what the composer attaches and what a
-    /// saved ID resolves to stay `workspaceSkills`.
+    /// Lists only; what is active and what a saved ID resolves to stay
+    /// `workspaceSkills`.
     var listedWorkspaceSkills: [Skill] {
         workspaceSkills.filter { !$0.isHiddenFromCapabilityLists }
     }
@@ -66,6 +66,26 @@ struct WorkspaceCapabilities {
     /// never dropped for being hidden.
     static func offeredForSelection(_ skills: [Skill], selected: Set<String>) -> [Skill] {
         skills.filter { !$0.isBareRestoredBuiltIn || selected.contains($0.id.uuidString) }
+    }
+
+    /// What the composer offers and, for a new task, attaches when the
+    /// request names it: `activeSkills`, less the rows restored under a
+    /// universal skill's name. Such a row is a universal skill under another
+    /// name, and those are not attached to new tasks. Whatever already names
+    /// one keeps it: a task's pins, a routine, a template's defaults.
+    var composerSkills: [Skill] {
+        activeSkills.filter { !$0.isBareRestoredBuiltIn }
+    }
+
+    /// The composer's capability menu: what the composer offers (the
+    /// workspace's listed rows while nothing is offered), with what the task
+    /// already pins merged in, so a pinned row the composer no longer offers
+    /// stays visible and can be removed.
+    static func composerMenuSkills(offered: [Skill], workspace: Workspace?, pinned: [Skill]) -> [Skill] {
+        let configured = offered.isEmpty ? (workspace.map { listedSkillRows(of: $0) } ?? []) : offered
+        var seen = Set<UUID>()
+        return (configured + pinned).filter { seen.insert($0.id).inserted }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     var enabledGlobalSkills: [Skill] {

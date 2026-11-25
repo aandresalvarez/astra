@@ -143,6 +143,56 @@ struct WorkspaceCommandServiceTests {
     }
 
     @MainActor
+    @Test("A template keeps a default that names a restored universal skill the composer no longer offers")
+    func templateDefaultNamingARestoredCopyStillAttachesIt() throws {
+        let fixture = try Self.makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let copy = Skill(name: "Read-Only (Restored)", allowedTools: ["Read", "Glob", "Grep"],
+                         behaviorInstructions: "Do not modify files.")
+        copy.workspace = fixture.workspace
+        fixture.context.insert(copy)
+        let analyst = Skill(name: "Local Analyst", allowedTools: ["Read"])
+        analyst.workspace = fixture.workspace
+        fixture.context.insert(analyst)
+        let writer = Skill(name: "Release Writer", allowedTools: ["Read", "Write"])
+        writer.workspace = fixture.workspace
+        fixture.context.insert(writer)
+        // A second restored row the template does not name: it must stay out.
+        let unnamed = Skill(name: "Safe Bash (Restored)", allowedTools: ["Read", "Bash"])
+        unnamed.workspace = fixture.workspace
+        fixture.context.insert(unnamed)
+        try fixture.context.save()
+
+        // What the composer hands a template: its selection never has the copy.
+        let offered = WorkspaceCapabilities(workspace: fixture.workspace).composerSkills
+        #expect(offered.map(\.name) == ["Local Analyst", "Release Writer"])
+
+        let template = TaskTemplate(name: "Audit", mainGoal: "Audit the change", workspace: fixture.workspace)
+        template.defaultSkillIDs = [copy.id.uuidString, analyst.id.uuidString, writer.id.uuidString]
+        fixture.context.insert(template)
+
+        // The person excluded the writer in the composer: that still applies.
+        let selection = offered.filter { $0.id != writer.id }
+        let creation = try WorkspaceCommandService.createTemplateTasks(
+            template: template,
+            taskTitle: "Audit",
+            variables: [:],
+            selectedSkills: selection,
+            defaultModel: "",
+            defaultRuntimeID: "claude_code",
+            workspace: fixture.workspace,
+            modelContext: fixture.context,
+            source: "test", consultation: false
+        )
+        #expect(creation.mainTask.skills.map(\.name).sorted() == ["Local Analyst", "Read-Only (Restored)"])
+        #expect(!creation.mainTask.skills.contains { $0.id == unnamed.id })
+
+        // A template that names no defaults takes the composer's selection, which has no copy.
+        let plain = TaskTemplate(name: "Plain", mainGoal: "Do the thing", workspace: fixture.workspace)
+        #expect(WorkspaceCommandService.skills(for: plain, selectedSkills: selection, in: fixture.workspace).map(\.id) == [analyst.id])
+    }
+
+    @MainActor
     @Test("Template before phase is the only initially runnable request")
     func templateBeforePhaseOwnsInitialExecutionRequest() throws {
         let fixture = try Self.makeFixture()
