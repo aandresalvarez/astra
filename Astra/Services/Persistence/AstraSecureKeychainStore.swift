@@ -327,10 +327,24 @@ public enum AstraSecureKeychainStore {
         let running = Task { @MainActor in
             let outcome = await onOwnThread(open)
             interactiveOpens[path] = nil
+            NotificationCenter.default.post(name: interactiveOpenDidEnd, object: path)
             return outcome
         }
         interactiveOpens[path] = running
         return await running.value
+    }
+
+    /// Posted on the main actor when an interactive open ends, once the main
+    /// thread is answered by the keychain again and before any caller resumes.
+    /// Its object is the keychain's path. Whatever a screen read while the open
+    /// was in flight was the closed answer, in any window and whichever screen
+    /// started it, so a screen that keeps such a read takes it again on this.
+    public static let interactiveOpenDidEnd = Notification.Name("AstraSecureKeychainStore.interactiveOpenDidEnd")
+
+    /// An interactive open of this keychain is in flight, so the main thread
+    /// is being answered as a closed keychain: not the moment to keep a read.
+    @MainActor public static var hasInteractiveOpenInFlight: Bool {
+        interactiveOpens[keychainPath] != nil
     }
 
     /// Runs blocking keychain work on a thread of its own: not the main

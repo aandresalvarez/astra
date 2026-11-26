@@ -765,6 +765,9 @@ struct ConnectorEditorView: View {
                 }
             }
             .padding()
+            // A save waiting for macOS's Keychain dialog saves the account as it
+            // was when it was pressed: the form holds still until it has run.
+            .disabled(isAwaitingKeychainAccess)
         }
         .onAppear {
             if connector.name == "New Connector" {
@@ -777,15 +780,17 @@ struct ConnectorEditorView: View {
         }
         .task(id: connector.id) { refreshUnreadableCredentialKeys() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            // Answering macOS's Keychain dialog brings the app forward too. The
-            // end of the wait refreshes these, below.
-            guard !isAwaitingKeychainAccess else { return }
+            // Answering macOS's Keychain dialog brings the app forward too, in
+            // every window, while reads here still get a closed keychain's
+            // answer. The end of that open refreshes these, below.
+            guard !AstraSecureKeychainStore.hasInteractiveOpenInFlight else { return }
             refreshUnreadableCredentialKeys()
         }
-        // However the wait ended: saved, refused, or a sign-in cancelled behind
-        // the dialog. Run from here, it reads the account shown by then.
-        .onChange(of: isAwaitingKeychainAccess) { _, waiting in
-            if !waiting { refreshUnreadableCredentialKeys() }
+        // Whichever window or screen asked, and however it ended: saved,
+        // refused, or a sign-in cancelled behind the dialog. Run from here, it
+        // reads the account shown by then.
+        .onReceive(NotificationCenter.default.publisher(for: AstraSecureKeychainStore.interactiveOpenDidEnd)) { _ in
+            refreshUnreadableCredentialKeys()
         }
         .onDisappear {
             cancelOutlookSignIn()
