@@ -4,8 +4,21 @@ import ASTRACore
 import ASTRAModels
 
 extension TaskQueue {
+    /// Asks the release rule for every saved reservation, then reads who holds
+    /// what from every journal and every ownership event in the store. It
+    /// runs on the main actor and its cost grows with the store's history, so
+    /// a queue entry point does not repeat a read made a moment earlier in the
+    /// same main-actor job: the signal starts its loop with the session it
+    /// bound, and an admission pass leaves the read to the acquire it calls.
+    /// Lifecycle registration admits and dispatches nothing, and the work it
+    /// registers reads on entry, so it binds without a read unless the last
+    /// one failed. Before that, sending a new task read three times before
+    /// returning, a follow-up twice, and an admission pass twice.
     @MainActor
     func refreshResourceOwnership(in context: ModelContext) {
+        #if DEBUG
+        observedOwnershipReadCount += 1
+        #endif
         let store = RuntimeExecutionOwner.store(in: context)
         resourceOwnershipStore = store
         waitingBanners = [:]
