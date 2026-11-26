@@ -24,7 +24,7 @@ extension TaskQueue {
         ownershipJournalStamp = Self.journalStamp(store)
         do {
             try RuntimeReservationRelease.reconcile(in: store, context: context)
-            persistedResourceLocks = try RuntimeResourceOwnership.claims(in: store, context: context)
+            persistedResourceLocks = try RuntimeResourceOwnership.claims(in: store, context: context, audits: .shared)
             resourceOwnershipReadFailed = false
         } catch {
             // Preserve the last known holds. Unreadable authority never grants admission.
