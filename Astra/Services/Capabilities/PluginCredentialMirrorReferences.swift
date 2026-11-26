@@ -21,6 +21,12 @@ struct PluginCredentialMirrorReferences {
     }
     func holdsAccount(_ cleanup: ConnectorKeychainCleanup) -> Bool { requests.holdsAccount(cleanup) }
 
+    /// How many times this process has walked the skill snapshots a mirror's
+    /// tasks carry on the main actor. A mirror decoded ahead was walked with
+    /// its decode, off the main actor, so tests pin by this count what a
+    /// capture walks on it.
+    private(set) static var mainActorSnapshotWalkCount = 0
+
     /// `decodedAhead` holds mirror decodes made off the main actor, used only
     /// for the bytes this capture reads.
     static func capture(
@@ -29,6 +35,12 @@ struct PluginCredentialMirrorReferences {
     ) -> Self? {
         guard let files = CredentialRecoveryMirrors.read(modelContext: modelContext, extraMirrors: extraMirrors,
             excludingWorkspaceIDs: excludingWorkspaceIDs, decodedAhead: decodedAhead) else { return nil }
+        return capture(files, modelContext: modelContext)
+    }
+
+    /// `capture` from mirror files already read, as a pass that reads them
+    /// once for several readers does.
+    static func capture(_ files: [CredentialRecoveryMirrors.Entry], modelContext: ModelContext) -> Self? {
         let saved = ModelContext(modelContext.container)
         var result = Self()
         for file in files {
@@ -70,8 +82,17 @@ struct PluginCredentialMirrorReferences {
                     for key in declared where Skill.isSecretEnvironmentKey(key) { result.keys.insert(.init(key: key, skillID: id)) }
                 } else { result.unknownKeys.insert(id) }
             }
+            // Every task's skill snapshots, walked with the decode when it
+            // was made ahead. What they hold only adds to the rest, and
+            // nothing read below has an effect, so walking them before the
+            // tasks' requests decides as walking them task by task did.
+            let snapshots = file.decodedAhead?.taskSkillSnapshots ?? {
+                mainActorSnapshotWalkCount += 1
+                return MirrorTaskSkillSnapshots(listed)
+            }()
+            guard let held = snapshots.held else { return nil }
+            result.requests.include(held)
             for task in listed.tasks ?? [] {
-                guard result.requests.includeSkillSnapshots(task.skillSnapshots ?? []) else { return nil }
                 let requests = task.turnRequests ?? []
                 let latestSequence = requests.map(\.sequence).max()
                 let status = task.status.flatMap(TaskStatus.init(rawValue:))
@@ -137,5 +158,24 @@ struct PluginCredentialMirrorListing: Decodable, Sendable {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return (try? decoder.decode(Self.self, from: data)) ?? (try? JSONDecoder().decode(Self.self, from: data))
+    }
+}
+
+/// What the skill snapshots of every task a mirror lists can still read, as
+/// `PluginCredentialMirrorReferences.capture` gathers them: a pure function
+/// of the listing, so a mirror decoded ahead (`CredentialMirrorDecodes`) is
+/// walked there, off the main actor. A mirror's tasks can carry thousands.
+struct MirrorTaskSkillSnapshots: Sendable {
+    /// Nil when a snapshot names an ID that isn't one, which holds cleanup
+    /// closed.
+    let held: HeldCredentials?
+
+    init(_ listing: PluginCredentialMirrorListing) {
+        var held = HeldCredentials()
+        for task in listing.tasks ?? [] where !held.includeSkillSnapshots(task.skillSnapshots ?? []) {
+            self.held = nil
+            return
+        }
+        self.held = held
     }
 }

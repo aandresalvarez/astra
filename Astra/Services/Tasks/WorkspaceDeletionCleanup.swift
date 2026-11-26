@@ -431,6 +431,7 @@ enum WorkspaceDeletionCleanupService {
         _ record: WorkspaceDeletionCleanupRecord, modelContext: ModelContext,
         retained: [ConnectorKeychainCleanup] = [], retainedSkillIDs: Set<UUID> = [], movedMirrors: [String] = [],
         extraMirrors: [String]? = nil, excludingWorkspaceIDs: Set<UUID>? = nil,
+        decodedAhead: CredentialMirrorDecodes? = nil,
         identity: (String) throws -> String? = WorkspaceFileLayout.itemIdentityConfirmingAbsence(at:),
         cleanConnectors: (([ConnectorKeychainCleanup], ConnectorCredentialCleanup.Ownership) -> Bool)? = nil,
         cleanSkill: ((SkillKeychainCleanup) -> Bool)? = nil
@@ -507,7 +508,8 @@ enum WorkspaceDeletionCleanupService {
         guard let liveProjected = PluginSecretCleanupOutbox.liveSkillIDs(modelContext: modelContext) else { return false }
         let liveSkills = Set(skills.map(\.secretNamespaceID)).union(liveProjected)
         guard let mirrored = PluginCredentialMirrorReferences.capture(modelContext: modelContext,
-            extraMirrors: extraMirrors, excludingWorkspaceIDs: excludingWorkspaceIDs ?? [record.workspaceID]) else { return false }
+            extraMirrors: extraMirrors, excludingWorkspaceIDs: excludingWorkspaceIDs ?? [record.workspaceID],
+            decodedAhead: decodedAhead) else { return false }
         // Every credential is attempted; any that couldn't be cleared keeps
         // the record for an idempotent retry. A recreated connector can share
         // a stable endpoint or package namespace under a new ID, so
@@ -531,6 +533,12 @@ enum WorkspaceDeletionCleanupService {
 
     /// Settles deletions a quit interrupted, reading committed state through
     /// a fresh context. Startup runs this before mirror recovery.
+    ///
+    /// With no record to settle, nothing else is read: every read below only
+    /// decides records, and none of them writes. `decodedAhead`
+    /// (`decodeMirrorsAhead`) holds mirror decodes made off the main actor;
+    /// the pass still reads every mirror itself and uses one only for the
+    /// bytes it reads, so it decides as it would without them.
     @discardableResult
     static func resumePending(
         modelContext: ModelContext,
@@ -539,20 +547,25 @@ enum WorkspaceDeletionCleanupService {
         connectorOutbox: ConnectorCredentialCleanupStore? = nil,
         dropsUnconfirmed: Bool = true,
         rescanMarker: URL? = nil,
-        extraMirrors: [String]? = nil
+        extraMirrors: [String]? = nil,
+        decodedAhead: CredentialMirrorDecodes? = nil
     ) -> Int {
         let store = store ?? WorkspaceDeletionCleanupStore(for: modelContext)
+        let pending = store.pending()
+        guard !pending.isEmpty else { return 0 }
         // What other deletions and unconfirmed connector intents hold is
         // spared, so every record of both must read.
         // Mirrors of workspaces this outbox is deleting name nothing; every
         // other recoverable mirror keeps the connectors and skills it lists.
-        let deleting = Set(store.pending().map(\.workspaceID))
+        let deleting = Set(pending.map(\.workspaceID))
         guard store.pendingConnectors() != nil,
               let intentOwners = ConnectorCredentialCleanup.unconfirmedOwners(
-                  modelContext: modelContext, store: connectorOutbox, extraMirrors: extraMirrors, excludingWorkspaceIDs: deleting
+                  modelContext: modelContext, store: connectorOutbox, extraMirrors: extraMirrors, excludingWorkspaceIDs: deleting,
+                  decodedAhead: decodedAhead
               ),
               let mirrored = ConnectorCredentialCleanup.connectorsInStoredMirrors(
-                  modelContext: modelContext, extraMirrors: extraMirrors, excludingWorkspaceIDs: deleting
+                  modelContext: modelContext, extraMirrors: extraMirrors, excludingWorkspaceIDs: deleting,
+                  decodedAhead: decodedAhead
               ),
               let classified = classify(store: store, modelContext: modelContext) else { return 0 }
         // Every record holds what it names until it is settled as a saved
@@ -580,7 +593,8 @@ enum WorkspaceDeletionCleanupService {
                     record, modelContext: ModelContext(modelContext.container),
                     retained: others.flatMap(\.connectors) + intentOwners,
                     retainedSkillIDs: Set(others.flatMap { $0.skills.map(\.skillID) }).union(mirrored.skillIDs),
-                    movedMirrors: movedMirrors, extraMirrors: extraMirrors, excludingWorkspaceIDs: deleting
+                    movedMirrors: movedMirrors, extraMirrors: extraMirrors, excludingWorkspaceIDs: deleting,
+                    decodedAhead: decodedAhead
                 ) else { continue }
                 store.remove(record)
                 held = others
@@ -588,6 +602,19 @@ enum WorkspaceDeletionCleanupService {
             }
         }
         return settled
+    }
+
+    /// `resumePending`'s mirror decodes, made off the main actor so the pass
+    /// that follows doesn't make them on it: nil, with nothing read, when no
+    /// deletion is pending. Startup awaits it just before the pass, which
+    /// takes from it only what it reads unchanged.
+    static func decodeMirrorsAhead(
+        modelContext: ModelContext, store: WorkspaceDeletionCleanupStore? = nil, extraMirrors: [String]? = nil
+    ) async -> CredentialMirrorDecodes? {
+        guard !(store ?? WorkspaceDeletionCleanupStore(for: modelContext)).pending().isEmpty else { return nil }
+        return await CredentialMirrorDecodes.decode(
+            CredentialRecoveryMirrors.candidates(modelContext: modelContext, extraMirrors: extraMirrors),
+            reportingAs: "workspace_deletion_mirrors_decoded_ahead")
     }
 
     /// The workspace ID a mirror file names, parsed as the importer parses

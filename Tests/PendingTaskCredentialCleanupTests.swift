@@ -133,6 +133,104 @@ struct PendingTaskCredentialCleanupTests {
         #expect(!released.holdsAccount(cleanup))
     }
 
+    @Test("A paused task's failed requests share one read of its permission state, and each still holds its context")
+    func pausedTaskPermissionStateIsReadOncePerCapture() throws {
+        let fixture = try Fixture(onDisk: true)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let context = fixture.context
+        let task = try #require(try context.fetch(FetchDescriptor<AgentTask>()).first { $0.id == fixture.request.taskID })
+        let run = TaskRun(task: task)
+        context.insert(run)
+        run.status = .failed
+        run.typedStopReason = .permissionApprovalRequired
+        task.status = .pendingUser
+        // Five failed requests from the run that stopped for the approval.
+        var requests = [fixture.request]
+        for sequence in 2...5 {
+            let request = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: sequence, pluginDefinitions: [])
+            context.insert(request)
+            requests.append(request)
+        }
+        for request in requests {
+            request.runID = run.id
+            request.state = .failed
+            request.terminalAt = Date()
+        }
+        try recordOpenApproval(for: run, of: task, account: fixture.account, requestID: "permission-hold")
+        try context.save()
+
+        let reads = PendingTaskCredentialReferences.permissionTaskReadCount
+        var asked = 0
+        let references = try #require(PendingTaskCredentialReferences.capture(modelContext: ModelContext(fixture.container)) {
+            asked += 1
+            return try TaskPermissionContinuation.isCurrent($0, task: $1, modelContext: $2)
+        })
+        #expect(references.holdsSkill(fixture.namespace, key: "API_TOKEN"))
+        #expect(references.holdsAccount(fixture.account.keychainCleanup))
+        // Read once for the task, and its one continuation asked about once,
+        // where each of the five requests read and asked again before.
+        #expect(PendingTaskCredentialReferences.permissionTaskReadCount - reads == 1)
+        #expect(asked == 1)
+    }
+
+    @Test("A continuation no failed request reaches is never asked about, so it can't fail the capture")
+    func unreachedContinuationIsNeverAsked() throws {
+        let fixture = try Fixture(onDisk: true)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let context = fixture.context
+        let task = try #require(try context.fetch(FetchDescriptor<AgentTask>()).first { $0.id == fixture.request.taskID })
+        let reached = TaskRun(task: task)
+        let unreached = TaskRun(task: task)
+        for run in [reached, unreached] {
+            context.insert(run)
+            run.status = .failed
+            run.typedStopReason = .permissionApprovalRequired
+        }
+        task.status = .pendingUser
+        fixture.request.runID = reached.id
+        fixture.request.state = .failed
+        fixture.request.terminalAt = Date()
+        // The unreached run's approval is open first, so every request walks
+        // past it, but only a request from that run asks about it.
+        try recordOpenApproval(for: unreached, of: task, account: fixture.account, requestID: "permission-hold-unreached")
+        try recordOpenApproval(for: reached, of: task, account: fixture.account, requestID: "permission-hold-reached")
+        try context.save()
+        struct Unreadable: Error {}
+        var asked: [UUID] = []
+        let isCurrent: PendingTaskCredentialReferences.PermissionContexts.IsCurrent = { binding, _, _ in
+            asked.append(binding.runID)
+            if binding.runID == unreached.id { throw Unreadable() }
+            return true
+        }
+
+        let references = try #require(PendingTaskCredentialReferences.capture(
+            modelContext: ModelContext(fixture.container), isCurrent: isCurrent))
+        #expect(references.holdsAccount(fixture.account.keychainCleanup))
+        #expect(asked == [reached.id])
+
+        // A failed request from the other run reaches it, and its answer
+        // that can't be read holds cleanup closed.
+        let other = TaskTurnRequest(task: task, messageEventID: UUID(), sequence: 2, pluginDefinitions: [])
+        context.insert(other)
+        other.runID = unreached.id
+        other.state = .failed
+        other.terminalAt = Date()
+        try context.save()
+        #expect(PendingTaskCredentialReferences.capture(modelContext: ModelContext(fixture.container), isCurrent: isCurrent) == nil)
+    }
+
+    /// Records `run`'s approval for `account` as the open request `requestID`
+    /// of `task`, bound to that run.
+    private func recordOpenApproval(for run: TaskRun, of task: AgentTask, account: Connector, requestID: String) throws {
+        let binding = TaskPermissionContinuation.capture(task: task, run: run, modelContext: try #require(task.modelContext))
+        let label = "connector:\(account.id.uuidString):API_TOKEN"
+        let payload = try #require(PermissionBroker.approvalPayload(providerID: task.resolvedRuntimeID,
+            request: .connectorCredentials(connectorID: account.id, displayName: "Account", labels: [label]),
+            reason: "Blocked pending approval", grants: [.credential(label: label)], requestID: requestID).encodedString())
+        TaskRuntimePermissionOpenRequestStore.recordOpenRequest(
+            payload: TaskPermissionContinuation.attach(payload, continuation: binding), task: task)
+    }
+
     @Test("Failed requests hold nothing unless their task is paused for an approval, however their tasks are read",
           arguments: [1, 2, 500])
     func failedRequestsHoldOnlyThroughAPausedTask(batch: Int) throws {

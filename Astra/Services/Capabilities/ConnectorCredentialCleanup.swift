@@ -132,9 +132,10 @@ enum ConnectorCredentialCleanup {
     /// every recoverable mirror still hold, and the archived generations.
     /// Running a cleanup deletes Keychain items, and an Outlook account's
     /// registry entry, and none of this reads either, so `resumePending`
-    /// reads it once for all its records. Each read decodes every workspace
-    /// mirror twice, on the main actor at launch, unless `decodedAhead`
-    /// already decoded the bytes it reads.
+    /// reads it once for all its records, the mirrors in one read for both
+    /// their readers. That read decodes every workspace mirror on the main
+    /// actor at launch, and walks its tasks' skill snapshots, unless
+    /// `decodedAhead` already did both for the bytes it reads.
     @MainActor
     private struct PassInputs {
         /// The context `stored` was fetched from, kept while its rows are read.
@@ -156,12 +157,15 @@ enum ConnectorCredentialCleanup {
                 ], level: .error)
                 return nil
             }
+            // Both mirror readers take the same files, from one read: they
+            // read them back to back before, and nothing either does writes
+            // a mirror.
             guard let references = PendingTaskCredentialReferences.capture(modelContext: modelContext),
                   let archived = ConnectorCredentialGenerationJournal.retainedRecoveryCandidates(modelContext: modelContext),
-                  let mirroredRequests = PluginCredentialMirrorReferences.capture(
+                  let mirrors = CredentialRecoveryMirrors.read(
                       modelContext: modelContext, extraMirrors: extraMirrors, decodedAhead: decodedAhead),
-                  let mirroredOwners = connectorsInStoredMirrors(
-                      modelContext: modelContext, extraMirrors: extraMirrors, decodedAhead: decodedAhead)
+                  let mirroredRequests = PluginCredentialMirrorReferences.capture(mirrors, modelContext: modelContext),
+                  let mirroredOwners = connectorsListed(in: mirrors)
             else { return nil }
             return PassInputs(context: modelContext, stored: stored, references: references, archived: archived,
                               mirroredRequests: mirroredRequests, mirroredOwners: mirroredOwners.owners)
@@ -330,13 +334,17 @@ enum ConnectorCredentialCleanup {
         modelContext: ModelContext, store: ConnectorCredentialCleanupStore? = nil, extraMirrors: [String]? = nil,
         decodedAhead: CredentialMirrorDecodes? = nil
     ) -> Int {
-        // Startup's pass reports how many decodes it still made on the main
-        // actor: those of a file that changed after it was decoded ahead.
+        // Startup's pass reports how many decodes, and snapshot walks, it
+        // still made on the main actor: those of a file that changed after it
+        // was decoded ahead.
         let mainActorDecodes = CredentialRecoveryMirrors.mainActorDecodeCount
+        let mainActorWalks = PluginCredentialMirrorReferences.mainActorSnapshotWalkCount
         defer {
             if decodedAhead != nil {
                 reportPerformance("connector_outbox_pass_decodes", [
-                    "main_actor_decode_count": String(CredentialRecoveryMirrors.mainActorDecodeCount - mainActorDecodes)
+                    "main_actor_decode_count": String(CredentialRecoveryMirrors.mainActorDecodeCount - mainActorDecodes),
+                    "main_actor_snapshot_walk_count": String(
+                        PluginCredentialMirrorReferences.mainActorSnapshotWalkCount - mainActorWalks)
                 ])
             }
         }
@@ -460,6 +468,14 @@ enum ConnectorCredentialCleanup {
     )? {
         guard let mirrors = CredentialRecoveryMirrors.read(modelContext: modelContext, extraMirrors: extraMirrors,
             excludingWorkspaceIDs: excludingWorkspaceIDs, decodedAhead: decodedAhead) else { return nil }
+        return connectorsListed(in: mirrors)
+    }
+
+    /// `connectorsInStoredMirrors` from mirror files already read.
+    static func connectorsListed(in mirrors: [CredentialRecoveryMirrors.Entry]) -> (
+        ids: Set<UUID>, byWorkspace: [(Workspace, Set<UUID>)], owners: [ConnectorKeychainCleanup], skillIDs: Set<UUID>,
+        skillsByWorkspace: [(Workspace, Set<UUID>)]
+    )? {
         var all = Set<UUID>()
         var byWorkspace: [(Workspace, Set<UUID>)] = []
         var owners: [ConnectorKeychainCleanup] = []
@@ -509,15 +525,9 @@ enum ConnectorCredentialCleanup {
     ) async -> CredentialMirrorDecodes? {
         guard let store = store ?? ConnectorCredentialCleanupStore(for: modelContext),
               let pending = store.pending(), pending.complete, !pending.records.isEmpty else { return nil }
-        let start = DispatchTime.now().uptimeNanoseconds
-        let decodes = await CredentialMirrorDecodes.decode(
-            CredentialRecoveryMirrors.candidates(modelContext: modelContext, extraMirrors: extraMirrors))
-        let elapsed = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
-        reportPerformance("connector_outbox_mirrors_decoded_ahead", [
-            "file_count": String(decodes.fileCount), "byte_count": String(decodes.byteCount),
-            "duration_ms": String(format: "%.2f", elapsed)
-        ])
-        return decodes
+        return await CredentialMirrorDecodes.decode(
+            CredentialRecoveryMirrors.candidates(modelContext: modelContext, extraMirrors: extraMirrors),
+            reportingAs: "connector_outbox_mirrors_decoded_ahead")
     }
 
     private static func reportPerformance(_ event: String, _ fields: [String: String]) {
@@ -557,12 +567,13 @@ enum ConnectorCredentialCleanup {
     /// when the outbox, a record in it, or the store can't be read.
     static func unconfirmedOwners(
         modelContext: ModelContext, store: ConnectorCredentialCleanupStore? = nil,
-        extraMirrors: [String]? = nil, excludingWorkspaceIDs: Set<UUID>? = nil
+        extraMirrors: [String]? = nil, excludingWorkspaceIDs: Set<UUID>? = nil, decodedAhead: CredentialMirrorDecodes? = nil
     ) -> [ConnectorKeychainCleanup]? {
         // Every connector a recoverable mirror lists, which recovery could
         // restore from it, and the pending intents the connector pass holds.
         guard let mirrored = connectorsInStoredMirrors(
-            modelContext: modelContext, extraMirrors: extraMirrors, excludingWorkspaceIDs: excludingWorkspaceIDs
+            modelContext: modelContext, extraMirrors: extraMirrors, excludingWorkspaceIDs: excludingWorkspaceIDs,
+            decodedAhead: decodedAhead
         ) else { return nil }
         guard let store = store ?? ConnectorCredentialCleanupStore(for: modelContext) else { return mirrored.owners }
         // Which store the intents were recorded for decides which can run;

@@ -10,26 +10,28 @@ import ASTRAPersistence
 /// after the request finishes. An unreadable request holds cleanup closed.
 @MainActor
 struct PendingTaskCredentialReferences {
-    private var skills: Set<UUID> = []
-    private var keys: [UUID: Set<String>] = [:]
-    private var unknownKeys: Set<UUID> = []
-    private var accounts: Set<UUID> = []
-    private var accountNamespaces: Set<String> = []
-    private var unknownAccountOwnership = false
+    private var held = HeldCredentials()
 
     func holdsSkill(_ id: UUID, key: String? = nil) -> Bool {
-        guard let key else { return skills.contains(id) }
-        return unknownKeys.contains(id) || keys[id, default: []].contains(key)
+        guard let key else { return held.skills.contains(id) }
+        return held.unknownKeys.contains(id) || held.keys[id, default: []].contains(key)
     }
 
     func holdsAccount(_ cleanup: ConnectorKeychainCleanup) -> Bool {
         guard let owned = KeychainSecretStore.ownedConnectorEntityIDs(for: cleanup.secretFacts) else { return true }
-        return unknownAccountOwnership || accounts.contains(cleanup.connectorID)
-            || !accountNamespaces.isDisjoint(with: owned)
+        return held.unknownAccountOwnership || held.accounts.contains(cleanup.connectorID)
+            || !held.accountNamespaces.isDisjoint(with: owned)
     }
 
-    static func capture(modelContext: ModelContext,
-                        taskReadBatch: Int = TaskTurnRequestOwnership.candidateLookupBatch) -> Self? {
+    /// `isCurrent` stands in for `TaskPermissionContinuation.isCurrent` in
+    /// tests.
+    static func capture(
+        modelContext: ModelContext,
+        taskReadBatch: Int = TaskTurnRequestOwnership.candidateLookupBatch,
+        isCurrent: @escaping PermissionContexts.IsCurrent = {
+            try TaskPermissionContinuation.isCurrent($0, task: $1, modelContext: $2)
+        }
+    ) -> Self? {
         // Unsaved changes, including a terminal transition that might roll
         // back, cannot authorize deleting credentials.
         let saved = ModelContext(modelContext.container)
@@ -40,11 +42,12 @@ struct PendingTaskCredentialReferences {
         // Failed requests are never removed, and each can still hold its
         // context through its task. Their tasks are read once, up front.
         guard let tasks = try? tasksOfFailedRequests(requests, in: saved, batch: taskReadBatch) else { return nil }
+        var permissions = PermissionContexts(context: saved, isCurrent: isCurrent)
         var result = Self()
         for request in requests {
             guard let state = TaskTurnRequestState(rawValue: request.stateRawValue) else { return nil }
             if state.isTerminal {
-                guard let held = try? retainsPermissionContext(request, task: tasks[request.taskID], in: saved) else { return nil }
+                guard let held = try? permissions.retainsContext(request, task: tasks[request.taskID]) else { return nil }
                 if !held { continue }
             }
             // Requests before policy snapshots use live rows, already covered
@@ -55,24 +58,73 @@ struct PendingTaskCredentialReferences {
         return result
     }
 
-    /// A failed provider run may still own an accepted context: approving its
-    /// blocked permission creates a new request from this exact snapshot.
-    /// Read the saved approval and current-turn policy, not transient UI state.
-    private static func retainsPermissionContext(_ request: TaskTurnRequest, task: AgentTask?, in context: ModelContext) throws -> Bool {
-        guard request.state == .failed, let runID = request.runID else { return false }
-        guard let task, task.status == .pendingUser,
-              let run = task.runs.first(where: { $0.id == runID }), run.typedStopReason == .permissionApprovalRequired
-        else { return false }
-        for payload in TaskRuntimePermissionOpenRequestStore.openRequestPayloads(for: task) {
-            guard let binding = TaskPermissionContinuation.binding(payload: payload, task: task, modelContext: context),
-                  binding.runID == runID else { continue }
-            if try TaskPermissionContinuation.isCurrent(binding, task: task, modelContext: context) { return true }
+    /// How many times this process has read a task's runs and open
+    /// permission requests for a capture: once per paused task, however
+    /// many of its failed requests ask about it. Tests pin that by this count.
+    private(set) static var permissionTaskReadCount = 0
+
+    /// Whether a failed provider run still owns an accepted context:
+    /// approving its blocked permission creates a new request from this
+    /// exact snapshot. It reads the saved approval and current-turn policy,
+    /// not transient UI state.
+    ///
+    /// A paused task can hold dozens of failed requests, and each asks the
+    /// same of it: its runs, its open requests and their continuations, and
+    /// whether each continuation is still current. Those are read once per
+    /// task and kept for the capture, which changes nothing. Each request
+    /// still asks what it asked before, in the same order and only as far:
+    /// a continuation no request reaches is never asked about, and one that
+    /// throws fails the request that reached it, as before.
+    @MainActor
+    struct PermissionContexts {
+        typealias IsCurrent = @MainActor (PermissionApprovalContinuation, AgentTask, ModelContext) throws -> Bool
+
+        /// What one task's requests ask of it, each answer read when a
+        /// request first asks for it.
+        private struct Reads {
+            let runs: [UUID: TaskRun]
+            var payloads: [String]?
+            var bindings: [Int: PermissionApprovalContinuation?] = [:]
+            var current: [Int: Result<Bool, any Error>] = [:]
         }
-        return false
+
+        let context: ModelContext
+        let isCurrent: IsCurrent
+        private var tasks: [UUID: Reads] = [:]
+
+        init(context: ModelContext, isCurrent: @escaping IsCurrent) {
+            self.context = context
+            self.isCurrent = isCurrent
+        }
+
+        mutating func retainsContext(_ request: TaskTurnRequest, task: AgentTask?) throws -> Bool {
+            guard request.state == .failed, let runID = request.runID else { return false }
+            guard let task, task.status == .pendingUser else { return false }
+            // The first run with an ID stands for it, as `first(where:)` did.
+            var reads = tasks.removeValue(forKey: task.id) ?? Reads(runs: Dictionary(
+                task.runs.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }))
+            defer { tasks[task.id] = reads }
+            guard let run = reads.runs[runID], run.typedStopReason == .permissionApprovalRequired else { return false }
+            let payloads = reads.payloads ?? {
+                PendingTaskCredentialReferences.permissionTaskReadCount += 1
+                return TaskRuntimePermissionOpenRequestStore.openRequestPayloads(for: task)
+            }()
+            reads.payloads = payloads
+            for (index, payload) in payloads.enumerated() {
+                let binding = reads.bindings[index]
+                    ?? TaskPermissionContinuation.binding(payload: payload, task: task, modelContext: context)
+                reads.bindings[index] = .some(binding)
+                guard let binding, binding.runID == runID else { continue }
+                let current = reads.current[index] ?? Result { try isCurrent(binding, task, context) }
+                reads.current[index] = current
+                if try current.get() { return true }
+            }
+            return false
+        }
     }
 
-    /// The tasks `retainsPermissionContext` asks about, by ID: those of the
-    /// failed requests that ran, in one lookup for all of them
+    /// The tasks `retainsContext` asks about, by ID: those of the failed
+    /// requests that ran, in one lookup for all of them
     /// (`TaskTurnRequestOwnership.candidates(taskIDs:)`). A task ID has no
     /// index, so looking each one up walks the task table once per request,
     /// and this runs on the main actor at every launch, once per pending
@@ -110,13 +162,13 @@ struct PendingTaskCredentialReferences {
             for component in components {
                 let id = PluginActivation.credentialID(workspaceID: workspaceID, pluginID: activation.pluginID,
                                                        componentID: component, runtimeSeed: activation.namespaceSeed, generation: activation.credentialNamespaceSeed)
-                skills.insert(id)
-                if definition == nil { unknownKeys.insert(id) }
+                held.skills.insert(id)
+                if definition == nil { held.unknownKeys.insert(id) }
                 for setting in activation.secretSettingKeys where PluginActivation.componentID(ofSettingKey: setting) == component {
-                    keys[id, default: []].insert(String(setting.dropFirst(component.count + 1)))
+                    held.keys[id, default: []].insert(String(setting.dropFirst(component.count + 1)))
                 }
                 for spec in specs where CapabilityResourceOrigin.componentID(for: spec) == component {
-                    keys[id, default: []].formUnion(spec.environmentKeys.filter(Skill.isSecretEnvironmentKey))
+                    held.keys[id, default: []].formUnion(spec.environmentKeys.filter(Skill.isSecretEnvironmentKey))
                 }
             }
             for binding in activation.bindings {
@@ -125,8 +177,8 @@ struct PendingTaskCredentialReferences {
                     if !frozen.contains(where: { $0.id == id }) {
                         // An older partial snapshot has only a logical ID;
                         // its missing credential generation remains unknown.
-                        accounts.insert(id)
-                        accountNamespaces.insert(KeychainSecretStore.connectorEntityID(for: id))
+                        held.accounts.insert(id)
+                        held.accountNamespaces.insert(KeychainSecretStore.connectorEntityID(for: id))
                     }
                 } else {
                     var descriptor = FetchDescriptor<Connector>(predicate: #Predicate { $0.id == id })
@@ -140,7 +192,7 @@ struct PendingTaskCredentialReferences {
         for entry in policy.accountInventory?.entries ?? [] { include(entry.account) }
         let accountParents = policy.accountInventory?.entries.compactMap(\.parentSkill) ?? []
         for skill in (policy.pluginOverrides?.skills ?? []) + (policy.authoredSkills ?? []) + accountParents {
-            includeSkill(skill.credentialNamespaceID ?? skill.id, keys: skill.environmentKeys)
+            held.includeSkill(skill.credentialNamespaceID ?? skill.id, keys: skill.environmentKeys)
             for account in skill.attachedConnectors ?? [] { include(account) }
         }
         guard let data = policy.skillSnapshotsJSON.data(using: .utf8),
@@ -148,6 +200,41 @@ struct PendingTaskCredentialReferences {
         return includeSkillSnapshots(snapshots)
     }
 
+    mutating func includeSkillSnapshots(_ snapshots: [SkillSnapshotConfig]) -> Bool {
+        held.includeSkillSnapshots(snapshots)
+    }
+
+    /// Adds what `includeSkillSnapshots` would have for snapshots already
+    /// walked, as a recovery mirror's tasks are, off the main actor.
+    mutating func include(_ walked: HeldCredentials) {
+        held.formUnion(walked)
+    }
+
+    private mutating func include(_ account: PluginAccountRecord) {
+        let facts = ConnectorSecretFacts(id: account.id, name: account.name, serviceType: account.serviceType,
+            baseURL: account.baseURL, originPackageID: account.originPackageID, originComponentID: account.originComponentID,
+            credentialNamespaceID: account.credentialNamespaceID,
+            outlookCredentialFormat: account.outlookCredentialFormat ?? OutlookCredentialIdentity.format(keys: account.configKeys, values: account.configValues))
+        guard let owned = KeychainSecretStore.ownedConnectorEntityIDs(for: facts) else { held.unknownAccountOwnership = true; return }
+        held.accountNamespaces.formUnion(owned)
+    }
+}
+
+/// The credentials `PendingTaskCredentialReferences` holds, as plain values:
+/// skill namespaces and their keys, and accounts with their namespaces. Free
+/// of the main actor, so the skill snapshots a recovery mirror's tasks carry
+/// can be walked off it, with the mirror's decode (`CredentialMirrorDecodes`).
+/// What it gathers only grows, so walks merged in any order hold the same.
+struct HeldCredentials: Sendable {
+    fileprivate(set) var skills: Set<UUID> = []
+    fileprivate(set) var keys: [UUID: Set<String>] = [:]
+    fileprivate(set) var unknownKeys: Set<UUID> = []
+    fileprivate(set) var accounts: Set<UUID> = []
+    fileprivate(set) var accountNamespaces: Set<String> = []
+    fileprivate(set) var unknownAccountOwnership = false
+
+    /// False when a snapshot names an ID that isn't one, which holds
+    /// cleanup closed.
     mutating func includeSkillSnapshots(_ snapshots: [SkillSnapshotConfig]) -> Bool {
         for skill in snapshots {
             if let namespace = skill.credentialNamespaceID {
@@ -176,17 +263,17 @@ struct PendingTaskCredentialReferences {
         return true
     }
 
-    private mutating func includeSkill(_ id: UUID, keys declared: [String]) {
+    fileprivate mutating func includeSkill(_ id: UUID, keys declared: [String]) {
         skills.insert(id)
         keys[id, default: []].formUnion(declared.filter(Skill.isSecretEnvironmentKey))
     }
 
-    private mutating func include(_ account: PluginAccountRecord) {
-        let facts = ConnectorSecretFacts(id: account.id, name: account.name, serviceType: account.serviceType,
-            baseURL: account.baseURL, originPackageID: account.originPackageID, originComponentID: account.originComponentID,
-            credentialNamespaceID: account.credentialNamespaceID,
-            outlookCredentialFormat: account.outlookCredentialFormat ?? OutlookCredentialIdentity.format(keys: account.configKeys, values: account.configValues))
-        guard let owned = KeychainSecretStore.ownedConnectorEntityIDs(for: facts) else { unknownAccountOwnership = true; return }
-        accountNamespaces.formUnion(owned)
+    fileprivate mutating func formUnion(_ other: Self) {
+        skills.formUnion(other.skills)
+        keys.merge(other.keys) { $0.union($1) }
+        unknownKeys.formUnion(other.unknownKeys)
+        accounts.formUnion(other.accounts)
+        accountNamespaces.formUnion(other.accountNamespaces)
+        unknownAccountOwnership = unknownAccountOwnership || other.unknownAccountOwnership
     }
 }
