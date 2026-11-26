@@ -870,31 +870,36 @@ struct CopilotCLICommandPlanningTests {
         let effortIndex = try #require(supportedPlan.arguments.firstIndex(of: "--effort"))
         #expect(supportedPlan.arguments[supportedPlan.arguments.index(after: effortIndex)] == "none")
 
-        let alternateOnlyCapabilities = CopilotCLICapabilities(
-            helpText: "--output-format=FORMAT --stream=MODE --no-ask-user --reasoning-effort LEVEL"
-        )
-        let alternateOnlyPlan = CopilotCLIRuntime.buildCommand(
-            executablePath: "/bin/copilot",
-            prompt: "Create index.html",
-            model: "claude-sonnet-4.6",
-            workspacePath: "/tmp/ws",
-            additionalPaths: [],
-            permissionPolicy: .restricted,
-            allowedTools: ["Read", "Write"],
-            timeoutSeconds: 60,
-            capabilities: alternateOnlyCapabilities,
-            taskEnvironment: [:],
-            copilotHome: "/tmp/copilot-home",
-            reasoningEffort: "none",
-            permissionArguments: Self.permissionArguments(
-                policy: .restricted,
+        // The option name sent is one the help listed: 1.0.114 lists only the
+        // long name, 1.0.83 listed both.
+        for helpText in [
+            "      --reasoning-effort <level>\n          Set the reasoning effort level",
+            "  --effort, --reasoning-effort <level>  Set the reasoning effort level"
+        ] {
+            let capabilities = CopilotCLICapabilities(helpText: helpText)
+            let plan = CopilotCLIRuntime.buildCommand(
+                executablePath: "/bin/copilot",
+                prompt: "Create index.html",
+                model: "gpt-6-luna",
+                workspacePath: "/tmp/ws",
+                additionalPaths: [],
+                permissionPolicy: .restricted,
                 allowedTools: ["Read", "Write"],
-                capabilities: alternateOnlyCapabilities
+                timeoutSeconds: 60,
+                capabilities: capabilities,
+                taskEnvironment: [:],
+                copilotHome: "/tmp/copilot-home",
+                reasoningEffort: "high",
+                permissionArguments: Self.permissionArguments(
+                    policy: .restricted,
+                    allowedTools: ["Read", "Write"],
+                    capabilities: capabilities
+                )
             )
-        )
 
-        #expect(!alternateOnlyCapabilities.supportsReasoningEffort)
-        #expect(!alternateOnlyPlan.arguments.contains("--effort"))
+            #expect(AgentRuntimeArgumentInspector.argumentList(plan.arguments, after: "--reasoning-effort") == ["high"])
+            #expect(!plan.arguments.contains("--effort"))
+        }
 
         let unsupportedCapabilities = CopilotCLICapabilities(
             helpText: "--output-format=FORMAT --stream=MODE --no-ask-user"
@@ -920,6 +925,7 @@ struct CopilotCLICommandPlanningTests {
         )
 
         #expect(!unsupportedPlan.arguments.contains("--effort"))
+        #expect(!unsupportedPlan.arguments.contains("--reasoning-effort"))
     }
 
     @Test("Reasoning effort choices include minimal (GitHub Copilot CLI 1.0.83)")
