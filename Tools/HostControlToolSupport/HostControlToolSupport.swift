@@ -764,6 +764,7 @@ public final class HostControlMCPServer {
     /// Nil in the standalone helper, where every write waits for review.
     private let externalActionRequester: (any BrokeredExternalActionRequesting)?
     private let mailReader: (any BrokeredMailReading)?
+    private let credentialOpener: BrokeredCredentialOpener?
     private let processLimits: HostControlProcessLimits
     private lazy var server = MCPServer(
         name: "astra-host-control",
@@ -783,7 +784,8 @@ public final class HostControlMCPServer {
         processLimits: HostControlProcessLimits = .standard,
         historyReader: (any TaskHistoryReading)? = nil,
         externalActionRequester: (any BrokeredExternalActionRequesting)? = nil,
-        mailReader: (any BrokeredMailReading)? = nil
+        mailReader: (any BrokeredMailReading)? = nil,
+        sealedCredentials: BrokeredSealedCredentials? = nil
     ) {
         let cancellationRegistry = HostControlOperationCancellationRegistry()
         self.configuration = configuration
@@ -801,6 +803,10 @@ public final class HostControlMCPServer {
             configuration.diagnosticsHostPath.isEmpty ? nil : HostControlToolDiagnosticsRecorder(configuration: configuration)
         )
         self.withholdingObserver = withholdingObserver
+        // Opening needs both: values to open and someone to say they may be.
+        self.credentialOpener = sealedCredentials.flatMap { sealed in
+            externalActionRequester.map { BrokeredCredentialOpener(sealed: sealed, requester: $0) }
+        }
         self.processLimits = processLimits
     }
 
@@ -896,7 +902,8 @@ public final class HostControlMCPServer {
                 processLimits: processLimits,
                 cancellationRegistry: cancellationRegistry,
                 diagnostics: diagnosticsRecorder,
-                withholdingObserver: withholdingObserver
+                withholdingObserver: withholdingObserver,
+                credentialOpener: credentialOpener
             )
         default:
             return .error(code: -32602, message: "Unsupported tool")
@@ -1010,9 +1017,15 @@ public final class HostControlMCPServer {
         // the operation turns out to be. Recorded once here, before the
         // operation switch, so a `status` probe counts the same as a read.
         withholdingObserver?.noteWithheldCredentials(for: connector, configuration: configuration)
+        // A read may open a connector the launch held back. A proposal keeps the
+        // launch's configuration, so a write waits for a run launched with it.
+        let opened = JiraHostControlOperations.readOperations.contains(operation)
+            ? credentialOpener?.access(toRead: connector, in: configuration)
+            : nil
+        let access = opened ?? BrokeredReadAccess(configuration: configuration, connector: connector)
         switch operation {
         case "status":
-            let status = jiraStatus(connector: connector)
+            let status = jiraStatus(connector: access.connector, in: access.configuration)
             diagnosticsRecorder?.record(toolName: "jira", summary: "jira status \(connector.alias)", result: nil)
             return .result([
                 "content": [[
@@ -1022,7 +1035,7 @@ public final class HostControlMCPServer {
                 "isError": !status.ready
             ])
         case "get_issue", "search_jql", "get_comments", "get_transitions":
-            return handleJiraReadRequest(operation: operation, connector: connector, arguments: arguments)
+            return handleJiraReadRequest(operation: operation, access: access, arguments: arguments)
         case _ where JiraHostControlOperations.proposalOperations.contains(operation):
             return handleJiraProposal(operation: operation, connector: connector, arguments: arguments)
         default:
@@ -1043,7 +1056,10 @@ public final class HostControlMCPServer {
         connector: HostControlConnector,
         arguments: [String: Any]
     ) -> MCPServerReply {
-        let status = jiraStatus(connector: connector)
+        let status = jiraStatus(
+            connector: connector,
+            in: credentialOpener?.configuration(forWriting: connector, in: configuration) ?? configuration
+        )
         guard status.ready else {
             diagnosticsRecorder?.record(
                 toolName: "jira",
@@ -1070,10 +1086,11 @@ public final class HostControlMCPServer {
 
     private func handleJiraReadRequest(
         operation: String,
-        connector: HostControlConnector,
+        access: BrokeredReadAccess,
         arguments: [String: Any]
     ) -> MCPServerReply {
-        let status = jiraStatus(connector: connector)
+        let (configuration, connector) = (access.configuration, access.connector)
+        let status = jiraStatus(connector: connector, in: configuration)
         guard status.ready else {
             diagnosticsRecorder?.record(toolName: "jira", summary: "jira \(operation) \(connector.alias) blocked: \(status.blockedDiagnosticReason)", result: nil)
             return .result([
@@ -1090,7 +1107,9 @@ public final class HostControlMCPServer {
         } catch {
             return .error(code: -32602, message: error.localizedDescription)
         }
-        let timeout = timeoutSeconds(from: arguments["timeout_seconds"])
+        let timeout = processLimits.readTimeout(
+            timeoutSeconds(from: arguments["timeout_seconds"]), afterWaiting: access.waitedSeconds
+        )
         let response = JiraHTTPClient(
             configuration: configuration,
             cancellationRegistry: cancellationRegistry
@@ -1122,7 +1141,10 @@ public final class HostControlMCPServer {
         HostControlBrokeredServices.resolveConnector(forServiceType: "jira", alias: alias, in: configuration)
     }
 
-    private func jiraStatus(connector: HostControlConnector) -> BrokeredConnectorStatusReport {
+    private func jiraStatus(
+        connector: HostControlConnector,
+        in configuration: HostControlToolConfiguration
+    ) -> BrokeredConnectorStatusReport {
         BrokeredConnectorStatusReport(
             serviceLabel: "Jira",
             connector: connector,

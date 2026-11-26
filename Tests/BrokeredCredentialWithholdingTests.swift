@@ -543,7 +543,7 @@ struct BrokeredCredentialApprovalLoopTests {
     /// finished run leaves them: the run is over, the task is not waiting on
     /// anybody, and the broker held one of the two secrets back.
     @MainActor
-    private struct Fixture {
+    struct Fixture {
         let container: ModelContainer
         let context: ModelContext
         let store: MockSecretStore
