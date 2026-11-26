@@ -8,8 +8,8 @@ import ASTRAPersistence
 
 /// End-to-end main-thread CPU cost, including SwiftData insert/save work.
 /// Disk-backed fixtures refault between actions. Compare with an independent
-/// full-history relationship scan on the same store, so the regression gate
-/// is portable across developer machines and slower CI runners. Raw timings
+/// walk of the full history on the same store, so the regression gate is
+/// portable across developer machines and slower CI runners. Raw timings
 /// still include all persistence work; no cost is subtracted.
 @Suite("Long-chat main-actor cost stays bounded", .serialized)
 @MainActor
@@ -22,12 +22,12 @@ struct TaskMainActorScalingGateTests {
 
     enum Budget {
         // Each interactive operation must cost less than half of one legacy
-        // traversal, both in total CPU and in growth as history increases.
-        // Adding even one such traversal therefore fails on any machine.
+        // walk, both in total CPU and in growth as history increases.
+        // Adding even one such walk therefore fails on any machine.
         static let interactiveScanFraction = 0.5
         // Launch copies the complete history, including agent metadata. It
         // may scale linearly, but bulk fetching must remain cheaper than
-        // faulting every event through the relationship individually.
+        // reading every event individually.
         static let launchScanFraction = 0.75
     }
 
@@ -37,17 +37,19 @@ struct TaskMainActorScalingGateTests {
         let large = try await measure(eventCount: Self.largeHistory)
         print("[main-actor-scaling] events=\(Self.smallHistory) \(small.summary)")
         print("[main-actor-scaling] events=\(Self.largeHistory) \(large.summary)")
-        let scanGrowth = large.legacyScanMilliseconds - small.legacyScanMilliseconds
-        try #require(small.legacyScanMilliseconds > 0)
-        try #require(scanGrowth > 0, "The independent control must exercise history-wide work")
         for operation in Operation.allCases {
             let smallCost = try #require(small.rawMilliseconds[operation])
             let largeCost = try #require(large.rawMilliseconds[operation])
             let fraction = operation == .launchSnapshot ? Budget.launchScanFraction : Budget.interactiveScanFraction
-            #expect(largeCost - smallCost <= scanGrowth * fraction,
-                    "\(operation.rawValue): grew from \(format(smallCost)) to \(format(largeCost)) ms; full scan grew by \(format(scanGrowth)) ms")
-            #expect(largeCost <= large.legacyScanMilliseconds * fraction,
-                    "\(operation.rawValue): \(format(largeCost)) ms including persistence; full scan \(format(large.legacyScanMilliseconds)) ms")
+            let smallWalk = small.walkMilliseconds(for: operation)
+            let largeWalk = large.walkMilliseconds(for: operation)
+            let walkGrowth = largeWalk - smallWalk
+            try #require(smallWalk > 0)
+            try #require(walkGrowth > 0, "The independent control must exercise history-wide work")
+            #expect(largeCost - smallCost <= walkGrowth * fraction,
+                    "\(operation.rawValue): grew from \(format(smallCost)) to \(format(largeCost)) ms; full walk grew by \(format(walkGrowth)) ms")
+            #expect(largeCost <= largeWalk * fraction,
+                    "\(operation.rawValue): \(format(largeCost)) ms including persistence; full walk \(format(largeWalk)) ms")
         }
     }
 
@@ -65,15 +67,37 @@ struct TaskMainActorScalingGateTests {
         case launchSnapshot = "launch_snapshot"
         case contextRefresh = "context_refresh"
         case permissionGrants = "permission_grants"
+
+        /// From macOS 27, whether the budget is a fraction of the row-by-row
+        /// walk instead of the relationship walk; see `rowByRowScanCost`.
+        /// Send and append attach an event, which by itself loads the task's
+        /// whole history; the launch snapshot copies all of it; and the context
+        /// refresh ran between 97 % and 103 % of half the relationship walk.
+        var isBudgetedAgainstRowByRowWalk: Bool {
+            switch self {
+            case .send, .appendEvent, .launchSnapshot, .contextRefresh: true
+            case .viewUpdate, .permissionGrants: false
+            }
+        }
     }
 
     struct Measurement {
         var rawMilliseconds: [Operation: Double] = [:]
         var legacyScanMilliseconds = 0.0
+        var rowByRowScanMilliseconds = 0.0
+        func walkMilliseconds(for operation: Operation) -> Double {
+            if #available(macOS 27, *), operation.isBudgetedAgainstRowByRowWalk {
+                return rowByRowScanMilliseconds
+            }
+            return legacyScanMilliseconds
+        }
+
         var summary: String {
             Operation.allCases.map {
                 "\($0.rawValue)_ms=\(format(rawMilliseconds[$0] ?? 0))"
-            }.joined(separator: " ") + " legacy_scan_ms=\(format(legacyScanMilliseconds))"
+            }.joined(separator: " ")
+                + " legacy_scan_ms=\(format(legacyScanMilliseconds))"
+                + " row_by_row_scan_ms=\(format(rowByRowScanMilliseconds))"
         }
     }
 
@@ -89,6 +113,7 @@ struct TaskMainActorScalingGateTests {
         defer { gitViewModel.pauseRefresh() }
         var samples: [Operation: [Double]] = [:]
         var legacyScanSamples: [Double] = []
+        var rowByRowScanSamples: [Double] = []
         for repetition in 0..<Self.repetitions {
             // Production refaults the event relationship after every save, so
             // every operation starts from a store-backed task, never from rows
@@ -153,10 +178,12 @@ struct TaskMainActorScalingGateTests {
             await Task.yield()
 
             legacyScanSamples.append(try legacyScanCost(fixture: fixture, eventCount: eventCount))
+            rowByRowScanSamples.append(try rowByRowScanCost(fixture: fixture, eventCount: eventCount))
             await Task.yield()
         }
         var measurement = Measurement()
         measurement.legacyScanMilliseconds = median(legacyScanSamples)
+        measurement.rowByRowScanMilliseconds = median(rowByRowScanSamples)
         for (operation, values) in samples {
             measurement.rawMilliseconds[operation] = median(values)
         }
@@ -176,6 +203,36 @@ struct TaskMainActorScalingGateTests {
             userMessageCount = task.events.filter {
                 $0.type == TaskEventTypes.Conversation.userMessage.rawValue
             }.count
+        }
+        #expect(userMessageCount >= eventCount / Fixture.eventsPerRun)
+        return cost
+    }
+
+    /// The same walk reading one row per query, as walking `task.events` does
+    /// before macOS 27. macOS 27 loads the whole relationship with one query,
+    /// over four times cheaper here, and also loads it whenever an event is
+    /// attached to the task: inserting and saving one event with no ASTRA code
+    /// cost more than that walk, so no send or append fits in half of it.
+    ///
+    /// An operation budgeted against this walk can therefore add one one-query
+    /// load of the history on macOS 27 and stay within budget. Older systems
+    /// budget against `legacyScanCost` and only print this one.
+    private func rowByRowScanCost(fixture: Fixture, eventCount: Int) throws -> Double {
+        let context = ModelContext(fixture.container)
+        context.autosaveEnabled = false
+        let task = try #require(try fixture.task(in: context))
+        let owner = task.persistentModelID
+        var userMessageCount = 0
+        let cost = try cpuMilliseconds {
+            let ids = try context.fetchIdentifiers(FetchDescriptor<TaskEvent>(
+                predicate: #Predicate { $0.task?.persistentModelID == owner }))
+            for id in ids {
+                var descriptor = FetchDescriptor<TaskEvent>(predicate: #Predicate { $0.persistentModelID == id })
+                descriptor.fetchLimit = 1
+                if try context.fetch(descriptor).first?.type == TaskEventTypes.Conversation.userMessage.rawValue {
+                    userMessageCount += 1
+                }
+            }
         }
         #expect(userMessageCount >= eventCount / Fixture.eventsPerRun)
         return cost
@@ -338,9 +395,9 @@ struct TaskMainActorScalingGateTests {
 /// isolated, so this is the main thread's own work, whatever else the
 /// machine is doing.
 @MainActor
-private func cpuMilliseconds(_ body: () -> Void) -> Double {
+private func cpuMilliseconds(_ body: () throws -> Void) rethrows -> Double {
     let start = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
-    body()
+    try body()
     let end = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
     return Double(end - start) / 1_000_000
 }
