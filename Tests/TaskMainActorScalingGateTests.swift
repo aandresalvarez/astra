@@ -10,7 +10,9 @@ import ASTRAPersistence
 /// Disk-backed fixtures refault between actions. Compare with an independent
 /// full-history relationship scan on the same store, so the regression gate
 /// is portable across developer machines and slower CI runners. Raw timings
-/// still include all persistence work; no cost is subtracted.
+/// still include all persistence work. Only from macOS 27, and only for the
+/// operations that attach an event, is SwiftData's own cost of doing that
+/// subtracted; see `bareInsertCost`.
 @Suite("Long-chat main-actor cost stays bounded", .serialized)
 @MainActor
 struct TaskMainActorScalingGateTests {
@@ -23,12 +25,20 @@ struct TaskMainActorScalingGateTests {
     enum Budget {
         // Each interactive operation must cost less than half of one legacy
         // traversal, both in total CPU and in growth as history increases.
-        // Adding even one such traversal therefore fails on any machine.
+        // Adding even one such traversal therefore fails on any machine, bar
+        // the placement described at `bareInsertCost`.
         static let interactiveScanFraction = 0.5
         // Launch copies the complete history, including agent metadata. It
         // may scale linearly, but bulk fetching must remain cheaper than
         // faulting every event through the relationship individually.
         static let launchScanFraction = 0.75
+        // macOS 27 answers a relationship scan with one query, over four times
+        // cheaper than faulting each row, while these two operations got no
+        // cheaper: locally the context refresh cost 0.45 to 0.51 scans and the
+        // launch copy 2.19 to 2.40. One added scan took them to at least 1.45
+        // and 3.23, so it still fails.
+        static let oneQueryContextRefreshScanFraction = 0.75
+        static let oneQueryLaunchScanFraction = 2.8
     }
 
     @Test("Send, append, view, context, permission reads and complete launch copy stay within their budgets")
@@ -41,9 +51,9 @@ struct TaskMainActorScalingGateTests {
         try #require(small.legacyScanMilliseconds > 0)
         try #require(scanGrowth > 0, "The independent control must exercise history-wide work")
         for operation in Operation.allCases {
-            let smallCost = try #require(small.rawMilliseconds[operation])
-            let largeCost = try #require(large.rawMilliseconds[operation])
-            let fraction = operation == .launchSnapshot ? Budget.launchScanFraction : Budget.interactiveScanFraction
+            let smallCost = try #require(small.chargedMilliseconds(for: operation))
+            let largeCost = try #require(large.chargedMilliseconds(for: operation))
+            let fraction = operation.scanFraction
             #expect(largeCost - smallCost <= scanGrowth * fraction,
                     "\(operation.rawValue): grew from \(format(smallCost)) to \(format(largeCost)) ms; full scan grew by \(format(scanGrowth)) ms")
             #expect(largeCost <= large.legacyScanMilliseconds * fraction,
@@ -65,15 +75,38 @@ struct TaskMainActorScalingGateTests {
         case launchSnapshot = "launch_snapshot"
         case contextRefresh = "context_refresh"
         case permissionGrants = "permission_grants"
+
+        /// The share of one history scan this operation may cost.
+        var scanFraction: Double {
+            if #available(macOS 27, *) {
+                if self == .contextRefresh { return Budget.oneQueryContextRefreshScanFraction }
+                if self == .launchSnapshot { return Budget.oneQueryLaunchScanFraction }
+            }
+            return self == .launchSnapshot ? Budget.launchScanFraction : Budget.interactiveScanFraction
+        }
+
+        var attachesAnEvent: Bool { self == .send || self == .appendEvent }
     }
 
     struct Measurement {
         var rawMilliseconds: [Operation: Double] = [:]
         var legacyScanMilliseconds = 0.0
+        var bareInsertMilliseconds = 0.0
+
+        /// What is held against the budget: from macOS 27, an operation that
+        /// attaches an event is charged for what it costs beyond `bareInsertCost`.
+        func chargedMilliseconds(for operation: Operation) -> Double? {
+            guard let raw = rawMilliseconds[operation] else { return nil }
+            if #available(macOS 27, *), operation.attachesAnEvent { return raw - bareInsertMilliseconds }
+            return raw
+        }
+
         var summary: String {
             Operation.allCases.map {
                 "\($0.rawValue)_ms=\(format(rawMilliseconds[$0] ?? 0))"
-            }.joined(separator: " ") + " legacy_scan_ms=\(format(legacyScanMilliseconds))"
+            }.joined(separator: " ")
+                + " legacy_scan_ms=\(format(legacyScanMilliseconds))"
+                + " bare_insert_ms=\(format(bareInsertMilliseconds))"
         }
     }
 
@@ -89,6 +122,7 @@ struct TaskMainActorScalingGateTests {
         defer { gitViewModel.pauseRefresh() }
         var samples: [Operation: [Double]] = [:]
         var legacyScanSamples: [Double] = []
+        var bareInsertSamples: [Double] = []
         for repetition in 0..<Self.repetitions {
             // Production refaults the event relationship after every save, so
             // every operation starts from a store-backed task, never from rows
@@ -154,9 +188,12 @@ struct TaskMainActorScalingGateTests {
 
             legacyScanSamples.append(try legacyScanCost(fixture: fixture, eventCount: eventCount))
             await Task.yield()
+            bareInsertSamples.append(try bareInsertCost(fixture: fixture))
+            await Task.yield()
         }
         var measurement = Measurement()
         measurement.legacyScanMilliseconds = median(legacyScanSamples)
+        measurement.bareInsertMilliseconds = median(bareInsertSamples)
         for (operation, values) in samples {
             measurement.rawMilliseconds[operation] = median(values)
         }
@@ -179,6 +216,26 @@ struct TaskMainActorScalingGateTests {
         }
         #expect(userMessageCount >= eventCount / Fixture.eventsPerRun)
         return cost
+    }
+
+    /// Attaching one event to the task and saving it, with no ASTRA code.
+    /// SwiftData loads the task's relationship to do that, which on macOS 27
+    /// alone costs more than half the one-query scan, so no send or append
+    /// could fit the budget without subtracting it.
+    ///
+    /// One blind spot on macOS 27: a scan placed before the attach does that
+    /// load early, and the attach does not repeat it. Injected there it added
+    /// under 10 ms against a 70 ms scan and passed. After the attach it cost a
+    /// whole scan and failed. Before macOS 27 the attach does not load the
+    /// history (CI's `send` costs a fifth of a scan), so either place counts.
+    private func bareInsertCost(fixture: Fixture) throws -> Double {
+        let context = ModelContext(fixture.container)
+        context.autosaveEnabled = false
+        let task = try #require(try fixture.task(in: context))
+        return try cpuMilliseconds {
+            context.insert(TaskEvent(task: task, eventType: TaskEventTypes.Tool.use, payload: "Read README.md"))
+            try context.save()
+        }
     }
 
     private func decisionOutcomes(for task: AgentTask, fixture: Fixture, in context: ModelContext) -> TaskDecisionOutcomeCache {
@@ -338,9 +395,9 @@ struct TaskMainActorScalingGateTests {
 /// isolated, so this is the main thread's own work, whatever else the
 /// machine is doing.
 @MainActor
-private func cpuMilliseconds(_ body: () -> Void) -> Double {
+private func cpuMilliseconds(_ body: () throws -> Void) rethrows -> Double {
     let start = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
-    body()
+    try body()
     let end = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
     return Double(end - start) / 1_000_000
 }

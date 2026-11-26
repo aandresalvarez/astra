@@ -68,6 +68,9 @@ struct TaskHistoryReadTests {
         let event = TaskEvent(task: f.task, type: "user.message", payload: "saved")
         f.context.insert(event)
         try f.context.save()
+        // As production does before a reversible edit. Without it macOS 27
+        // aborts inside `rollback()`, restoring a relationship nothing loaded.
+        SwiftDataTaskRollbackPreparation.prepare(f.task)
         let run = TaskRun(task: f.task)
         f.context.insert(run)
         event.run = run
