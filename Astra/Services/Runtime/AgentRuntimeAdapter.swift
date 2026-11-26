@@ -2007,11 +2007,11 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             launchTaskEnv[key] = value
         }
         let permissionArguments = context.requiredProviderPolicyRender(for: id).copilotLaunchPermissionArguments()
-        let reasoningEffort = CopilotCLIRuntime.launchReasoningEffort(
-            taskEffort: context.taskSnapshot.reasoningEffort,
-            isArtifactBootstrap: !artifactBootstrapTools.isEmpty,
-            model: model
-        )
+        // The task's own choice on every launch, artifact bootstrap included: the
+        // option covers the whole run, so an override would replace that choice.
+        let reasoningEffort = context.taskSnapshot.reasoningEffort.flatMap { effort in
+            RuntimeModelAvailability.normalizedReasoningEffort(effort, for: model, runtime: id)
+        }
         let diagnosticLogDirectory = CopilotStartupEvidence.directory(
             taskFolder: TaskWorkspaceAccess(task: context.task).taskFolder, runID: context.runID)
         let plan = CopilotCLIRuntime.buildCommand(

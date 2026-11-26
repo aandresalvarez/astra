@@ -1791,6 +1791,7 @@ struct AgentRuntimeAdapterTests {
             model: "gpt-5.3-codex",
             runtime: .copilotCLI
         )
+        task.reasoningEffort = "high"
         let manifest = Self.copilotManifest(
             task: task,
             workspacePath: workspace.primaryPath,
@@ -1824,7 +1825,7 @@ struct AgentRuntimeAdapterTests {
         #expect(plan.commandPlannedFields["surfaced_ask_first_tool_count"] == "4")
         #expect(plan.commandPlannedFields["supports_reasoning_effort"] == "true")
         #expect(plan.commandPlannedFields["uses_reasoning_effort"] == "true")
-        #expect(plan.arguments[plan.arguments.index(after: effortIndex)] == "none")
+        #expect(plan.arguments[plan.arguments.index(after: effortIndex)] == "high")
         #expect(allowedEntries.contains("view"))
         #expect(allowedEntries.contains("grep"))
         #expect(allowedEntries.contains("glob"))

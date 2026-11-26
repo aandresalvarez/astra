@@ -435,24 +435,9 @@ enum CopilotCLIRuntime {
     }
 
     /// Mirrors the choices `copilot --help` lists for `--reasoning-effort`
-    /// (GitHub Copilot CLI 1.0.114). Each model accepts only some of them;
-    /// `launchReasoningEffort` narrows the value to the selected model's.
+    /// (GitHub Copilot CLI 1.0.114). Each model accepts only some of them; the
+    /// adapter narrows a task's choice to the selected model's.
     static let reasoningEffortChoices = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
-
-    /// The effort a task launch asks for, or nil to leave Copilot's own default.
-    /// Artifact bootstrap asks for "none" whatever the task chose: it is a narrow
-    /// scaffolding window, not the session the user is choosing effort for. Either
-    /// request is dropped for a model that reports it does not accept the value.
-    static func launchReasoningEffort(
-        taskEffort: String?,
-        isArtifactBootstrap: Bool,
-        model: String,
-        defaults: UserDefaults = .standard
-    ) -> String? {
-        (isArtifactBootstrap ? "none" : taskEffort).flatMap {
-            RuntimeModelAvailability.normalizedReasoningEffort($0, for: model, runtime: .copilotCLI, defaults: defaults)
-        }
-    }
 
     private static func normalizedReasoningEffort(_ value: String?) -> String? {
         guard let value else { return nil }

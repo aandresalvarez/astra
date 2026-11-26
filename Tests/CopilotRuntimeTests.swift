@@ -928,30 +928,6 @@ struct CopilotCLICommandPlanningTests {
         #expect(!unsupportedPlan.arguments.contains("--reasoning-effort"))
     }
 
-    @Test("A launch asks only for an effort the selected model accepts")
-    func launchReasoningEffortFollowsModelSupport() {
-        let defaults = InMemoryDefaults()
-        RuntimeModelAvailability.persistAvailableModelDetails(
-            [
-                RuntimeModelDetail(value: "gpt-6-luna", supportedReasoningEfforts: ["none", "low", "high", "max"]),
-                RuntimeModelDetail(value: "claude-opus-5.5", supportedReasoningEfforts: ["low", "high", "max"])
-            ],
-            for: .copilotCLI,
-            defaults: defaults,
-            checkedAt: Date(timeIntervalSince1970: 12)
-        )
-        func effort(_ model: String, bootstrap: Bool) -> String? {
-            CopilotCLIRuntime.launchReasoningEffort(
-                taskEffort: "high", isArtifactBootstrap: bootstrap, model: model, defaults: defaults
-            )
-        }
-
-        #expect(effort("gpt-6-luna", bootstrap: false) == "high")
-        #expect(effort("gpt-6-luna", bootstrap: true) == "none")
-        #expect(effort("claude-opus-5.5", bootstrap: false) == "high")
-        #expect(effort("claude-opus-5.5", bootstrap: true) == nil)
-    }
-
     @Test("Reasoning effort choices include minimal (GitHub Copilot CLI 1.0.83)")
     func reasoningEffortChoicesIncludesMinimal() throws {
         // `copilot --help` documents `--effort, --reasoning-effort <level>` with
