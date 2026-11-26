@@ -155,6 +155,10 @@ struct ConnectorEditorView: View {
     @State private var credentialJournalRecoveryAvailable = false
     @State private var pendingCredentialSaveContext: PendingConnectorCredentialSaveContext?
     @State private var unreadableCredentialKeys: [String] = []
+    /// A save is waiting for macOS's Keychain access dialog, which is being
+    /// answered off the main actor. The secret rows read the Keychain as they
+    /// draw, so they are not drawn meanwhile.
+    @State private var isAwaitingKeychainAccess = false
     @State private var newListItem = ""
     @State private var testResult: (Bool, String)?
     @State private var isTesting = false
@@ -497,8 +501,23 @@ struct ConnectorEditorView: View {
                         }
 
                         if !unreadableCredentialKeys.isEmpty {
-                            ConnectorCredentialReentrySection(keys: unreadableCredentialKeys) { reenterCredentials($0) }
-                                .id(connector.id)
+                            // Saved once Keychain access is settled. The section keeps
+                            // what was typed until then, and leaves with its last key.
+                            ConnectorCredentialReentrySection(keys: unreadableCredentialKeys) { values in
+                                afterKeychainAccess(refused: { diagnosis in
+                                    credentialSaveError = nil
+                                    pendingCredentialSaveContext = nil
+                                    credentialOperationError = presentation(
+                                        for: .keychainWriteFailed(diagnosis: diagnosis),
+                                        key: values.keys.sorted().first ?? "the secret").message
+                                }, save: { _ = reenterCredentials(values) })
+                                return false
+                            }
+                            .id(connector.id)
+                            .disabled(isAwaitingKeychainAccess)
+                            if isAwaitingKeychainAccess { keychainAccessWaitLabel }
+                        } else if isAwaitingKeychainAccess {
+                            keychainAccessWaitLabel
                         } else {
                             if !connector.credentialKeys.isEmpty {
                                 VStack(spacing: 4) {
@@ -746,6 +765,9 @@ struct ConnectorEditorView: View {
                 }
             }
             .padding()
+            // A save waiting for macOS's Keychain dialog saves the account as it
+            // was when it was pressed: the form holds still until it has run.
+            .disabled(isAwaitingKeychainAccess)
         }
         .onAppear {
             if connector.name == "New Connector" {
@@ -758,6 +780,16 @@ struct ConnectorEditorView: View {
         }
         .task(id: connector.id) { refreshUnreadableCredentialKeys() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            // Answering macOS's Keychain dialog brings the app forward too, in
+            // every window, while reads here still get a closed keychain's
+            // answer. The end of that open refreshes these, below.
+            guard !AstraSecureKeychainStore.hasInteractiveOpenInFlight else { return }
+            refreshUnreadableCredentialKeys()
+        }
+        // Whichever window or screen asked, and however it ended: saved,
+        // refused, or a sign-in cancelled behind the dialog. Run from here, it
+        // reads the account shown by then.
+        .onReceive(NotificationCenter.default.publisher(for: AstraSecureKeychainStore.interactiveOpenDidEnd)) { _ in
             refreshUnreadableCredentialKeys()
         }
         .onDisappear {
@@ -963,6 +995,18 @@ struct ConnectorEditorView: View {
                 let verified = try await signIn.finish(deviceCode: deviceCode)
                 try Task.checkCancellation()
                 guard oauthSignInGeneration == generation else { throw CancellationError() }
+                if !AstraSecureKeychainStore.isOpen {
+                    // As `afterKeychainAccess`: macOS's dialog is answered off the main actor.
+                    isAwaitingKeychainAccess = true
+                    let outcome = await AstraSecureKeychainStore.openAllowingUserInteraction()
+                    isAwaitingKeychainAccess = false
+                    try Task.checkCancellation()
+                    guard oauthSignInGeneration == generation, !Self.isGone(connector) else { throw CancellationError() }
+                    if case .refused(let diagnosis) = outcome {
+                        throw KeychainAccessRefused(errorDescription: presentation(
+                            for: .keychainWriteFailed(diagnosis: diagnosis), key: "the sign-in").message)
+                    }
+                }
                 try signIn.publish(verified, on: connector, modelContext: modelContext, allowUserInteraction: true)
                 let identity = verified.identity.mail ?? verified.identity.userPrincipalName ?? ""
                 oauthStatus = identity.isEmpty ? "Connected to Microsoft Graph." : "Connected as \(identity)."
@@ -1064,9 +1108,19 @@ struct ConnectorEditorView: View {
     /// unparseable — never one of the states a connector save actually reports
     /// — so routing a retry through it would trade the dialog for nothing.
     private func addCredential() {
+        // What was typed when Save was pressed: the form can change behind the dialog.
         let key = newCredKey.trimmingCharacters(in: .whitespaces).uppercased()
-        guard !key.isEmpty, !newCredValue.isEmpty else { return }
-        guard let outcome = storeCredential(newCredValue, key: key) else { return }
+        let value = newCredValue
+        guard !key.isEmpty, !value.isEmpty else { return }
+        afterKeychainAccess(refused: { diagnosis in
+            credentialOperationError = nil
+            credentialSaveError = presentation(for: .keychainWriteFailed(diagnosis: diagnosis), key: key)
+            pendingCredentialSaveContext = .newCredential
+        }, save: { addCredentialNow(value, key: key) })
+    }
+
+    private func addCredentialNow(_ value: String, key: String) {
+        guard let outcome = storeCredential(value, key: key) else { return }
         guard outcome.isSaved else {
             credentialSaveError = presentation(for: outcome, key: key)
             pendingCredentialSaveContext = .newCredential
@@ -1092,6 +1146,48 @@ struct ConnectorEditorView: View {
         }
         PluginStateMirrors.exportAfterSave(workspace: workspace ?? connector.workspace,
             accounts: [connector], modelContext: modelContext)
+    }
+
+    /// Runs an interactive save once Keychain access is settled. When the
+    /// keychain is already open the save runs now, as it always did. When it
+    /// is not, macOS may show its access dialog: that wait happens off the
+    /// main actor (`AstraSecureKeychainStore.openAllowingUserInteraction`),
+    /// so the app stays responsive behind the dialog, and the save runs once
+    /// it is answered.
+    ///
+    /// A refused dialog has been offered once. Nothing is written then, so
+    /// nothing asks again: `refused` reports the failure a failed save
+    /// reports, from the same diagnosis, with its retry.
+    private func afterKeychainAccess(
+        refused: @escaping @MainActor (KeychainWriteDiagnosis?) -> Void,
+        save: @escaping @MainActor () -> Void
+    ) {
+        guard !isAwaitingKeychainAccess else { return }
+        guard !AstraSecureKeychainStore.isOpen else { save(); return }
+        isAwaitingKeychainAccess = true
+        Task { @MainActor in
+            let outcome = await AstraSecureKeychainStore.openAllowingUserInteraction()
+            isAwaitingKeychainAccess = false
+            // The account can be deleted behind the dialog.
+            guard !Self.isGone(connector) else { return }
+            switch outcome {
+            case .open:
+                save()
+            case .refused(let diagnosis):
+                refused(diagnosis)
+            }
+        }
+    }
+
+    /// The Keychain refused the session a sign-in had just obtained.
+    private struct KeychainAccessRefused: LocalizedError {
+        let errorDescription: String?
+    }
+
+    private var keychainAccessWaitLabel: some View {
+        Label("Waiting for macOS to allow Keychain access…", systemImage: "key")
+            .font(Stanford.caption(12))
+            .foregroundStyle(.secondary)
     }
 
     private func storeCredential(_ value: String, key: String) -> ConnectorCredentialSaveOutcome? {
@@ -1200,8 +1296,17 @@ struct ConnectorEditorView: View {
     /// See `addCredential()` for why this is always the interactive write.
     private func saveCredentialReplacement(for key: String) {
         let normalizedKey = key.trimmingCharacters(in: .whitespaces).uppercased()
-        guard !normalizedKey.isEmpty, !replacementCredentialValue.isEmpty else { return }
-        guard let outcome = storeCredential(replacementCredentialValue, key: normalizedKey) else { return }
+        let value = replacementCredentialValue
+        guard !normalizedKey.isEmpty, !value.isEmpty else { return }
+        afterKeychainAccess(refused: { diagnosis in
+            credentialOperationError = nil
+            credentialSaveError = presentation(for: .keychainWriteFailed(diagnosis: diagnosis), key: normalizedKey)
+            pendingCredentialSaveContext = .replacement(key: normalizedKey)
+        }, save: { saveCredentialReplacementNow(value, key: normalizedKey) })
+    }
+
+    private func saveCredentialReplacementNow(_ value: String, key normalizedKey: String) {
+        guard let outcome = storeCredential(value, key: normalizedKey) else { return }
         guard outcome.isSaved else {
             credentialSaveError = presentation(for: outcome, key: normalizedKey)
             pendingCredentialSaveContext = .replacement(key: normalizedKey)
