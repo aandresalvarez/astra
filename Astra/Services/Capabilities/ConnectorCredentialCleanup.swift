@@ -133,7 +133,8 @@ enum ConnectorCredentialCleanup {
     /// Running a cleanup deletes Keychain items, and an Outlook account's
     /// registry entry, and none of this reads either, so `resumePending`
     /// reads it once for all its records. Each read decodes every workspace
-    /// mirror twice, on the main actor at launch.
+    /// mirror twice, on the main actor at launch, unless `decodedAhead`
+    /// already decoded the bytes it reads.
     @MainActor
     private struct PassInputs {
         /// The context `stored` was fetched from, kept while its rows are read.
@@ -145,7 +146,9 @@ enum ConnectorCredentialCleanup {
         let mirroredOwners: [ConnectorKeychainCleanup]
 
         /// Nil when any of it can't be read, which removes nothing.
-        static func read(modelContext: ModelContext, extraMirrors: [String]?, cleanupCount: Int) -> PassInputs? {
+        static func read(
+            modelContext: ModelContext, extraMirrors: [String]?, cleanupCount: Int, decodedAhead: CredentialMirrorDecodes? = nil
+        ) -> PassInputs? {
             guard let stored = try? modelContext.fetch(FetchDescriptor<Connector>()) else {
                 AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
                     "scope": "connector_cleanup", "reason": "store_unreadable",
@@ -155,8 +158,10 @@ enum ConnectorCredentialCleanup {
             }
             guard let references = PendingTaskCredentialReferences.capture(modelContext: modelContext),
                   let archived = ConnectorCredentialGenerationJournal.retainedRecoveryCandidates(modelContext: modelContext),
-                  let mirroredRequests = PluginCredentialMirrorReferences.capture(modelContext: modelContext, extraMirrors: extraMirrors),
-                  let mirroredOwners = connectorsInStoredMirrors(modelContext: modelContext, extraMirrors: extraMirrors)
+                  let mirroredRequests = PluginCredentialMirrorReferences.capture(
+                      modelContext: modelContext, extraMirrors: extraMirrors, decodedAhead: decodedAhead),
+                  let mirroredOwners = connectorsInStoredMirrors(
+                      modelContext: modelContext, extraMirrors: extraMirrors, decodedAhead: decodedAhead)
             else { return nil }
             return PassInputs(context: modelContext, stored: stored, references: references, archived: archived,
                               mirroredRequests: mirroredRequests, mirroredOwners: mirroredOwners.owners)
@@ -316,10 +321,25 @@ enum ConnectorCredentialCleanup {
     /// it is dropped too and reported, since running it could remove what a
     /// connector in the earlier store still uses, while an orphaned
     /// credential is recoverable.
+    ///
+    /// `decodedAhead` (`decodeMirrorsAhead`) holds mirror decodes made off
+    /// the main actor. The pass still reads every mirror itself and uses one
+    /// only for the bytes it reads, so it decides as it would without them.
     @discardableResult
     static func resumePending(
-        modelContext: ModelContext, store: ConnectorCredentialCleanupStore? = nil, extraMirrors: [String]? = nil
+        modelContext: ModelContext, store: ConnectorCredentialCleanupStore? = nil, extraMirrors: [String]? = nil,
+        decodedAhead: CredentialMirrorDecodes? = nil
     ) -> Int {
+        // Startup's pass reports how many decodes it still made on the main
+        // actor: those of a file that changed after it was decoded ahead.
+        let mainActorDecodes = CredentialRecoveryMirrors.mainActorDecodeCount
+        defer {
+            if decodedAhead != nil {
+                reportPerformance("connector_outbox_pass_decodes", [
+                    "main_actor_decode_count": String(CredentialRecoveryMirrors.mainActorDecodeCount - mainActorDecodes)
+                ])
+            }
+        }
         guard let store = store ?? ConnectorCredentialCleanupStore(for: modelContext) else { return 0 }
         guard let pending = store.pending() else {
             AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
@@ -366,7 +386,8 @@ enum ConnectorCredentialCleanup {
         // without its credentials. So a cleanup waits, as an owner, while a
         // stored workspace's mirror still lists its connector, and that
         // workspace is exported again for the next launch.
-        guard let mirrored = connectorsInStoredMirrors(modelContext: modelContext, extraMirrors: extraMirrors) else {
+        guard let mirrored = connectorsInStoredMirrors(modelContext: modelContext, extraMirrors: extraMirrors,
+                                                       decodedAhead: decodedAhead) else {
             AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
                 "scope": "connector_cleanup", "reason": "workspace_mirror_unreadable"
             ], level: .error)
@@ -390,7 +411,8 @@ enum ConnectorCredentialCleanup {
         let runnable = classified.filter { $0.committed && !staleIDs.contains($0.record.cleanup.connectorID) }.count
         let saved = ModelContext(modelContext.container)
         let passInputs = runnable > 0 && PluginOperationRecovery.permitsCredentialCleanup(modelContext: saved)
-            ? PassInputs.read(modelContext: saved, extraMirrors: extraMirrors, cleanupCount: runnable) : nil
+            ? PassInputs.read(modelContext: saved, extraMirrors: extraMirrors, cleanupCount: runnable, decodedAhead: decodedAhead)
+            : nil
         var cleared = 0
         for entry in classified {
             switch entry.verdict {
@@ -430,31 +452,14 @@ enum ConnectorCredentialCleanup {
     /// settles what it lists. A missing mirror lists none; nil when one that
     /// exists can't be read.
     static func connectorsInStoredMirrors(
-        modelContext: ModelContext, extraMirrors: [String]? = nil, excludingWorkspaceIDs: Set<UUID>? = nil
+        modelContext: ModelContext, extraMirrors: [String]? = nil, excludingWorkspaceIDs: Set<UUID>? = nil,
+        decodedAhead: CredentialMirrorDecodes? = nil
     ) -> (
         ids: Set<UUID>, byWorkspace: [(Workspace, Set<UUID>)], owners: [ConnectorKeychainCleanup], skillIDs: Set<UUID>,
         skillsByWorkspace: [(Workspace, Set<UUID>)]
     )? {
-        struct Listed: Decodable {
-            struct Skill: Decodable { let id: String?; let credentialNamespaceID: UUID? }
-            struct Entry: Decodable {
-                let id: String?
-                let name: String?
-                let serviceType: String?
-                let baseURL: String?
-                let originPackageID: String?
-                let originComponentID: String?
-                let credentialNamespaceID: UUID?
-                let outlookCredentialFormat: String?
-                let configKeys: [String]?
-                let configValues: [String]?
-            }
-            let id: String?
-            let connectors: [Entry]?
-            let skills: [Skill]?
-        }
         guard let mirrors = CredentialRecoveryMirrors.read(modelContext: modelContext, extraMirrors: extraMirrors,
-            excludingWorkspaceIDs: excludingWorkspaceIDs) else { return nil }
+            excludingWorkspaceIDs: excludingWorkspaceIDs, decodedAhead: decodedAhead) else { return nil }
         var all = Set<UUID>()
         var byWorkspace: [(Workspace, Set<UUID>)] = []
         var owners: [ConnectorKeychainCleanup] = []
@@ -462,7 +467,8 @@ enum ConnectorCredentialCleanup {
         var skillsByWorkspace: [(Workspace, Set<UUID>)] = []
         for mirror in mirrors {
             let workspace = mirror.workspace
-            guard let listed = try? JSONDecoder().decode(Listed.self, from: mirror.data) else { return nil }
+            guard let listed = CredentialRecoveryMirrors.decoded(mirror, \.connectors, decodingWith: ConnectorMirrorListing.decode)
+            else { return nil }
             var ids = Set<UUID>()
             for entry in listed.connectors ?? [] {
                 // Unmanaged and never inserted: only its facts are read.
@@ -492,6 +498,32 @@ enum ConnectorCredentialCleanup {
             }
         }
         return (all, byWorkspace, owners, skillIDs, skillsByWorkspace)
+    }
+
+    /// `resumePending`'s mirror decodes, made off the main actor so the pass
+    /// that follows doesn't make them on it: nil, with nothing read, when the
+    /// outbox holds no record for a pass to judge. Startup awaits it just
+    /// before the pass, which takes from it only what it reads unchanged.
+    static func decodeMirrorsAhead(
+        modelContext: ModelContext, store: ConnectorCredentialCleanupStore? = nil, extraMirrors: [String]? = nil
+    ) async -> CredentialMirrorDecodes? {
+        guard let store = store ?? ConnectorCredentialCleanupStore(for: modelContext),
+              let pending = store.pending(), pending.complete, !pending.records.isEmpty else { return nil }
+        let start = DispatchTime.now().uptimeNanoseconds
+        let decodes = await CredentialMirrorDecodes.decode(
+            CredentialRecoveryMirrors.candidates(modelContext: modelContext, extraMirrors: extraMirrors))
+        let elapsed = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
+        reportPerformance("connector_outbox_mirrors_decoded_ahead", [
+            "file_count": String(decodes.fileCount), "byte_count": String(decodes.byteCount),
+            "duration_ms": String(format: "%.2f", elapsed)
+        ])
+        return decodes
+    }
+
+    private static func reportPerformance(_ event: String, _ fields: [String: String]) {
+        AuditLoggingSeam.required.audit(.workspaceExported, category: "Performance", fields: fields.merging([
+            "event": event, "launch_age_ms": LaunchDiagnosticClock.ageMilliseconds()
+        ]) { _, new in new }, level: .info)
     }
 
     private struct Classified {
@@ -546,6 +578,29 @@ enum ConnectorCredentialCleanup {
             }
             .map(\.record.cleanup) + pending.heldBack + mirrored.owners
     }
+}
+
+/// What `connectorsInStoredMirrors` reads from a mirror: the connectors and
+/// skills it lists.
+struct ConnectorMirrorListing: Decodable, Sendable {
+    struct Skill: Decodable, Sendable { let id: String?; let credentialNamespaceID: UUID? }
+    struct Entry: Decodable, Sendable {
+        let id: String?
+        let name: String?
+        let serviceType: String?
+        let baseURL: String?
+        let originPackageID: String?
+        let originComponentID: String?
+        let credentialNamespaceID: UUID?
+        let outlookCredentialFormat: String?
+        let configKeys: [String]?
+        let configValues: [String]?
+    }
+    let id: String?
+    let connectors: [Entry]?
+    let skills: [Skill]?
+
+    static func decode(_ data: Data) -> Self? { try? JSONDecoder().decode(Self.self, from: data) }
 }
 
 /// Whether this launch's workspace recovery vouches for the store, so a
