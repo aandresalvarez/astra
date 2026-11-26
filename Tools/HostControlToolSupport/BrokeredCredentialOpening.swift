@@ -108,9 +108,10 @@ final class BrokeredCredentialOpener {
         let heldBack = BrokeredReadAccess(configuration: launch, connector: connector)
         guard let withholding = launch.withheldCredentials(for: connector),
               let opened = launch.opening(withholding, from: sealed),
+              // By ID: an alias can also be another account's display name.
               let openedConnector = HostControlBrokeredServices.resolveConnector(
                   forServiceType: connector.serviceType,
-                  alias: connector.alias,
+                  alias: connector.id,
                   in: opened
               ).connector,
               openedConnector.id == connector.id else {
