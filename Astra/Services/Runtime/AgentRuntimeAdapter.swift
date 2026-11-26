@@ -2007,14 +2007,11 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             launchTaskEnv[key] = value
         }
         let permissionArguments = context.requiredProviderPolicyRender(for: id).copilotLaunchPermissionArguments()
-        // Artifact bootstrap keeps its own "none" override regardless of the
-        // task's setting — it is a narrow, internal scaffolding window, not the
-        // interactive session the user is choosing reasoning effort for.
-        let reasoningEffort = artifactBootstrapTools.isEmpty
-            ? context.taskSnapshot.reasoningEffort.flatMap { effort in
-                RuntimeModelAvailability.normalizedReasoningEffort(effort, for: model, runtime: id)
-            }
-            : "none"
+        let reasoningEffort = CopilotCLIRuntime.launchReasoningEffort(
+            taskEffort: context.taskSnapshot.reasoningEffort,
+            isArtifactBootstrap: !artifactBootstrapTools.isEmpty,
+            model: model
+        )
         let diagnosticLogDirectory = CopilotStartupEvidence.directory(
             taskFolder: TaskWorkspaceAccess(task: context.task).taskFolder, runID: context.runID)
         let plan = CopilotCLIRuntime.buildCommand(
