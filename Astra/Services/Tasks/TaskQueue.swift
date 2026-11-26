@@ -46,6 +46,7 @@ final class TaskQueue {
     let remoteAdmissionRefresh: TaskQueueRemoteAdmissionRefresh
     #if DEBUG
     var observedDispatchWakeCount = 0
+    var observedOwnershipReadCount = 0
     #endif
     let wedgedLeaseReclaimer: TaskWedgedWorkerLeaseReclaimer
     @MainActor
@@ -165,7 +166,7 @@ final class TaskQueue {
     }
 
     @MainActor
-    private func bindStoreSession(to modelContext: ModelContext) -> TaskQueueStoreSession? {
+    private func bindStoreSession(to modelContext: ModelContext, readingOwnership: Bool = true) -> TaskQueueStoreSession? {
         if let storeSession {
             guard storeSession.matches(modelContext) else {
                 AppLogger.audit(.workerBlocked, category: "Queue", fields: [
@@ -173,10 +174,10 @@ final class TaskQueue {
                 ], level: .error)
                 return nil
             }
-            refreshResourceOwnership(in: modelContext)
+            readOwnershipForBind(in: modelContext, required: readingOwnership)
             return storeSession
         }
-        refreshResourceOwnership(in: modelContext)
+        readOwnershipForBind(in: modelContext, required: true)
         let session = TaskQueueStoreSession(modelContext: modelContext) { [weak self, weak modelContext] in
             guard let self, let modelContext, let session = self.storeSession, session.matches(modelContext),
                   !self.isStopping else { return }
@@ -229,7 +230,7 @@ final class TaskQueue {
         modelContext: ModelContext,
         operation: @escaping @MainActor (ModelContext) async -> Void
     ) -> Task<Void, Never> {
-        guard !isStopping, let storeSession = bindStoreSession(to: modelContext) else {
+        guard !isStopping, let storeSession = bindStoreSession(to: modelContext, readingOwnership: false) else {
             return Task {}
         }
         let lifecycleID = UUID()
@@ -271,8 +272,8 @@ final class TaskQueue {
             return Task {}
         }
 
-        _ = processQueueIfIdle(modelContext: storeSession.modelContext)
-        // `processQueueIfIdle` starts a loop only when none is running. A loop
+        _ = startProcessing(storeSession: storeSession)
+        // `startProcessing` starts a loop only when none is running. A loop
         // that *is* running may be parked on one of its waits, and it parks
         // because nothing already queued could be dispatched — which says
         // nothing about the request just persisted. Without this, a newly
@@ -1929,8 +1930,7 @@ final class TaskQueue {
 
         var recordedWaiting = false
         while !Task.isCancelled && turnAdmissionGeneration == admissionGeneration && !(shouldAbort?() ?? false) {
-            refreshResourceOwnership(in: modelContext)
-            if let acquired = acquireResourceLocksIfAvailable(
+            if let acquired = acquireResourceLocksIfAvailable( // It reads ownership before it decides.
                 claims,
                 task: task,
                 modelContext: modelContext

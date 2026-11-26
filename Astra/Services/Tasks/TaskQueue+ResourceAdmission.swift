@@ -4,8 +4,19 @@ import ASTRACore
 import ASTRAModels
 
 extension TaskQueue {
+    /// Asks the release rule for every saved reservation, then reads who holds
+    /// what from every journal and every ownership event in the store. It
+    /// runs on the main actor and its cost grows with the store's history, so
+    /// a queue entry point does not repeat a read made a moment earlier in the
+    /// same main-actor job: the signal starts its loop with the session it
+    /// bound, and an admission pass leaves the read to the acquire it calls.
+    /// Before that, sending a new task read three times before returning, a
+    /// follow-up twice, and an admission pass twice.
     @MainActor
     func refreshResourceOwnership(in context: ModelContext) {
+        #if DEBUG
+        observedOwnershipReadCount += 1
+        #endif
         let store = RuntimeExecutionOwner.store(in: context)
         resourceOwnershipStore = store
         waitingBanners = [:]
@@ -19,6 +30,25 @@ extension TaskQueue {
             // Preserve the last known holds. Unreadable authority never grants admission.
             resourceOwnershipReadFailed = true
         }
+    }
+
+    /// What binding the store session does about ownership. A bind that
+    /// admits or dispatches reads. Lifecycle registration does neither, and
+    /// the work it registers reads on entry, so it reads only when the last
+    /// read failed.
+    ///
+    /// A read that fails is made once more. The entry point behind a failed
+    /// read used to read again by passing a second bind, and that second read
+    /// is what cleared a failure that did not last, such as a release whose
+    /// save failed after it was written. A failed read admits nothing and the
+    /// waiting loop reads again only when a reservation ends or the journal
+    /// folder changes, so without the second try a follow-up's send, which
+    /// passes one bind, could wait for the next queue entry.
+    @MainActor
+    func readOwnershipForBind(in context: ModelContext, required: Bool) {
+        guard required || resourceOwnershipReadFailed else { return }
+        refreshResourceOwnership(in: context)
+        if required, resourceOwnershipReadFailed { refreshResourceOwnership(in: context) }
     }
 
     /// The loop that keeps a request waiting never refreshed ownership, so a
