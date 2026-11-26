@@ -81,6 +81,22 @@ struct BrokeredCredentialOpeningTests {
         #expect(session.notices.isEmpty)
     }
 
+    /// The grant store drops a label it will not keep, and opening unseals every
+    /// value of the connector, so a grant for only some of them opens none.
+    @Test("A connector with a credential the grant store would drop stays held back")
+    func aPartialGrantOpensNothing() async throws {
+        let session = try Session(level: .autonomous, extraREDCapKey: "REDCAP_" + String(repeating: "X", count: 200))
+        let withheld = try #require(session.withholding(named: "Registry Export"))
+        #expect(withheld.credentials.count == 2)
+
+        let text = try await session.call("redcap", ["operation": "status"])
+
+        #expect(text.contains("api_token_present: withheld"))
+        #expect(session.saves.count == 0)
+        #expect(session.grantedLabels.isEmpty)
+        #expect(session.notices.isEmpty)
+    }
+
     @Test("A Jira write stays held back for the run, before and after a read opens the connector")
     func writesStayHeldBack() async throws {
         let session = try Session(level: .autonomous)
@@ -225,6 +241,7 @@ struct BrokeredCredentialOpeningTests {
             saves shouldSave: Bool = true,
             timeout: TimeInterval = BrokeredExternalActionBridge.defaultTimeoutSeconds,
             secondREDCapSecret: String? = nil,
+            extraREDCapKey: String? = nil,
             whileSaving: @escaping @MainActor () -> Void = {}
         ) throws {
             fixture = try Fixture()
@@ -257,6 +274,15 @@ struct BrokeredCredentialOpeningTests {
                 )
                 fixture.context.insert(second)
                 fixture.workspace.enabledGlobalConnectorIDs.append(second.id.uuidString)
+            }
+            if let extraREDCapKey {
+                fixture.redcapConnector.credentialKeys.append(extraREDCapKey)
+                fixture.store.save(
+                    key: extraREDCapKey,
+                    value: "extra-redcap-secret-value",
+                    entityID: KeychainSecretStore.connectorEntityID(for: fixture.redcapConnector.id),
+                    label: nil
+                )
             }
             let run = TaskRun(task: fixture.task)
             fixture.context.insert(run)

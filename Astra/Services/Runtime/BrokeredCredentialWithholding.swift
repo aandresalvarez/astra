@@ -310,6 +310,10 @@ enum BrokeredCredentialApprovalDiscovery {
         let runtime = grantRuntime(task: task, run: run)
         let granted = Set(TaskRuntimePermissionGrants.approvedCredentialLabels(for: task, runtime: runtime))
         guard !record.credentialLabels.allSatisfy(granted.contains) else { return true }
+        // Opening unseals every value the connector holds, so one label the grant
+        // store would drop (too long, say) keeps the whole connector held back.
+        let wanted = record.credentialLabels.map { PermissionGrant.credential(label: $0) }
+        guard Set(wanted).isSubset(of: PermissionBroker.taskScopedApprovalGrants(for: wanted)) else { return false }
         return grantForAuto([record], task: task, run: run, runtime: runtime, usableNow: true,
                             modelContext: modelContext, persist: persist)
     }
