@@ -11,8 +11,10 @@ enum RuntimeResourceOwnership {
         record.resourcesReleased != true && !record.canRecoverPreparation && !(record.endedBeforeLaunch && record.canReplace)
     }
 
+    /// `audits` keeps the decoded ownership events between reads; without
+    /// it every read decodes every one of them again.
     static func claims(in store: RuntimeExecutionOwnerStore, context: ModelContext? = nil, excluding taskID: UUID? = nil,
-                       excludingOwner: PersistentIdentifier? = nil,
+                       excludingOwner: PersistentIdentifier? = nil, audits decodes: RuntimeOwnershipAuditDecodes? = nil,
                        readRetained: (URL) throws -> RuntimeExecutionOwnerRecord? = RuntimeExecutionOwnerStore.read) throws -> [TaskResourceLockClaim] {
         let records = try store.records()
         // A missing current journal can leave many audit roots sharing the
@@ -52,10 +54,7 @@ enum RuntimeResourceOwnership {
             // Ambiguous/imported rows keep their fallback fences.
             let type = "runtime.execution_ownership"
             let events = try context.fetch(FetchDescriptor<TaskEvent>(predicate: #Predicate { $0.type == type }))
-            let audits: [(TaskEvent, RuntimeExecutionOwnerRecord)] = events.compactMap { event in
-                guard let record = try? JSONDecoder().decode(RuntimeExecutionOwnerRecord.self, from: Data(event.payload.utf8)) else { return nil }
-                return (event, record)
-            }
+            let audits = (decodes ?? RuntimeOwnershipAuditDecodes()).records(of: events)
             for (event, audit) in audits {
                 guard !records.contains(where: { record in
                           guard record.taskID == audit.taskID, let eventTask = event.task,
@@ -107,7 +106,45 @@ enum RuntimeResourceOwnership {
 
     static func permitsRelease(_ claims: [TaskResourceLockClaim], store: RuntimeExecutionOwnerStore,
                                context: ModelContext? = nil) throws -> Bool {
-        let retained = Set(try self.claims(in: store, context: context))
+        let retained = Set(try self.claims(in: store, context: context, audits: .shared))
         return !claims.contains(where: retained.contains)
+    }
+}
+
+/// Ownership events decoded by an earlier read. Every read of who holds
+/// what fetches every `runtime.execution_ownership` event in the store and
+/// used to decode each one again: about 1,550 events and 3 MB of JSON in a
+/// store with a year of history, at every send, launch and turn end.
+///
+/// A decode depends on nothing but the event's payload text, and an entry
+/// answers only for that exact text, so a kept answer is the one a fresh
+/// decode would give. Each read keeps only the events it was given.
+@MainActor
+final class RuntimeOwnershipAuditDecodes {
+    /// For the app's own reads. Tests that count decodes make their own.
+    static let shared = RuntimeOwnershipAuditDecodes()
+
+    private var decoded: [PersistentIdentifier: (payload: String, record: RuntimeExecutionOwnerRecord?)] = [:]
+    private(set) var decodeCount = 0
+
+    func records(of events: [TaskEvent]) -> [(TaskEvent, RuntimeExecutionOwnerRecord)] {
+        var kept: [PersistentIdentifier: (payload: String, record: RuntimeExecutionOwnerRecord?)] = [:]
+        kept.reserveCapacity(events.count)
+        var records: [(TaskEvent, RuntimeExecutionOwnerRecord)] = []
+        records.reserveCapacity(events.count)
+        for event in events {
+            let id = event.persistentModelID, payload = event.payload
+            let record: RuntimeExecutionOwnerRecord?
+            if let known = decoded[id], known.payload == payload {
+                record = known.record
+            } else {
+                record = try? JSONDecoder().decode(RuntimeExecutionOwnerRecord.self, from: Data(payload.utf8))
+                decodeCount += 1
+            }
+            kept[id] = (payload, record)
+            if let record { records.append((event, record)) }
+        }
+        decoded = kept
+        return records
     }
 }
