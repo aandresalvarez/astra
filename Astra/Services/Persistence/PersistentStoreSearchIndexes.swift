@@ -1,6 +1,7 @@
 import Foundation
 import SQLite3
 import ASTRACore
+import ASTRAModels
 
 /// SQLite indexes the store needs for speed that SwiftData cannot declare.
 ///
@@ -18,8 +19,8 @@ import ASTRACore
 ///
 /// Core Data does not know the index, so it is dropped before a store opens
 /// for a migration (`drop(at:)`): a migration that alters the event table
-/// must not meet an index it did not create. The launch after creates it
-/// again.
+/// must not meet an index it did not create. If the drop cannot run, the
+/// open does not either. The launch after creates it again.
 ///
 /// Created after the container opens and before anything else uses the
 /// store, on a connection of its own. A store that is busy is left as it is
@@ -74,41 +75,80 @@ public enum PersistentStoreSearchIndexes {
         return outcomes
     }
 
-    /// Removes the indexes before a store opens for a migration. Returns
-    /// whether the store is left without them; a missing file has none.
+    /// What the app asks at each launch. A store this build already failed to
+    /// index is not asked again until the build changes, since each try reads
+    /// the whole event table first; a busy store is asked again next launch.
+    /// The memo names the store as well as the build, so a fresh recovery
+    /// store or another selected store is still indexed after one failed.
+    /// Returns nil when the store was not asked.
     @discardableResult
+    public static func ensureAtLaunch(at url: URL, build: String, defaults: UserDefaults) -> [String: Outcome]? {
+        let attempt = "\(build) \(url.standardizedFileURL.path)"
+        guard defaults.string(forKey: AppStorageKeys.failedStoreSearchIndexes) != attempt else { return nil }
+        let outcomes = ensure(at: url)
+        if outcomes.values.contains(where: \.isFailure) {
+            defaults.set(attempt, forKey: AppStorageKeys.failedStoreSearchIndexes)
+        }
+        return outcomes
+    }
+
+    /// Removes the indexes before a store opens for a migration; a missing
+    /// file has none. Throws the SQLite error that stopped it, in
+    /// `NSSQLiteErrorDomain`, so the open's own failure policy decides what
+    /// happens instead of the open: busy is retried as contention, corruption
+    /// goes to recovery, anything else blocks the open.
     public static func drop(at url: URL, indexes: [Index] = all,
-                            busyTimeoutMilliseconds: Int32 = defaultBusyTimeoutMilliseconds) -> Bool {
+                            busyTimeoutMilliseconds: Int32 = defaultBusyTimeoutMilliseconds) throws {
         let started = DispatchTime.now().uptimeNanoseconds
-        guard FileManager.default.fileExists(atPath: url.path) else { return true }
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
         var outcomes: [String: Outcome] = [:]
+        var stopped: OpenFailure?
         switch open(url, busyTimeoutMilliseconds: busyTimeoutMilliseconds) {
         case .failure(let failed):
             for index in indexes { outcomes[index.name] = failed.outcome }
+            stopped = failed
         case .success(let database):
             defer { sqlite3_close_v2(database) }
             for index in indexes {
                 let result = sqlite3_exec(database, index.dropSQL, nil, nil, nil)
-                if result != SQLITE_OK { outcomes[index.name] = failure(result, database) }
+                guard result != SQLITE_OK else { continue }
+                let failed = OpenFailure(result, database)
+                outcomes[index.name] = failed.outcome
+                stopped = failed
+                break
             }
         }
         report(outcomes, operation: "drop_search_indexes", started: started)
-        return outcomes.isEmpty
+        if let stopped { throw stopped.error }
     }
 
     private static func open(_ url: URL, busyTimeoutMilliseconds: Int32) -> Result<OpaquePointer, OpenFailure> {
         var database: OpaquePointer?
         let opened = sqlite3_open_v2(url.path, &database, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil)
         guard opened == SQLITE_OK, let database else {
-            let outcome = failure(opened, database)
+            let failed = OpenFailure(opened, database)
             if let database { sqlite3_close_v2(database) }
-            return .failure(OpenFailure(outcome: outcome))
+            return .failure(failed)
         }
         _ = sqlite3_busy_timeout(database, busyTimeoutMilliseconds)
         return .success(database)
     }
 
-    private struct OpenFailure: Error { let outcome: Outcome }
+    private struct OpenFailure: Error {
+        let code: Int32
+        let message: String
+
+        init(_ code: Int32, _ database: OpaquePointer?) {
+            self.code = code & 0xFF
+            message = database.flatMap { sqlite3_errmsg($0) }.map(String.init(cString:)) ?? String(cString: sqlite3_errstr(code))
+        }
+
+        var outcome: Outcome { code == SQLITE_BUSY || code == SQLITE_LOCKED ? .busy : .failed(message) }
+        /// The shape Core Data reports SQLite errors in, which `PersistentStoreOpenFailurePolicy` reads.
+        var error: NSError {
+            NSError(domain: "NSSQLiteErrorDomain", code: Int(code), userInfo: [NSLocalizedDescriptionKey: message])
+        }
+    }
 
     static func ensure(_ index: Index, in database: OpaquePointer) -> Outcome {
         switch hasRow(database, "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ? AND tbl_name = ?",
@@ -123,32 +163,25 @@ public enum PersistentStoreSearchIndexes {
         case .success(true): break
         }
         let result = sqlite3_exec(database, index.createSQL, nil, nil, nil)
-        return result == SQLITE_OK ? .created : failure(result, database)
+        return result == SQLITE_OK ? .created : OpenFailure(result, database).outcome
     }
 
     /// A probe that cannot run is not an answer: it is reported, never read as "no row".
     private static func hasRow(_ database: OpaquePointer, _ sql: String, _ bindings: [String]) -> Result<Bool, OpenFailure> {
         var statement: OpaquePointer?
         let prepared = sqlite3_prepare_v2(database, sql, -1, &statement, nil)
-        guard prepared == SQLITE_OK, let statement else { return .failure(OpenFailure(outcome: failure(prepared, database))) }
+        guard prepared == SQLITE_OK, let statement else { return .failure(OpenFailure(prepared, database)) }
         defer { sqlite3_finalize(statement) }
         let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
         for (offset, value) in bindings.enumerated() {
             let bound = sqlite3_bind_text(statement, Int32(offset + 1), value, -1, transient)
-            guard bound == SQLITE_OK else { return .failure(OpenFailure(outcome: failure(bound, database))) }
+            guard bound == SQLITE_OK else { return .failure(OpenFailure(bound, database)) }
         }
         switch sqlite3_step(statement) {
         case SQLITE_ROW: return .success(true)
         case SQLITE_DONE: return .success(false)
-        case let stepped: return .failure(OpenFailure(outcome: failure(stepped, database)))
+        case let stepped: return .failure(OpenFailure(stepped, database))
         }
-    }
-
-    private static func failure(_ code: Int32, _ database: OpaquePointer?) -> Outcome {
-        let primary = code & 0xFF
-        if primary == SQLITE_BUSY || primary == SQLITE_LOCKED { return .busy }
-        let message = database.flatMap { sqlite3_errmsg($0) }.map(String.init(cString:)) ?? String(cString: sqlite3_errstr(code))
-        return .failed(message)
     }
 
     private static func report(_ outcomes: [String: Outcome], operation: String, started: UInt64) {

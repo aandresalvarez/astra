@@ -16,11 +16,11 @@ public enum AppStorageKeys {
     // (e.g. when a schema/store change reintroduces stale enum values) is the
     // intended self-healing behavior; gating skips it on unchanged launches.
     public static let completedLegacyStoreRepairBuild = "astra.startup.completedLegacyStoreRepairBuild.v1"
-    // Build number for which creating the store's search indexes last failed
-    // for a reason other than a busy store. Each try scans the whole event
-    // table, so a store that cannot take them is not asked again until the
-    // build changes.
-    public static let failedStoreSearchIndexesBuild = "astra.startup.failedStoreSearchIndexesBuild.v1"
+    // Build number and store path for which creating the store's search
+    // indexes last failed for a reason other than a busy store. Each try scans
+    // the whole event table, so that store is not asked again until the build
+    // changes; any other store still is.
+    public static let failedStoreSearchIndexes = "astra.startup.failedStoreSearchIndexes.v1"
     // Build number for which the one-time TaskRun protocol-marker backfill last
     // ran. Pre-V17 runs carry a nil flag, which readers treat as "might contain
     // markers"; the backfill resolves them to an exact true/false.

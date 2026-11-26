@@ -116,31 +116,122 @@ struct PersistentStoreSearchIndexesTests {
         #expect(PersistentStoreSearchIndexes.ensure(at: url) == [Self.index.name: .created])
     }
 
-    @Test("A store that cannot be written reports a failure, not a missing table")
-    func readOnlyStoreFails() throws {
-        let root = try folder()
+    /// A store in a folder nobody may write, as on a read-only volume. Call the result to undo it.
+    private func readOnlyStore(in root: URL) throws -> (url: URL, restore: () -> Void) {
         let url = root.appendingPathComponent("default.store")
         do { _ = try open(url) }
         let files = try FileManager.default.contentsOfDirectory(atPath: root.path).map { root.appendingPathComponent($0).path }
         for path in files { try FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: path) }
         try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: root.path)
-        defer {
+        return (url, {
             try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path)
             for path in files { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: path) }
             try? FileManager.default.removeItem(at: root)
-        }
-        let outcome = try #require(PersistentStoreSearchIndexes.ensure(at: url)[Self.index.name])
+        })
+    }
+
+    @Test("A store that cannot be written reports a failure, not a missing table")
+    func readOnlyStoreFails() throws {
+        let store = try readOnlyStore(in: try folder()); defer { store.restore() }
+        let outcome = try #require(PersistentStoreSearchIndexes.ensure(at: store.url)[Self.index.name])
         #expect(outcome.isFailure)
     }
 
-    @Test("A store whose catalog cannot be read reports a failure, not a missing table")
+    @Test("A store whose catalog cannot be read reports a failure, not a missing table, and its drop stops the open as corruption")
     func unreadableStoreFails() throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let url = root.appendingPathComponent("default.store")
         try Data(repeating: 0x5A, count: 8_192).write(to: url)
         let outcome = try #require(PersistentStoreSearchIndexes.ensure(at: url)[Self.index.name])
         #expect(outcome.isFailure)
-        #expect(!PersistentStoreSearchIndexes.drop(at: url))
+        // The same answer the open itself would give, so a damaged store still reaches recovery.
+        var dropError: Error?
+        do { try PersistentStoreSearchIndexes.drop(at: url) } catch { dropError = error }
+        let error = try #require(dropError)
+        #expect(PersistentStoreOpenFailurePolicy.decision(for: error) == .verifiedCorruption)
+    }
+
+    @Test("A drop that cannot run stops the open: busy is retried as contention, and the open never runs past it")
+    func blockedDropStopsTheOpen() throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("default.store")
+        do { _ = try open(url) }
+        #expect(PersistentStoreSearchIndexes.ensure(at: url) == [Self.index.name: .created])
+        let configuration = ModelConfiguration(url: url)
+        var tries = 0
+        let held: Error? = try withDatabase(url) { holder in
+            #expect(sqlite3_exec(holder, "BEGIN EXCLUSIVE", nil, nil, nil) == SQLITE_OK)
+            defer { _ = sqlite3_exec(holder, "ROLLBACK", nil, nil, nil) }
+            do {
+                _ = try AstraStoreStartupCoordinator.makePersistentContainerWithContentionRetry(configuration: configuration) {
+                    tries += 1
+                    try PersistentStoreSearchIndexes.drop(at: url, busyTimeoutMilliseconds: 0)
+                }
+                return nil
+            } catch { return error }
+        }
+        let error = try #require(held)
+        #expect(PersistentStoreOpenFailurePolicy.decision(for: error) == .transientContention)
+        // The first try and every contention retry, each stopped by its drop.
+        #expect(tries == 1 + PersistentStoreRetryPolicy.contentionDelays.count)
+        #expect(try indexes(url).contains(Self.index.name))
+
+        // A store that is not a database is not opened past its drop either.
+        let junk = root.appendingPathComponent("junk.store")
+        try Data(repeating: 0x5A, count: 8_192).write(to: junk)
+        var junkTries = 0
+        var junkError: Error?
+        do {
+            _ = try AstraStoreStartupCoordinator.makePersistentContainerWithContentionRetry(configuration: ModelConfiguration(url: junk)) {
+                junkTries += 1
+                try PersistentStoreSearchIndexes.drop(at: junk)
+            }
+        } catch { junkError = error }
+        #expect(PersistentStoreOpenFailurePolicy.decision(for: try #require(junkError)) == .verifiedCorruption)
+        #expect(junkTries == 1)
+
+        // No try opens past a failed preflight: a store the open would create is never created.
+        let unopened = root.appendingPathComponent("unopened.store")
+        var unopenedTries = 0
+        var unopenedError: Error?
+        do {
+            _ = try AstraStoreStartupCoordinator.makePersistentContainerWithContentionRetry(configuration: ModelConfiguration(url: unopened)) {
+                unopenedTries += 1
+                throw NSError(domain: "NSSQLiteErrorDomain", code: Int(SQLITE_BUSY))
+            }
+        } catch { unopenedError = error }
+        #expect(PersistentStoreOpenFailurePolicy.decision(for: try #require(unopenedError)) == .transientContention)
+        #expect(unopenedTries == 1 + PersistentStoreRetryPolicy.contentionDelays.count)
+        #expect(!FileManager.default.fileExists(atPath: unopened.path))
+
+        // Once the holder is gone, the drop runs and the store opens without the index.
+        tries = 0
+        _ = try AstraStoreStartupCoordinator.makePersistentContainerWithContentionRetry(configuration: configuration) {
+            tries += 1
+            try PersistentStoreSearchIndexes.drop(at: url)
+        }
+        #expect(tries == 1)
+        #expect(!(try indexes(url)).contains(Self.index.name))
+    }
+
+    @Test("A failed store is not asked again by the same build, but another store and the next build are")
+    func failureMemoNamesTheStore() throws {
+        let defaults = InMemoryDefaults()
+        let failing = try readOnlyStore(in: try folder()); defer { failing.restore() }
+
+        let first = try #require(PersistentStoreSearchIndexes.ensureAtLaunch(at: failing.url, build: "1", defaults: defaults))
+        #expect(first[Self.index.name]?.isFailure == true)
+        #expect(PersistentStoreSearchIndexes.ensureAtLaunch(at: failing.url, build: "1", defaults: defaults) == nil)
+
+        // A fresh recovery store, or another selected store, opened by the same build.
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let healthy = root.appendingPathComponent("default.store")
+        do { _ = try open(healthy) }
+        #expect(PersistentStoreSearchIndexes.ensureAtLaunch(at: healthy, build: "1", defaults: defaults) == [Self.index.name: .created])
+
+        // The next build asks the failed store again.
+        let next = try #require(PersistentStoreSearchIndexes.ensureAtLaunch(at: failing.url, build: "2", defaults: defaults))
+        #expect(next[Self.index.name]?.isFailure == true)
     }
 
     @Test("Before a migration the index is dropped, and the open after creates it again")
@@ -149,11 +240,11 @@ struct PersistentStoreSearchIndexesTests {
         let url = root.appendingPathComponent("default.store")
         do { _ = try open(url) }
         #expect(PersistentStoreSearchIndexes.ensure(at: url) == [Self.index.name: .created])
-        #expect(PersistentStoreSearchIndexes.drop(at: url))
+        try PersistentStoreSearchIndexes.drop(at: url)
         #expect(!(try indexes(url)).contains(Self.index.name))
         // Dropping twice, or on a store that is not there, is not a failure.
-        #expect(PersistentStoreSearchIndexes.drop(at: url))
-        #expect(PersistentStoreSearchIndexes.drop(at: root.appendingPathComponent("missing.store")))
+        try PersistentStoreSearchIndexes.drop(at: url)
+        try PersistentStoreSearchIndexes.drop(at: root.appendingPathComponent("missing.store"))
         do { _ = try open(url) }
         #expect(PersistentStoreSearchIndexes.ensure(at: url) == [Self.index.name: .created])
     }

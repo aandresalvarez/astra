@@ -446,18 +446,20 @@ enum AstraStoreStartupCoordinator {
                 )
             )
         }
-        // A store another schema wrote may migrate as it opens; the indexes
-        // SwiftData does not know must not be in the way of that migration.
         var writtenBySameSchema = false
         if case .compatible(let storeSchemaVersion) = compatibility {
             writtenBySameSchema = storeSchemaVersion == appInfo.schemaVersion
         }
-        if !writtenBySameSchema { PersistentStoreSearchIndexes.drop(at: storeURL) }
         let configuration = ModelConfiguration(url: storeURL)
         do {
-            let container = try makePersistentContainerWithContentionRetry(configuration: configuration)
+            let container = try makePersistentContainerWithContentionRetry(configuration: configuration) {
+                // A store another schema wrote may migrate as it opens; the
+                // indexes SwiftData does not know must be out of its way first.
+                // A drop that cannot run stops this try with its SQLite error.
+                if !writtenBySameSchema { try PersistentStoreSearchIndexes.drop(at: storeURL) }
+            }
             repairLegacyValuesIfNeeded(at: storeURL, build: appInfo.build)
-            ensureSearchIndexesIfNeeded(at: storeURL, build: appInfo.build)
+            PersistentStoreSearchIndexes.ensureAtLaunch(at: storeURL, build: appInfo.build, defaults: .standard)
             let metadata = compatibilityMetadata(appInfo: appInfo)
             do {
                 try PersistentStoreCompatibilityService.writeMetadata(metadata, for: storeURL)
@@ -482,17 +484,6 @@ enum AstraStoreStartupCoordinator {
                 canRecoverLegacyMigration: hasPendingLegacyStoreMigration,
                 appInfo: appInfo
             )
-        }
-    }
-
-    /// Indexes SwiftData cannot declare below macOS 15. A busy store is asked
-    /// again at the next launch; one that cannot take them (read-only, full,
-    /// damaged) is not asked again until the build changes, since each try
-    /// reads the whole event table first.
-    private static func ensureSearchIndexesIfNeeded(at storeURL: URL, build: String) {
-        guard UserDefaults.standard.string(forKey: AppStorageKeys.failedStoreSearchIndexesBuild) != build else { return }
-        if PersistentStoreSearchIndexes.ensure(at: storeURL).values.contains(where: \.isFailure) {
-            UserDefaults.standard.set(build, forKey: AppStorageKeys.failedStoreSearchIndexesBuild)
         }
     }
 
@@ -692,12 +683,16 @@ enum AstraStoreStartupCoordinator {
         )
     }
 
-    private static func makePersistentContainerWithContentionRetry(
-        configuration: ModelConfiguration
+    /// `beforeEachOpen` runs before every try, and its error stands for that
+    /// try's: contention is retried, anything else is thrown without opening.
+    static func makePersistentContainerWithContentionRetry(
+        configuration: ModelConfiguration,
+        beforeEachOpen: () throws -> Void = {}
     ) throws -> ModelContainer {
         var retryIndex = 0
         while true {
             do {
+                try beforeEachOpen()
                 return try makePersistentContainer(configuration: configuration)
             } catch {
                 guard PersistentStoreOpenFailurePolicy.decision(for: error) == .transientContention,
