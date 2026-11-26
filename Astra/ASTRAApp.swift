@@ -446,10 +446,20 @@ enum AstraStoreStartupCoordinator {
                 )
             )
         }
+        var writtenBySameSchema = false
+        if case .compatible(let storeSchemaVersion) = compatibility {
+            writtenBySameSchema = storeSchemaVersion == appInfo.schemaVersion
+        }
         let configuration = ModelConfiguration(url: storeURL)
         do {
-            let container = try makePersistentContainerWithContentionRetry(configuration: configuration)
+            let container = try makePersistentContainerWithContentionRetry(configuration: configuration) {
+                // A store another schema wrote may migrate as it opens; the
+                // indexes SwiftData does not know must be out of its way first.
+                // A drop that cannot run stops this try with its SQLite error.
+                if !writtenBySameSchema { try PersistentStoreSearchIndexes.drop(at: storeURL) }
+            }
             repairLegacyValuesIfNeeded(at: storeURL, build: appInfo.build)
+            PersistentStoreSearchIndexes.ensureAtLaunch(at: storeURL, build: appInfo.build, defaults: .standard)
             let metadata = compatibilityMetadata(appInfo: appInfo)
             do {
                 try PersistentStoreCompatibilityService.writeMetadata(metadata, for: storeURL)
@@ -673,12 +683,16 @@ enum AstraStoreStartupCoordinator {
         )
     }
 
-    private static func makePersistentContainerWithContentionRetry(
-        configuration: ModelConfiguration
+    /// `beforeEachOpen` runs before every try, and its error stands for that
+    /// try's: contention is retried, anything else is thrown without opening.
+    static func makePersistentContainerWithContentionRetry(
+        configuration: ModelConfiguration,
+        beforeEachOpen: () throws -> Void = {}
     ) throws -> ModelContainer {
         var retryIndex = 0
         while true {
             do {
+                try beforeEachOpen()
                 return try makePersistentContainer(configuration: configuration)
             } catch {
                 guard PersistentStoreOpenFailurePolicy.decision(for: error) == .transientContention,
@@ -1015,9 +1029,16 @@ public struct ASTRAApp: App {
                         }
                         await ConnectorCredentialGenerationJournal.resumeAfterWorkspaceRecoveryAsync(modelContext: modelContext)
                         await SkillCredentialGenerationJournal.resumeAfterWorkspaceRecoveryAsync(modelContext: modelContext)
-                        guard !Task.isCancelled, WorkspaceRecoveryTrust.allowsCleanup else { return }
-                        MainThreadPhase.tracking("startup_cleanup_connector_outbox") {
-                            ConnectorCredentialCleanup.resumePending(modelContext: modelContext)
+                        do {
+                            // The mirrors the outbox pass reads are decoded off the
+                            // main actor first; the pass uses a decode only for the
+                            // bytes it then reads itself. Scoped, so the decodes
+                            // go as soon as the pass returns.
+                            let decodedMirrors = await ConnectorCredentialCleanup.decodeMirrorsAhead(modelContext: modelContext)
+                            guard !Task.isCancelled, WorkspaceRecoveryTrust.allowsCleanup else { return }
+                            MainThreadPhase.tracking("startup_cleanup_connector_outbox") {
+                                ConnectorCredentialCleanup.resumePending(modelContext: modelContext, decodedAhead: decodedMirrors)
+                            }
                         }
                         guard !Task.isCancelled, WorkspaceRecoveryTrust.allowsCleanup else { return }
                         // A former built-in's leftover activation would stop every

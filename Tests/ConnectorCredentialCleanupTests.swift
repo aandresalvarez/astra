@@ -1076,14 +1076,18 @@ struct ConnectorCredentialCleanupTests {
         let operations = try #require(app.range(of: "PluginOperationRecovery.resumePending(modelContext: modelContext)", range: trusted.upperBound..<gate.lowerBound))
         let workspaces = try #require(app.range(of: "WorkspaceDeletionCleanupService.resumePending(", range: gate.upperBound..<app.endIndex))
         #expect(trusted.upperBound <= operations.lowerBound && operations.upperBound < workspaces.lowerBound)
-        let connectors = try #require(app.range(of: "ConnectorCredentialCleanup.resumePending(modelContext: modelContext)", range: gate.upperBound..<app.endIndex))
+        let connectors = try #require(app.range(of: "ConnectorCredentialCleanup.resumePending(modelContext: modelContext, decodedAhead: decodedMirrors)", range: gate.upperBound..<app.endIndex))
         let drop = try #require(app.range(
             of: #"WorkspaceDeletionCleanupService\.dropUnconfirmed\(\s*modelContext: modelContext, rescanMarker: WorkspaceRecoveryService\.defaultIncompleteRecoveryMarker"#,
             options: .regularExpression, range: connectors.upperBound..<app.endIndex))
         #expect(app[gate.upperBound..<drop.lowerBound].contains("dropsUnconfirmed: false"))
         let skills = try #require(app.range(of: "await SkillCredentialGenerationJournal.resumeAfterWorkspaceRecoveryAsync",
             range: gate.upperBound..<connectors.lowerBound))
-        #expect(app[skills.upperBound..<connectors.lowerBound].contains(
+        // The mirrors are decoded off the main actor before the pass, and the
+        // gate is asked again once that decode returns.
+        let decodedAhead = try #require(app.range(of: "await ConnectorCredentialCleanup.decodeMirrorsAhead(modelContext: modelContext)",
+            range: skills.upperBound..<connectors.lowerBound))
+        #expect(app[decodedAhead.upperBound..<connectors.lowerBound].contains(
             "guard !Task.isCancelled, WorkspaceRecoveryTrust.allowsCleanup else { return }"))
         let outboxCall = try #require(app.range(of: "await PluginSecretCleanupOutbox.resumePendingAsync",
             range: connectors.upperBound..<drop.lowerBound))
@@ -1203,7 +1207,7 @@ struct ConnectorCredentialCleanupTests {
                 .appendingPathComponent("Astra/ASTRAApp.swift"), encoding: .utf8
         )
         let trusted = try #require(app.range(of: "workspaceRecoveryTrusted = true"))
-        #expect(app.range(of: "ConnectorCredentialCleanup.resumePending(modelContext: modelContext)", range: trusted.upperBound..<app.endIndex) != nil)
+        #expect(app.range(of: "ConnectorCredentialCleanup.resumePending(modelContext: modelContext, decodedAhead: decodedMirrors)", range: trusted.upperBound..<app.endIndex) != nil)
     }
 
     @Test("Turning a plugin off keeps isolated credentials and legacy shared aliases", arguments: [false, true])
