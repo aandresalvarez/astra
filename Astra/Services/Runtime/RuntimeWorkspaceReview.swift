@@ -76,7 +76,7 @@ enum RuntimeWorkspaceReview {
         guard qualifies(request, task: task, context: context) else { throw RuntimeExecutionOwnerStore.Failure.busy }
         let requested = TaskExecutionResourceAdmissionPolicy.lockClaims(for: request, task: task,
             runMode: "workspace_review", sandboxEnforcement: sandboxEnforcement)
-        let held = try RuntimeResourceOwnership.claims(in: store, context: context, excluding: task.id, excludingOwner: task.persistentModelID)
+        let held = try RuntimeResourceOwnership.claims(in: store, context: context, excluding: task.id, excludingOwner: task.persistentModelID, audits: .shared)
         // The review is about folders, including one a container mounts and
         // one on a remote host. A wait for an account or a browser profile is
         // not decided here. A holder chosen by a folder still gives up

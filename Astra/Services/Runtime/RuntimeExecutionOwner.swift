@@ -143,7 +143,7 @@ final class RuntimeExecutionOwner {
             let previous = protectedPrevious.map { reconciledCompletion($0, task: task) }
             let workspaceAdmission = try RuntimeWorkspaceContinuation.admission(task: task, request: userRequest, previous: previous, context: context, claims: claims)
             defer { withExtendedLifetime(workspaceAdmission) {} }
-            let held = try RuntimeResourceOwnership.claims(in: store, context: context, excluding: task.id, excludingOwner: task.persistentModelID)
+            let held = try RuntimeResourceOwnership.claims(in: store, context: context, excluding: task.id, excludingOwner: task.persistentModelID, audits: .shared)
             guard TaskExecutionResourceBroker.canAcquire(claims, active: held.filter { workspaceAdmission?.excludedClaims.contains($0) != true }) else {
                 report(TaskExecutionResourceBroker.blockerSummary(requested: claims, active: held)
                     + " Previous execution cleanup is not yet confirmed.", task: task, context: context, pause: true)
@@ -261,7 +261,7 @@ final class RuntimeExecutionOwner {
                   saved.cancellationRequested != true || saved.canReplace else { return .unresolved(lease) }
             let claims = resourceClaims ?? saved.resourceClaims ?? TaskExecutionResourceAdmissionPolicy.lockClaims(
                 for: nil, task: task, runMode: "settlement", fallbackAccess: .write, sandboxEnforcement: .off)
-            let held = try RuntimeResourceOwnership.claims(in: store, context: context, excluding: task.id, excludingOwner: task.persistentModelID)
+            let held = try RuntimeResourceOwnership.claims(in: store, context: context, excluding: task.id, excludingOwner: task.persistentModelID, audits: .shared)
             guard TaskExecutionResourceBroker.canAcquire(claims, active: held) else { return .deferred }
             saved.resourceClaims = claims
             saved.resourcesReleased = false
@@ -380,7 +380,7 @@ final class RuntimeExecutionOwner {
         guard let sessionID, let requested = RuntimeNativeSessionOwnership.claim(
             runtime: record.runtime, sessionID: sessionID, taskID: record.taskID) else { return }
         let held = try RuntimeResourceOwnership.claims(in: Self.store(in: context), context: context,
-            excluding: task.id, excludingOwner: task.persistentModelID)
+            excluding: task.id, excludingOwner: task.persistentModelID, audits: .shared)
         if let conflict = TaskExecutionResourceBroker.firstConflict(requested: [requested], active: held) {
             let holderID = conflict.holder.taskID
             let candidates = (try? context.fetch(FetchDescriptor<AgentTask>(predicate: #Predicate { $0.id == holderID }))) ?? []
