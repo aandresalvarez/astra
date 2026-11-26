@@ -97,6 +97,40 @@ struct TaskQueueOwnershipReadTests {
         #expect(await queue.cancelAllAndWait())
     }
 
+    @Test("A bind whose read fails makes it once more, and a failure that has ended is cleared by one read")
+    func aFailedBindReadIsMadeOnceMore() async throws {
+        let fixture = try queuedTask()
+        defer { _ = fixture.container }
+        let queue = TaskQueue(poolSize: 0)
+        _ = queue.processQueueIfIdle(modelContext: fixture.context)
+        #expect(queue.observedOwnershipReadCount == 1)
+        #expect(!queue.resourceOwnershipReadFailed)
+        // A receipt nobody can read: every read fails for as long as it is there.
+        let root = RuntimeExecutionOwner.store(in: fixture.context).root
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let unreadable = root.appendingPathComponent(UUID().uuidString + ".json")
+        try Data("not a receipt".utf8).write(to: unreadable)
+
+        // A follow-up's send passes one bind. Its read fails and is made once
+        // more, as the second bind it used to pass did.
+        _ = queue.signalExecutionRequest(id: fixture.requestID, task: fixture.task, modelContext: fixture.context)
+        #expect(queue.resourceOwnershipReadFailed)
+        #expect(queue.observedOwnershipReadCount == 3)
+        // The bind that reads only after a failure reads once.
+        _ = queue.registerLifecycleTask(modelContext: fixture.context) { _ in }
+        #expect(queue.observedOwnershipReadCount == 4)
+
+        // Readable again: one read clears it, and the next bind reads nothing.
+        try FileManager.default.removeItem(at: unreadable)
+        _ = queue.registerLifecycleTask(modelContext: fixture.context) { _ in }
+        #expect(queue.observedOwnershipReadCount == 5)
+        #expect(!queue.resourceOwnershipReadFailed)
+        _ = queue.registerLifecycleTask(modelContext: fixture.context) { _ in }
+        #expect(queue.observedOwnershipReadCount == 5)
+
+        #expect(await queue.cancelAllAndWait())
+    }
+
     @Test("Source check: an admission pass leaves the ownership read to the acquire it calls")
     func admissionPassDoesNotReadTwice() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()

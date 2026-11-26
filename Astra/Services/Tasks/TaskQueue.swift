@@ -174,10 +174,10 @@ final class TaskQueue {
                 ], level: .error)
                 return nil
             }
-            if readingOwnership || resourceOwnershipReadFailed { refreshResourceOwnership(in: modelContext) } // See there.
+            readOwnershipForBind(in: modelContext, required: readingOwnership)
             return storeSession
         }
-        refreshResourceOwnership(in: modelContext)
+        readOwnershipForBind(in: modelContext, required: true)
         let session = TaskQueueStoreSession(modelContext: modelContext) { [weak self, weak modelContext] in
             guard let self, let modelContext, let session = self.storeSession, session.matches(modelContext),
                   !self.isStopping else { return }
