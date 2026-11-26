@@ -194,9 +194,15 @@ boundary. The full inventory is in
   cannot prompt in a non-interactive run. Local tools are never pre-granted,
   on any runtime.
 - **Auto** asks nothing. Connector credentials are allowed for the task (the
-  launch stops if that grant cannot be saved; a connector the agent reached for
-  mid-run is allowed only after a clean finish and a durable save, and offered
-  otherwise; an Auto launch answers an offer still open). A staged Jira write
+  launch stops if that grant cannot be saved; an Auto launch answers an offer
+  still open). A brokered connector the turn did not name starts the run held
+  back. A read of it saves the task grant first and then uses the credential in
+  that same run, and the grant stays if the run is later cancelled or fails.
+  The held-back values are kept apart from the broker's environment, so no host
+  process or other connector's call receives them. A write composed in that run
+  stays held back; such a connector, or one whose grant could not be saved, is
+  allowed only after a clean finish and a durable save, and offered otherwise.
+  A staged Jira write
   is sent when the agent proposes it, and a requested GitHub review is posted
   when the agent asks ASTRA to post the file it wrote; the receipt (key, link,
   or error) is the agent's tool result (spec decision 15, below). Every action

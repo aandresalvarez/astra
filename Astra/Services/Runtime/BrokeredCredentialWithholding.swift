@@ -39,6 +39,26 @@ struct BrokeredCredentialApprovalRecord: Sendable, Equatable {
     }
 }
 
+extension BrokeredCredentialApprovalRecord {
+    /// Nil when the broker's record names no connector or no credential. The
+    /// labels are spelled the way `ConnectorRuntimeProjection` spells them, so a
+    /// grant made from this record is the one a launch matches.
+    init?(_ withholding: BrokeredConnectorCredentialWithholding) {
+        guard let connectorID = UUID(uuidString: withholding.connectorID) else { return nil }
+        let labels = withholding.credentials.map {
+            ConnectorRuntimeProjection.credentialLabel(connectorID: connectorID, key: $0.key)
+        }
+        guard !labels.isEmpty else { return nil }
+        self.init(
+            connectorID: connectorID,
+            connectorName: withholding.name,
+            alias: withholding.alias,
+            serviceType: withholding.serviceType,
+            credentialLabels: labels.sorted()
+        )
+    }
+}
+
 /// Turns the credentials a run was not allowed to unseal into the marker the
 /// broker projects alongside the ones it was.
 enum BrokeredCredentialWithholdingProjection {
@@ -182,36 +202,23 @@ final class BrokeredCredentialWithholdingRecorder: BrokeredCredentialWithholding
     func brokeredConnectorInvokedWithWithheldCredentials(
         _ withholding: BrokeredConnectorCredentialWithholding
     ) {
-        guard let connectorID = UUID(uuidString: withholding.connectorID) else { return }
-        let labels = withholding.credentials.map {
-            ConnectorRuntimeProjection.credentialLabel(connectorID: connectorID, key: $0.key)
-        }
-        guard !labels.isEmpty else { return }
-        ledger.record(
-            BrokeredCredentialApprovalRecord(
-                connectorID: connectorID,
-                connectorName: withholding.name,
-                alias: withholding.alias,
-                serviceType: withholding.serviceType,
-                credentialLabels: labels.sorted()
-            ),
-            taskID: taskID,
-            runID: runID
-        )
+        guard let record = BrokeredCredentialApprovalRecord(withholding) else { return }
+        ledger.record(record, taskID: taskID, runID: runID)
     }
 }
 
 /// Turns "the agent reached for a connector it could not unseal" into something
 /// the user can approve.
 ///
-/// Raised here, at the run boundary, and never at launch. Preflight cannot ask
-/// about a connector the turn did not name — a run about cake must not stop to
-/// ask about Jira, and the offered tier is not allowed to fail, reroute or block
-/// a launch. But the agent invoking the tool is a different event with a
-/// different meaning: the run itself asked for the connector, which is the
-/// narration preflight was waiting for and did not have. The request recorded
-/// here changes no status, pauses nothing, and fails nothing; it is an offer
-/// sitting in the dock next to the run that explains why it is there.
+/// Raised at the run boundary, and never at launch. Preflight cannot ask about a
+/// connector the turn did not name — a run about cake must not stop to ask about
+/// Jira, and the offered tier is not allowed to fail, reroute or block a launch.
+/// But the agent invoking the tool is a different event with a different
+/// meaning: the run itself asked for the connector, which is the narration
+/// preflight was waiting for and did not have. The request recorded here changes
+/// no status, pauses nothing, and fails nothing; it is an offer sitting in the
+/// dock next to the run that explains why it is there. Where the level asks
+/// nothing, a read does not wait for the boundary (`allowDuringRun`).
 @MainActor
 enum BrokeredCredentialApprovalDiscovery {
     @discardableResult
@@ -222,24 +229,11 @@ enum BrokeredCredentialApprovalDiscovery {
         policyLevel: AgentPolicyLevel = .review,
         runFinishedCleanly: Bool,
         ledger: BrokeredCredentialApprovalLedger = .shared,
-        persistAutoGrant: @MainActor (AgentTask, ModelContext) -> Bool = { task, modelContext in
-            WorkspacePersistenceCoordinator.saveAndAutoExport(
-                workspace: task.workspace,
-                modelContext: modelContext,
-                taskID: task.id,
-                auditFields: ["operation": "brokered_credential_auto_grant"]
-            )
-        }
+        persistAutoGrant: @MainActor (AgentTask, ModelContext) -> Bool = saveAutoGrant
     ) -> [BrokeredCredentialApprovalRecord] {
         let drained = ledger.drain(taskID: task.id, runID: run.id)
         guard !drained.isEmpty else { return [] }
-        let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(
-            rawValue: run.runtimeID,
-            fallback: AgentRuntimeAdapterRegistry.registeredRuntime(
-                rawValue: task.runtimeID,
-                fallback: TaskExecutionDefaults.runtime
-            )
-        )
+        let runtime = grantRuntime(task: task, run: run)
         let granted = Set(TaskRuntimePermissionGrants.approvedCredentialLabels(
             for: task,
             runtime: runtime
@@ -268,8 +262,8 @@ enum BrokeredCredentialApprovalDiscovery {
         // open are that run's question and stay open.
         if !ExternalActionPolicy.asksUser(for: .connectorCredentialUse, level: policyLevel),
            runFinishedCleanly,
-           grantForAuto(recorded, task: task, run: run, runtime: runtime, modelContext: modelContext,
-                        persist: persistAutoGrant) {
+           grantForAuto(recorded, task: task, run: run, runtime: runtime, usableNow: false,
+                        modelContext: modelContext, persist: persistAutoGrant) {
             return recorded
         }
         // One offer, never one per connector. The dock shows only the latest
@@ -301,6 +295,48 @@ enum BrokeredCredentialApprovalDiscovery {
         return recorded
     }
 
+    /// Allows, while the run is still going, a connector one of its reads
+    /// reached: the grant the run boundary would make, made when it is needed.
+    /// The caller has already decided the level asks nothing. True only when the
+    /// task holds the grant durably.
+    static func allowDuringRun(
+        _ withholding: BrokeredConnectorCredentialWithholding,
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        persist: @MainActor (AgentTask, ModelContext) -> Bool = saveAutoGrant
+    ) -> Bool {
+        guard let record = BrokeredCredentialApprovalRecord(withholding) else { return false }
+        let runtime = grantRuntime(task: task, run: run)
+        let granted = Set(TaskRuntimePermissionGrants.approvedCredentialLabels(for: task, runtime: runtime))
+        guard !record.credentialLabels.allSatisfy(granted.contains) else { return true }
+        // Opening unseals every value the connector holds, so one label the grant
+        // store would drop (too long, say) keeps the whole connector held back.
+        let wanted = record.credentialLabels.map { PermissionGrant.credential(label: $0) }
+        guard Set(wanted).isSubset(of: PermissionBroker.taskScopedApprovalGrants(for: wanted)) else { return false }
+        return grantForAuto([record], task: task, run: run, runtime: runtime, usableNow: true,
+                            modelContext: modelContext, persist: persist)
+    }
+
+    static func saveAutoGrant(task: AgentTask, modelContext: ModelContext) -> Bool {
+        WorkspacePersistenceCoordinator.saveAndAutoExport(
+            workspace: task.workspace,
+            modelContext: modelContext,
+            taskID: task.id,
+            auditFields: ["operation": "brokered_credential_auto_grant"]
+        )
+    }
+
+    private static func grantRuntime(task: AgentTask, run: TaskRun) -> AgentRuntimeID {
+        AgentRuntimeAdapterRegistry.registeredRuntime(
+            rawValue: run.runtimeID,
+            fallback: AgentRuntimeAdapterRegistry.registeredRuntime(
+                rawValue: task.runtimeID,
+                fallback: TaskExecutionDefaults.runtime
+            )
+        )
+    }
+
     /// The grant must be durable before it counts, as at launch: one only the
     /// `ModelContext` holds is rolled back, and the caller offers instead.
     private static func grantForAuto(
@@ -308,6 +344,7 @@ enum BrokeredCredentialApprovalDiscovery {
         task: AgentTask,
         run: TaskRun,
         runtime: AgentRuntimeID,
+        usableNow: Bool,
         modelContext: ModelContext,
         persist: @MainActor (AgentTask, ModelContext) -> Bool
     ) -> Bool {
@@ -321,8 +358,9 @@ enum BrokeredCredentialApprovalDiscovery {
             modelContext: modelContext,
             source: "auto_policy"
         )
+        let source = usableNow ? "brokered_credential_opened_in_run" : "brokered_credential_withheld"
         AppLogger.audit(.connectorTested, category: "Worker", taskID: task.id, fields: [
-            "source": "brokered_credential_withheld",
+            "source": source,
             "runtime": runtime.rawValue,
             "connector_count": String(approvals.count),
             "credential_label_count": String(labels.count),
@@ -330,20 +368,25 @@ enum BrokeredCredentialApprovalDiscovery {
         ], level: granted.isEmpty ? .warning : .info, fieldMaxLength: 240)
         guard !granted.isEmpty else { return false }
         let names = ConnectorRuntimeProjection.joinedNames(approvals.map(\.connectorName))
+        let later = usableNow
+            ? ""
+            : " The agent can use \(approvals.count > 1 ? "them" : "it") from the next message."
         modelContext.insert(TaskEvent(
             task: task,
             eventType: TaskEventTypes.System.info,
             payload: "Auto allowed \(names) to use \(approvals.count > 1 ? "their" : "its") saved credentials "
-                + "for this task. The agent can use \(approvals.count > 1 ? "them" : "it") from the next message.",
+                + "for this task." + later,
             run: run
         ))
         guard persist(task, modelContext) else {
             task.runtimePermissionGrantsJSON = grantsBefore
-            for event in task.events where !eventsBefore.contains(event.id) {
-                modelContext.delete(event)
-            }
+            // Out of the relationship before deleting: a run still going reads
+            // the task's events again.
+            let added = task.events.filter { !eventsBefore.contains($0.id) }
+            task.events.removeAll { !eventsBefore.contains($0.id) }
+            added.forEach(modelContext.delete)
             AppLogger.audit(.connectorTested, category: "Worker", taskID: task.id, fields: [
-                "source": "brokered_credential_withheld",
+                "source": source,
                 "result": "auto_policy_grant_unpersisted"
             ], level: .error)
             return false

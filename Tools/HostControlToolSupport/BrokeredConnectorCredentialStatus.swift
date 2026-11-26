@@ -52,12 +52,24 @@ public struct BrokeredConnectorCredentialWithholding: Codable, Equatable, Sendab
         }
     }
 
+    /// Where the user's consent stands, when it is not theirs to be asked for.
+    /// A call that still finds such a connector held back must not send them
+    /// looking for an approval.
+    public enum Consent: String, Codable, Sendable {
+        /// ASTRA allows it without asking.
+        case notAsked
+        /// ASTRA has allowed it during this run, for reads.
+        case given
+    }
+
     public var connectorID: String
     public var alias: String
     public var name: String
     public var serviceType: String
     public var toolName: String
     public var credentials: [Credential]
+    /// Nil where ASTRA asks the user first.
+    public var consent: Consent?
 
     public init(
         connectorID: String,
@@ -65,7 +77,8 @@ public struct BrokeredConnectorCredentialWithholding: Codable, Equatable, Sendab
         name: String,
         serviceType: String,
         toolName: String,
-        credentials: [Credential]
+        credentials: [Credential],
+        consent: Consent? = nil
     ) {
         self.connectorID = connectorID
         self.alias = alias
@@ -73,6 +86,7 @@ public struct BrokeredConnectorCredentialWithholding: Codable, Equatable, Sendab
         self.serviceType = serviceType
         self.toolName = toolName
         self.credentials = credentials
+        self.consent = consent
     }
 
     /// Matches the same way `HostControlConnector.environmentKey(forLogicalName:)`
@@ -194,6 +208,7 @@ public struct BrokeredConnectorStatusReport: Equatable, Sendable {
     public var baseURL: String
     public var baseURLReady: Bool
     public var credentials: [Credential]
+    private let consent: BrokeredConnectorCredentialWithholding.Consent?
 
     public init(
         serviceLabel: String,
@@ -207,6 +222,7 @@ public struct BrokeredConnectorStatusReport: Equatable, Sendable {
         alias = connector.alias
         baseURL = connector.baseURL
         baseURLReady = scheme == "http" || scheme == "https"
+        consent = withholding?.consent
         credentials = requests.map { request in
             Self.resolve(
                 request,
@@ -305,16 +321,31 @@ public struct BrokeredConnectorStatusReport: Equatable, Sendable {
         let withheld = withheldCredentials
         guard !withheld.isEmpty else { return [] }
         let keys = withheld.compactMap(\.envKey).joined(separator: ", ")
+        let held: String
+        let nextStep: String
+        switch consent {
+        case nil:
+            held = "ASTRA did not unseal them for this run"
+            nextStep = "this needs approval, not reconfiguration. ASTRA raises a credential approval request for "
+                + "'\(alias)' from this call; ask the user to approve it in ASTRA and then retry."
+        case .notAsked:
+            held = "ASTRA did not unseal them for this call"
+            nextStep = "there is nothing for the user to reconfigure, and no approval to ask them for. ASTRA "
+                + "allows '\(alias)' for this task once a reply that used it finishes normally, and says so in the "
+                + "chat. Finish this reply and ask the user to send another message."
+        case .given:
+            held = "ASTRA opened them for reads only in this run"
+            nextStep = "ASTRA has already allowed '\(alias)' for this task, so there is nothing to approve. A "
+                + "write needs a run that starts with it. Finish this reply and ask the user to send another message."
+        }
         return [
             "credentials_withheld: true",
             "credentials_withheld_keys: \(keys)",
             "credentials_withheld_reason: the user has configured these credentials and ASTRA still holds them. "
-                + "This turn's wording did not mention \(serviceLabel), so ASTRA did not unseal them for this run. "
+                + "This turn's wording did not mention \(serviceLabel), so \(held). "
                 + "Nothing about the saved configuration is missing, expired, or wrong.",
-            "next_step: this needs approval, not reconfiguration. ASTRA raises a credential approval request for "
-                + "'\(alias)' from this call; ask the user to approve it in ASTRA and then retry. Do not tell the "
-                + "user the connector is unconfigured, and do not ask them to re-enter, re-save, or re-verify the "
-                + "credentials."
+            "next_step: " + nextStep + " Do not tell the user the connector is unconfigured, and do not ask them "
+                + "to re-enter, re-save, or re-verify the credentials."
         ]
     }
 }
@@ -327,7 +358,9 @@ public struct BrokeredConnectorStatusReport: Equatable, Sendable {
 /// broker exists under — but an agent reaching for the tool is the run saying
 /// it wants the connector, and that is a different signal arriving at a
 /// different time. The observer only records it; it must not block, and
-/// nothing downstream of it may change what this run does.
+/// nothing downstream of it may change what this run does. Opening a connector
+/// during the run is a separate request (`BrokeredCredentialOpener`), made only
+/// where ASTRA would not have asked the user.
 public protocol BrokeredCredentialWithholdingObserving: AnyObject, Sendable {
     /// Called on the broker's connection queue, inside the lock that serializes
     /// tool calls. Implementations return immediately.

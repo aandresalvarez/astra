@@ -13,11 +13,16 @@ import HostControlToolSupport
 /// the run already asked. `ExternalActionPolicy` decides: where the level asks,
 /// nothing happens here and the user reviews the proposal after the run, as
 /// before; where it does not, the write is sent now, through the same services
-/// the review sheets use, and its receipt is the agent's tool result.
+/// the review sheets use, and its receipt is the agent's tool result. A
+/// connector the launch held back is opened for a read on the same terms.
 @MainActor
 final class BrokeredExternalActionHandler {
     typealias CoordinatorFactory = @MainActor (ModelContext) -> ConnectorMutationCoordinator
     typealias ReviewServiceFactory = @MainActor (ModelContext) -> GitHubReviewPublicationService
+    typealias GrantPersistence = @MainActor (AgentTask, ModelContext) -> Bool
+
+    /// Whether this run's level opens a connector without asking.
+    nonisolated let mayAllowHeldBackConnectors: Bool
 
     private let modelContext: ModelContext
     private let taskID: UUID
@@ -25,6 +30,7 @@ final class BrokeredExternalActionHandler {
     private let policyLevel: AgentPolicyLevel
     private let makeCoordinator: CoordinatorFactory
     private let makeReviewService: ReviewServiceFactory
+    private let persistGrant: GrantPersistence
 
     init(
         modelContext: ModelContext,
@@ -32,7 +38,8 @@ final class BrokeredExternalActionHandler {
         runID: UUID,
         policyLevel: AgentPolicyLevel,
         makeCoordinator: @escaping CoordinatorFactory = { ConnectorMutationCoordinator(modelContext: $0) },
-        makeReviewService: @escaping ReviewServiceFactory = { GitHubReviewPublicationService(modelContext: $0) }
+        makeReviewService: @escaping ReviewServiceFactory = { GitHubReviewPublicationService(modelContext: $0) },
+        persistGrant: @escaping GrantPersistence = BrokeredCredentialApprovalDiscovery.saveAutoGrant
     ) {
         self.modelContext = modelContext
         self.taskID = taskID
@@ -40,6 +47,27 @@ final class BrokeredExternalActionHandler {
         self.policyLevel = policyLevel
         self.makeCoordinator = makeCoordinator
         self.makeReviewService = makeReviewService
+        self.persistGrant = persistGrant
+        mayAllowHeldBackConnectors = !ExternalActionPolicy.asksUser(for: .connectorCredentialUse, level: policyLevel)
+    }
+
+    /// Auto asks nothing, so a connector this run reads from is allowed for the
+    /// task at that moment: saved first, then noted in the chat, then used. Only
+    /// while the run is still going; one that has ended is the run boundary's.
+    func allowHeldBackConnector(_ withholding: BrokeredConnectorCredentialWithholding) -> Bool {
+        guard mayAllowHeldBackConnectors,
+              let task = task(),
+              let run = task.runs.first(where: { $0.id == runID }),
+              run.status == .running else {
+            return false
+        }
+        return BrokeredCredentialApprovalDiscovery.allowDuringRun(
+            withholding,
+            task: task,
+            run: run,
+            modelContext: modelContext,
+            persist: persistGrant
+        )
     }
 
     func sendStagedConnectorMutation(_ request: StagedConnectorMutationRequest) async -> BrokeredExternalActionOutcome {
@@ -177,6 +205,9 @@ final class BrokeredExternalActionBridge: BrokeredExternalActionRequesting, @unc
     /// Under the CLI relay's 305-second receive timeout, so the agent hears this
     /// answer rather than a dropped connection.
     static let defaultTimeoutSeconds: TimeInterval = 240
+    /// Opening a connector is one save, and the read it was asked for still has
+    /// to fit inside the caller's own timeout.
+    static let grantTimeoutSeconds: TimeInterval = 60
 
     private let handler: BrokeredExternalActionHandler
     private let timeoutSeconds: TimeInterval
@@ -184,6 +215,16 @@ final class BrokeredExternalActionBridge: BrokeredExternalActionRequesting, @unc
     init(handler: BrokeredExternalActionHandler, timeoutSeconds: TimeInterval = defaultTimeoutSeconds) {
         self.handler = handler
         self.timeoutSeconds = timeoutSeconds
+    }
+
+    var mayAllowHeldBackConnectors: Bool { handler.mayAllowHeldBackConnectors }
+
+    /// False when ASTRA does not answer in time: the broker keeps the connector
+    /// held back, and asks again on the next call.
+    func allowHeldBackConnector(_ withholding: BrokeredConnectorCredentialWithholding) -> Bool {
+        answer(within: min(timeoutSeconds, Self.grantTimeoutSeconds)) {
+            $0.allowHeldBackConnector(withholding)
+        } ?? false
     }
 
     func sendStagedConnectorMutation(_ request: StagedConnectorMutationRequest) -> BrokeredExternalActionOutcome {
@@ -197,36 +238,44 @@ final class BrokeredExternalActionBridge: BrokeredExternalActionRequesting, @unc
     private func wait(
         _ work: @escaping @MainActor @Sendable (BrokeredExternalActionHandler) async -> BrokeredExternalActionOutcome
     ) -> BrokeredExternalActionOutcome {
-        // Waiting here would wait on itself. The broker never calls from the
-        // main thread; if something ever does, nothing is sent and the
-        // proposal stays for the user's review.
+        // Nothing is sent from the main thread, so the proposal stays for the
+        // user's review.
         guard !Thread.isMainThread else { return .awaitingReview }
-        let answer = BrokeredExternalActionAnswer()
+        return answer(within: timeoutSeconds, work) ?? .uncertain(message: """
+            ASTRA did not finish within \(Int(timeoutSeconds)) seconds. It keeps going and records \
+            what happened in the chat; it may already have happened.
+            """)
+    }
+
+    /// The handler's answer, or nil when it did not come in time. Also nil on
+    /// the main thread without asking: waiting there would wait on itself, and
+    /// the broker never calls from it.
+    private func answer<Value: Sendable>(
+        within seconds: TimeInterval,
+        _ work: @escaping @MainActor @Sendable (BrokeredExternalActionHandler) async -> Value
+    ) -> Value? {
+        guard !Thread.isMainThread else { return nil }
+        let answer = BrokeredExternalActionAnswer<Value>()
         let semaphore = DispatchSemaphore(value: 0)
         let handler = handler
         Task { @MainActor in
             answer.set(await work(handler))
             semaphore.signal()
         }
-        guard semaphore.wait(timeout: .now() + timeoutSeconds) == .success, let outcome = answer.value else {
-            return .uncertain(message: """
-                ASTRA did not finish within \(Int(timeoutSeconds)) seconds. It keeps going and records \
-                what happened in the chat; it may already have happened.
-                """)
-        }
-        return outcome
+        guard semaphore.wait(timeout: .now() + seconds) == .success else { return nil }
+        return answer.value
     }
 }
 
-private final class BrokeredExternalActionAnswer: @unchecked Sendable {
+private final class BrokeredExternalActionAnswer<Value: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
-    private var stored: BrokeredExternalActionOutcome?
+    private var stored: Value?
 
-    var value: BrokeredExternalActionOutcome? {
+    var value: Value? {
         lock.withLock { stored }
     }
 
-    func set(_ outcome: BrokeredExternalActionOutcome) {
-        lock.withLock { stored = outcome }
+    func set(_ answer: Value) {
+        lock.withLock { stored = answer }
     }
 }

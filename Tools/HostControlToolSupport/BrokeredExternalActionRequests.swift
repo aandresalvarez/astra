@@ -21,6 +21,17 @@ public protocol BrokeredExternalActionRequesting: Sendable {
     func sendStagedConnectorMutation(_ request: StagedConnectorMutationRequest) -> BrokeredExternalActionOutcome
     /// Asks ASTRA to post a pull-request review file the agent wrote.
     func postGitHubReview(_ request: GitHubReviewPostRequest) -> BrokeredExternalActionOutcome
+    /// Whether ASTRA would ever open a held-back connector for this run. When it
+    /// would not, the broker is given no held-back value to open.
+    var mayAllowHeldBackConnectors: Bool { get }
+    /// Asks ASTRA to open, for a read, a connector this run was launched without
+    /// the credentials for. True only once ASTRA has saved that it allowed it.
+    func allowHeldBackConnector(_ withholding: BrokeredConnectorCredentialWithholding) -> Bool
+}
+
+public extension BrokeredExternalActionRequesting {
+    var mayAllowHeldBackConnectors: Bool { false }
+    func allowHeldBackConnector(_: BrokeredConnectorCredentialWithholding) -> Bool { false }
 }
 
 public struct StagedConnectorMutationRequest: Equatable, Sendable {

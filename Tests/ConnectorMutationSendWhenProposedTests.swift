@@ -622,7 +622,13 @@ struct ConnectorMutationSendWhenProposedTests {
         #expect(worker.range(of: "let manifest = AgentPolicyManifestService.recordPreflightManifest")!.lowerBound < binding.lowerBound)
 
         let registry = try String(contentsOf: root.appendingPathComponent("Astra/Services/Runtime/HostControlBrokerSessionRegistry.swift"), encoding: .utf8)
-        #expect(registry.contains("externalActionRequester: externalActionRequester(taskID: task.id, runID: runID)"))
+        #expect(registry.contains("let requester = externalActionRequester(taskID: task.id, runID: runID)"))
+        #expect(registry.contains("externalActionRequester: requester,"))
+        // The same binding decides whether the broker is given held-back values
+        // to open, and the session hands them to its server.
+        #expect(registry.contains("opensWithoutApproval: requester?.mayAllowHeldBackConnectors == true"))
+        #expect(registry.contains("sealedCredentials: connectors.sealed"))
+        #expect(registry.contains("sealedCredentials: sealedCredentials"))
     }
 
     /// On a GCD thread, as the broker's connection queue is — never the
