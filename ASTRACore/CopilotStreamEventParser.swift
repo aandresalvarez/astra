@@ -211,6 +211,14 @@ public enum CopilotStreamEventParser {
             return [.control(type: normalized)]
         }
 
+        // What Copilot tells the model, not what the agent says: instruction
+        // updates (sandbox guidance since CLI 1.0.114) and the system prompt.
+        // Their `content` fell to the text fallback below and opened the answer
+        // with a `<system_reminder>` block.
+        if normalized == "instruction.update" || normalized == "system.message" {
+            return [.control(type: normalized)]
+        }
+
         if normalized == "assistant.reasoning" || normalized == "assistant.reasoning_delta" {
             if let text = textValue(in: object), !text.isEmpty {
                 return [.thinking(text: text)]

@@ -164,11 +164,13 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
             return false
         }
 
-        let connectorEnvironment = Self.brokeredConnectorEnvironment(
+        let requester = externalActionRequester(taskID: task.id, runID: runID)
+        let connectors = Self.brokeredConnectorInputs(
             task: task,
             runtime: runtime,
             capabilityScope: capabilityScope,
-            requiredTools: requiredTools
+            requiredTools: requiredTools,
+            opensWithoutApproval: requester?.mayAllowHeldBackConnectors == true
         )
         let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: task)
         let hostEnvironment = HostControlPlaneMCPProjection.environmentVariables(
@@ -185,7 +187,7 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
             sshRoute: sshRoute
         )
         var environment = ProcessInfo.processInfo.environment
-        environment.merge(connectorEnvironment) { _, brokerValue in brokerValue }
+        environment.merge(connectors.environment) { _, brokerValue in brokerValue }
         environment.merge(hostEnvironment) { _, brokerValue in brokerValue }
 
         let configuration = HostControlToolConfiguration.fromEnvironment(environment)
@@ -196,8 +198,9 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
             expectedHelperPath: expectedHelperPath,
             withholdingObserver: BrokeredCredentialWithholdingRecorder(taskID: task.id, runID: runID),
             historyReader: reader ?? task.modelContext.map { TaskHistoryEvidenceReader(container: $0.container, taskID: task.id, ownerID: historyOwnerID) },
-            externalActionRequester: externalActionRequester(taskID: task.id, runID: runID),
-            mailReader: mailReader(taskID: task.id, runID: runID)
+            externalActionRequester: requester,
+            mailReader: mailReader(taskID: task.id, runID: runID),
+            sealedCredentials: connectors.sealed
         )
         guard let socketPath = session.start(
             allowsFileDropFallback: runtime.map(Self.providerSandboxedRuntimes.contains) == true
@@ -210,6 +213,16 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
         previous?.invalidate()
         session.socketPath = socketPath
         return true
+    }
+
+    /// What one run's broker is given for its connectors.
+    struct BrokeredConnectorBrokerInputs {
+        /// The broker's environment: unsealed credentials, and the names of the
+        /// ones held back.
+        var environment: [String: String]
+        /// Held-back values the broker may use once ASTRA allows their
+        /// connector, or nil where ASTRA would ask the user first.
+        var sealed: BrokeredSealedCredentials?
     }
 
     /// The connector credentials the broker may unseal for this run.
@@ -233,6 +246,10 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
     /// `ASTRA_CONNECTOR_CREDENTIALS_WITHHELD` — never a value, and only into the
     /// broker's own configuration, never the agent's environment. The broker can
     /// then say "held back", which is true, instead of "absent", which is not.
+    ///
+    /// Where the run's level asks nothing (`opensWithoutApproval`), the held-back
+    /// values also travel apart from the environment, so a read can open one
+    /// after ASTRA saves that it allowed it (`BrokeredCredentialOpener`).
     @MainActor
     static func brokeredConnectorEnvironment(
         task: AgentTask,
@@ -241,6 +258,24 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
         requiredTools: [String],
         secretStore: SecretStore = KeychainSecretStore()
     ) -> [String: String] {
+        brokeredConnectorInputs(
+            task: task,
+            runtime: runtime,
+            capabilityScope: capabilityScope,
+            requiredTools: requiredTools,
+            secretStore: secretStore
+        ).environment
+    }
+
+    @MainActor
+    static func brokeredConnectorInputs(
+        task: AgentTask,
+        runtime: AgentRuntimeID?,
+        capabilityScope: TaskCapabilityPromptScope,
+        requiredTools: [String],
+        opensWithoutApproval: Bool = false,
+        secretStore: SecretStore = KeychainSecretStore()
+    ) -> BrokeredConnectorBrokerInputs {
         let brokeredTools = Set(requiredTools.map {
             $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         })
@@ -283,15 +318,37 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
             credentialExposurePolicy: .approvedLabels(exposedLabels),
             defaultConnectorIDs: capabilityScope.defaultConnectorIDs
         ).environmentVariables()
-        let withheld = BrokeredCredentialWithholdingProjection.manifest(
+        var withheld = BrokeredCredentialWithholdingProjection.manifest(
             connectors: brokeredConnectors,
             secretStore: secretStore,
             exposedCredentialLabels: exposedLabels
         )
-        if !withheld.isEmpty, let encoded = withheld.encoded() {
+        guard !withheld.isEmpty else {
+            return BrokeredConnectorBrokerInputs(environment: environment, sealed: nil)
+        }
+        var sealed: BrokeredSealedCredentials?
+        if opensWithoutApproval {
+            for index in withheld.connectors.indices {
+                withheld.connectors[index].consent = .notAsked
+            }
+            let heldBackKeys = Set(withheld.connectors.flatMap { $0.credentials.map(\.envKey) })
+            let opened = ConnectorRuntimeProjection(
+                connectors: brokeredConnectors,
+                secretStore: secretStore,
+                credentialExposurePolicy: .allowAllCredentials,
+                defaultConnectorIDs: capabilityScope.defaultConnectorIDs
+            ).environmentVariables()
+            sealed = opened["ASTRA_CONNECTORS"].map { connectorsJSON in
+                BrokeredSealedCredentials(
+                    connectorsJSON: connectorsJSON,
+                    environment: opened.filter { heldBackKeys.contains($0.key) }
+                )
+            }
+        }
+        if let encoded = withheld.encoded() {
             environment[BrokeredConnectorCredentialWithholdingManifest.environmentKey] = encoded
         }
-        return environment
+        return BrokeredConnectorBrokerInputs(environment: environment, sealed: sealed)
     }
 
     /// Runtimes that wrap the provider process in a sandbox of their own making,
@@ -368,14 +425,16 @@ private final class HostControlBrokerSession: @unchecked Sendable {
         withholdingObserver: BrokeredCredentialWithholdingObserving? = nil,
         historyReader: (any TaskHistoryReading)? = nil,
         externalActionRequester: (any BrokeredExternalActionRequesting)? = nil,
-        mailReader: (any BrokeredMailReading)? = nil
+        mailReader: (any BrokeredMailReading)? = nil,
+        sealedCredentials: BrokeredSealedCredentials? = nil
     ) {
         server = HostControlMCPServer(
             configuration: configuration,
             withholdingObserver: withholdingObserver,
             historyReader: historyReader,
             externalActionRequester: externalActionRequester,
-            mailReader: mailReader
+            mailReader: mailReader,
+            sealedCredentials: sealedCredentials
         )
         self.expectedHelperPath = Self.canonicalPath(expectedHelperPath)
     }

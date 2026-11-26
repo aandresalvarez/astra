@@ -45,18 +45,19 @@ public enum REDCapHostControlPolicy {
 
     static func handle(
         arguments: [String: Any],
-        configuration: HostControlToolConfiguration,
+        configuration launch: HostControlToolConfiguration,
         processLimits: HostControlProcessLimits,
         cancellationRegistry: HostControlOperationCancellationRegistry,
         diagnostics: HostControlToolDiagnosticsRecorder?,
-        withholdingObserver: BrokeredCredentialWithholdingObserving? = nil
+        withholdingObserver: BrokeredCredentialWithholdingObserving? = nil,
+        credentialOpener: BrokeredCredentialOpener? = nil
     ) -> MCPServerReply {
         let operation = (clean(arguments["operation"] as? String) ?? "status").lowercased()
         let resolution = resolveConnector(
             alias: clean(arguments["alias"] as? String),
-            configuration: configuration
+            configuration: launch
         )
-        guard let connector = resolution.connector else {
+        guard let launchConnector = resolution.connector else {
             return .error(
                 code: -32602,
                 message: resolution.failureMessage(serviceLabel: "REDCap") ?? "No REDCap connector is available"
@@ -68,7 +69,11 @@ public enum REDCapHostControlPolicy {
         // Reaching for the tool is this run asking for the connector. Recorded
         // before the operation branches so a `status` probe counts the same as
         // an export.
-        withholdingObserver?.noteWithheldCredentials(for: connector, configuration: configuration)
+        withholdingObserver?.noteWithheldCredentials(for: launchConnector, configuration: launch)
+        // Every REDCap operation is a read, so any of them may open a connector
+        // the launch held back.
+        let (configuration, connector) = credentialOpener?.access(toRead: launchConnector, in: launch)
+            ?? (launch, launchConnector)
 
         let status = status(connector: connector, configuration: configuration)
         if operation == "status" {

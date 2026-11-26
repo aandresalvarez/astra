@@ -67,6 +67,35 @@ struct CopilotStreamRegressionTests {
         #expect(telemetry.snapshot().unknownEventCount == 0)
     }
 
+    /// Copilot CLI 1.0.114 sends the guidance it adds to the model's context as
+    /// a stream frame. Read as text, it opened the answer the user saw.
+    @Test("Instructions Copilot gives the model never become agent text", arguments: ["instruction.update", "system.message"])
+    func instructionsForTheModelAreNotAgentText(type: String) throws {
+        let line = try jsonLine([
+            "type": type,
+            "data": [
+                "content": "<system_reminder>\n<environment_limitations>\nGuidance.\n</environment_limitations>\n</system_reminder>",
+                "name": "sandbox-guidance",
+                "authority": "runtime"
+            ]
+        ])
+
+        for agentEvents in [
+            CopilotStreamEventParser.parseAgentEvents(line: line),
+            CopilotStreamEventParser.parseIdentifiedAgentEvents(line: line)
+        ] {
+            #expect(agentEvents.count == 1)
+            if case .control(let parsed) = agentEvents.first {
+                #expect(parsed == type)
+            } else {
+                Issue.record("Expected \(type) to parse as control metadata")
+            }
+        }
+        #expect(CopilotStreamEventParser.parseAll(line: line).allSatisfy { event in
+            if case .control = event { true } else { false }
+        })
+    }
+
     @Test("Assistant idle remains transient", arguments: [false, true])
     func assistantIdleRemainsTransient(aborted: Bool) throws {
         let line = try jsonLine([
