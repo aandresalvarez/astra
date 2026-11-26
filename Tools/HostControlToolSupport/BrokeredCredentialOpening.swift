@@ -120,9 +120,14 @@ final class BrokeredCredentialOpener {
         var access = BrokeredReadAccess(configuration: opened, connector: openedConnector)
         if !openedConnectorIDs.contains(connector.id) {
             let startedAt = DispatchTime.now().uptimeNanoseconds
-            guard requester.allowHeldBackConnector(withholding) else { return heldBack }
+            if requester.allowHeldBackConnector(withholding) {
+                openedConnectorIDs.insert(connector.id)
+            } else {
+                access = heldBack
+            }
+            // Counted either way: a connector can be usable as launched and
+            // still hold something back, and its read goes ahead.
             access.waitedSeconds = Double(DispatchTime.now().uptimeNanoseconds - startedAt) / 1_000_000_000
-            openedConnectorIDs.insert(connector.id)
         }
         return access
     }

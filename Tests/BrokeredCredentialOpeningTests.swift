@@ -211,6 +211,31 @@ struct BrokeredCredentialOpeningTests {
     /// already chosen is opened by its ID rather than looked up again by name.
     @Test("An account whose alias is another account's display name still opens")
     func openingKeepsTheChosenAccount() throws {
+        let held = try Self.collidingAccounts(requester: StubRequester())
+
+        let access = held.opener.access(toRead: held.chosen, in: held.launch)
+
+        #expect(access.connector.id == "c1")
+        #expect(access.configuration.environment["A_TOKEN"] == "held-value")
+    }
+
+    /// A connector can be usable as launched and still hold something back, so
+    /// the wait comes out of that read's timeout even when nothing is allowed.
+    @Test("A refused opening still counts the time it waited")
+    func aRefusedOpeningStillCountsTheWait() throws {
+        let held = try Self.collidingAccounts(requester: StubRequester(allows: false, delay: 0.05))
+
+        let access = held.opener.access(toRead: held.chosen, in: held.launch)
+
+        #expect(access.configuration.environment["A_TOKEN"] == nil)
+        #expect(access.waitedSeconds >= 0.049)
+    }
+
+    /// Two accounts built by hand, the first held back and the second named with
+    /// the first's alias.
+    private static func collidingAccounts(
+        requester: StubRequester
+    ) throws -> (opener: BrokeredCredentialOpener, launch: HostControlToolConfiguration, chosen: HostControlConnector) {
         func manifest(credentials: String) -> String {
             """
             {"connectors":[{"id":"c1","alias":"study","envPrefix":"A","name":"Registry","serviceType":"redcap",\
@@ -238,22 +263,24 @@ struct BrokeredCredentialOpeningTests {
                 connectorsJSON: manifest(credentials: #""REDCAP_API_TOKEN":"A_TOKEN""#),
                 environment: ["A_TOKEN": "held-value"]
             ),
-            requester: AllowingRequester()
+            requester: requester
         )
-
-        let access = opener.access(toRead: chosen, in: launch)
-
-        #expect(access.connector.id == "c1")
-        #expect(access.configuration.environment["A_TOKEN"] == "held-value")
+        return (opener, launch, chosen)
     }
 
-    private struct AllowingRequester: BrokeredExternalActionRequesting {
+    private struct StubRequester: BrokeredExternalActionRequesting {
+        var allows = true
+        var delay: TimeInterval = 0
+        var mayAllowHeldBackConnectors: Bool { true }
+
+        func allowHeldBackConnector(_: BrokeredConnectorCredentialWithholding) -> Bool {
+            Thread.sleep(forTimeInterval: delay)
+            return allows
+        }
         func sendStagedConnectorMutation(_: StagedConnectorMutationRequest) -> BrokeredExternalActionOutcome {
             .awaitingReview
         }
         func postGitHubReview(_: GitHubReviewPostRequest) -> BrokeredExternalActionOutcome { .awaitingReview }
-        var mayAllowHeldBackConnectors: Bool { true }
-        func allowHeldBackConnector(_: BrokeredConnectorCredentialWithholding) -> Bool { true }
     }
 
     @Test("Held-back values stay out of the broker's environment, and opening one adds only its own")
