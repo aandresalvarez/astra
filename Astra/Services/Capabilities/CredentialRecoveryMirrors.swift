@@ -15,9 +15,15 @@ enum CredentialRecoveryMirrors {
         let data: Data
     }
 
+    /// How many reads this process has made. Each one reads every mirror
+    /// file, which callers then decode on the main actor, so tests pin how
+    /// many a pass makes by this count.
+    private(set) static var readCount = 0
+
     static func read(
         modelContext: ModelContext, extraMirrors: [String]? = nil, excludingWorkspaceIDs: Set<UUID>? = nil
     ) -> [Entry]? {
+        readCount += 1
         struct Identity: Decodable { let id: String? }
         struct Group {
             let workspace: Workspace?
