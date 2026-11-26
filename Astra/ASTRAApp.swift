@@ -1015,9 +1015,16 @@ public struct ASTRAApp: App {
                         }
                         await ConnectorCredentialGenerationJournal.resumeAfterWorkspaceRecoveryAsync(modelContext: modelContext)
                         await SkillCredentialGenerationJournal.resumeAfterWorkspaceRecoveryAsync(modelContext: modelContext)
-                        guard !Task.isCancelled, WorkspaceRecoveryTrust.allowsCleanup else { return }
-                        MainThreadPhase.tracking("startup_cleanup_connector_outbox") {
-                            ConnectorCredentialCleanup.resumePending(modelContext: modelContext)
+                        do {
+                            // The mirrors the outbox pass reads are decoded off the
+                            // main actor first; the pass uses a decode only for the
+                            // bytes it then reads itself. Scoped, so the decodes
+                            // go as soon as the pass returns.
+                            let decodedMirrors = await ConnectorCredentialCleanup.decodeMirrorsAhead(modelContext: modelContext)
+                            guard !Task.isCancelled, WorkspaceRecoveryTrust.allowsCleanup else { return }
+                            MainThreadPhase.tracking("startup_cleanup_connector_outbox") {
+                                ConnectorCredentialCleanup.resumePending(modelContext: modelContext, decodedAhead: decodedMirrors)
+                            }
                         }
                         guard !Task.isCancelled, WorkspaceRecoveryTrust.allowsCleanup else { return }
                         // A former built-in's leftover activation would stop every

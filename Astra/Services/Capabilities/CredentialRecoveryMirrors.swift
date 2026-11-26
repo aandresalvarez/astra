@@ -13,28 +13,92 @@ enum CredentialRecoveryMirrors {
         let workspace: Workspace?
         let workspaceID: UUID?
         let data: Data
+        /// What decoding `data` gives, made off the main actor before the
+        /// pass from these very bytes; nil when none was made.
+        let decodedAhead: CredentialMirrorDecodes.File?
     }
 
     /// How many reads this process has made. Each one reads every mirror
-    /// file, which callers then decode on the main actor, so tests pin how
-    /// many a pass makes by this count.
+    /// file on the main actor, so tests pin how many a pass makes by this
+    /// count.
     private(set) static var readCount = 0
 
+    /// How many times this process has decoded a mirror file's bytes on the
+    /// main actor, as one shape (`decoded`). A decode made ahead, off the
+    /// main actor, isn't counted, so tests pin by it what a pass decodes on
+    /// the main actor.
+    private(set) static var mainActorDecodeCount = 0
+
+    private struct Group {
+        let workspace: Workspace?
+        let fallbackID: UUID?
+        let isOwnRoot: Bool
+        let candidates: [String]
+    }
+
     static func read(
-        modelContext: ModelContext, extraMirrors: [String]? = nil, excludingWorkspaceIDs: Set<UUID>? = nil
+        modelContext: ModelContext, extraMirrors: [String]? = nil, excludingWorkspaceIDs: Set<UUID>? = nil,
+        decodedAhead: CredentialMirrorDecodes? = nil
     ) -> [Entry]? {
         readCount += 1
-        struct Identity: Decodable { let id: String? }
-        struct Group {
-            let workspace: Workspace?
-            let fallbackID: UUID?
-            let isOwnRoot: Bool
-            let candidates: [String]
+        guard let groups = groups(modelContext: modelContext, extraMirrors: extraMirrors) else { return nil }
+        let excluded = excludingWorkspaceIDs ?? Set(WorkspaceDeletionCleanupStore(for: modelContext).pending().map(\.workspaceID))
+        var result: [Entry] = []
+        for group in groups {
+            for path in group.candidates {
+                let data: Data
+                do { data = try Data(contentsOf: URL(fileURLWithPath: path)) }
+                catch {
+                    if WorkspaceFileLayout.isMissingFile(error) { continue }
+                    return nil
+                }
+                let ahead = decodedAhead?.file(at: path, ifContentsAre: data)
+                guard let identity = decoded(data, ahead: ahead, \.identity, decodingWith: CredentialMirrorIdentity.decode)
+                else { return nil }
+                let id: UUID?
+                if let raw = identity.id {
+                    guard let parsed = UUID(uuidString: raw) else { return nil }
+                    id = parsed
+                } else { id = group.fallbackID }
+                if !group.isOwnRoot, let id, excluded.contains(id) { break }
+                let owner = group.workspace.flatMap { $0.id == id ? $0 : nil }
+                // A decode made ahead holds the same bytes; keeping its copy
+                // lets this read's own go.
+                result.append(Entry(workspace: owner, workspaceID: id, data: ahead?.data ?? data, decodedAhead: ahead))
+                break
+            }
         }
+        return result
+    }
+
+    /// The files `read` reads for `modelContext` and `extraMirrors`, each
+    /// list in its order: the first that is there is the one read.
+    static func candidates(modelContext: ModelContext, extraMirrors: [String]? = nil) -> [[String]] {
+        (groups(modelContext: modelContext, extraMirrors: extraMirrors) ?? []).map(\.candidates)
+    }
+
+    /// `entry`'s bytes decoded as one shape: the decode made ahead from
+    /// those bytes when there is one, else one made now, which is counted.
+    /// Nil when they don't decode as that shape.
+    static func decoded<Shape>(
+        _ entry: Entry, _ shape: KeyPath<CredentialMirrorDecodes.File, Shape?>, decodingWith decode: (Data) -> Shape?
+    ) -> Shape? {
+        decoded(entry.data, ahead: entry.decodedAhead, shape, decodingWith: decode)
+    }
+
+    private static func decoded<Shape>(
+        _ data: Data, ahead: CredentialMirrorDecodes.File?, _ shape: KeyPath<CredentialMirrorDecodes.File, Shape?>,
+        decodingWith decode: (Data) -> Shape?
+    ) -> Shape? {
+        if let ahead { return ahead[keyPath: shape] }
+        mainActorDecodeCount += 1
+        return decode(data)
+    }
+
+    private static func groups(modelContext: ModelContext, extraMirrors: [String]?) -> [Group]? {
         let savedContext = ModelContext(modelContext.container)
         guard let current = try? modelContext.fetch(FetchDescriptor<Workspace>()),
               let saved = try? savedContext.fetch(FetchDescriptor<Workspace>()) else { return nil }
-        let excluded = excludingWorkspaceIDs ?? Set(WorkspaceDeletionCleanupStore(for: modelContext).pending().map(\.workspaceID))
         let currentByRoot = Dictionary(current.map {
             ($0.id.uuidString + "|" + WorkspacePathPresentation.resolvedPath($0.primaryPath), $0)
         }, uniquingKeysWith: { first, _ in first })
@@ -57,27 +121,13 @@ enum CredentialRecoveryMirrors {
         where !own.contains(WorkspacePathPresentation.resolvedPath(extra)) {
             groups.append(Group(workspace: nil, fallbackID: nil, isOwnRoot: false, candidates: [extra]))
         }
-        var result: [Entry] = []
-        for group in groups {
-            for path in group.candidates {
-                let data: Data
-                do { data = try Data(contentsOf: URL(fileURLWithPath: path)) }
-                catch {
-                    if WorkspaceFileLayout.isMissingFile(error) { continue }
-                    return nil
-                }
-                guard let identity = try? JSONDecoder().decode(Identity.self, from: data) else { return nil }
-                let id: UUID?
-                if let raw = identity.id {
-                    guard let parsed = UUID(uuidString: raw) else { return nil }
-                    id = parsed
-                } else { id = group.fallbackID }
-                if !group.isOwnRoot, let id, excluded.contains(id) { break }
-                let owner = group.workspace.flatMap { $0.id == id ? $0 : nil }
-                result.append(Entry(workspace: owner, workspaceID: id, data: data))
-                break
-            }
-        }
-        return result
+        return groups
     }
+}
+
+/// The workspace ID a mirror file names, which is all `read` decodes.
+struct CredentialMirrorIdentity: Decodable, Sendable {
+    let id: String?
+
+    static func decode(_ data: Data) -> Self? { try? JSONDecoder().decode(Self.self, from: data) }
 }

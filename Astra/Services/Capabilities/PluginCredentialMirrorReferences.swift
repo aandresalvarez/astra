@@ -21,18 +21,20 @@ struct PluginCredentialMirrorReferences {
     }
     func holdsAccount(_ cleanup: ConnectorKeychainCleanup) -> Bool { requests.holdsAccount(cleanup) }
 
+    /// `decodedAhead` holds mirror decodes made off the main actor, used only
+    /// for the bytes this capture reads.
     static func capture(
-        modelContext: ModelContext, extraMirrors: [String]? = nil, excludingWorkspaceIDs: Set<UUID>? = nil
+        modelContext: ModelContext, extraMirrors: [String]? = nil, excludingWorkspaceIDs: Set<UUID>? = nil,
+        decodedAhead: CredentialMirrorDecodes? = nil
     ) -> Self? {
         guard let files = CredentialRecoveryMirrors.read(modelContext: modelContext, extraMirrors: extraMirrors,
-            excludingWorkspaceIDs: excludingWorkspaceIDs) else { return nil }
+            excludingWorkspaceIDs: excludingWorkspaceIDs, decodedAhead: decodedAhead) else { return nil }
         let saved = ModelContext(modelContext.container)
         var result = Self()
         for file in files {
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            guard let listed = (try? decoder.decode(Listed.self, from: file.data))
-                ?? (try? JSONDecoder().decode(Listed.self, from: file.data)) else { return nil }
+            guard let listed = CredentialRecoveryMirrors.decoded(file, \.references,
+                                                                 decodingWith: PluginCredentialMirrorListing.decode)
+            else { return nil }
             var namespaces = Set<UUID>()
             for plugin in listed.installedPlugins ?? [] {
                 guard let workspaceID = file.workspaceID else { return nil }
@@ -95,36 +97,45 @@ struct PluginCredentialMirrorReferences {
             "workspace_id": workspaceID.uuidString, "plugin_id": pluginID
         ], level: .warning)
     }
+}
 
-    private struct Listed: Decodable {
-        struct Plugin: Decodable {
-            struct Account: Decodable { let componentID: String }
-            let id: String
-            let version: String?
-            let digest: String?
-            let settings: [String: String]?
-            let accounts: [Account]?
-            let overriddenComponentIDs: [String]?
-            let knownComponentIDs: [String]?
-            let credentialComponentIDs: [String]?
-            let secretSettingKeys: [String]?
-            let credentialRecoveryEvidence: PluginCredentialRecoveryEvidence?
-            let namespaceSeed: String?
-            let credentialNamespaceSeed: String?
-        }
-        struct Skill: Decodable {
-            let id: String?
-            let credentialNamespaceID: UUID?
-            let environmentKeys: [String]?
-        }
-        struct Task: Decodable {
-            let status: String?
-            let isDone: Bool?
-            let skillSnapshots: [SkillSnapshotConfig]?
-            let turnRequests: [TaskTurnRequestSnapshot]?
-        }
-        let installedPlugins: [Plugin]?
-        let skills: [Skill]?
-        let tasks: [Task]?
+/// What `PluginCredentialMirrorReferences.capture` reads from a mirror: its
+/// installed plugins, skills, and tasks.
+struct PluginCredentialMirrorListing: Decodable, Sendable {
+    struct Plugin: Decodable, Sendable {
+        struct Account: Decodable, Sendable { let componentID: String }
+        let id: String
+        let version: String?
+        let digest: String?
+        let settings: [String: String]?
+        let accounts: [Account]?
+        let overriddenComponentIDs: [String]?
+        let knownComponentIDs: [String]?
+        let credentialComponentIDs: [String]?
+        let secretSettingKeys: [String]?
+        let credentialRecoveryEvidence: PluginCredentialRecoveryEvidence?
+        let namespaceSeed: String?
+        let credentialNamespaceSeed: String?
+    }
+    struct Skill: Decodable, Sendable {
+        let id: String?
+        let credentialNamespaceID: UUID?
+        let environmentKeys: [String]?
+    }
+    struct Task: Decodable, Sendable {
+        let status: String?
+        let isDone: Bool?
+        let skillSnapshots: [SkillSnapshotConfig]?
+        let turnRequests: [TaskTurnRequestSnapshot]?
+    }
+    let installedPlugins: [Plugin]?
+    let skills: [Skill]?
+    let tasks: [Task]?
+
+    /// Dates as the export writes them, or as an older writer did.
+    static func decode(_ data: Data) -> Self? {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return (try? decoder.decode(Self.self, from: data)) ?? (try? JSONDecoder().decode(Self.self, from: data))
     }
 }
