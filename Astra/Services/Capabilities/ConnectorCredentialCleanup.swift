@@ -109,22 +109,58 @@ enum ConnectorCredentialCleanup {
             ], level: .error)
             return false
         }
-        guard let stored = try? modelContext.fetch(FetchDescriptor<Connector>()) else {
-            AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
-                "scope": "connector_cleanup", "reason": "store_unreadable",
-                "connector_count": String(cleanups.count)
-            ], level: .error)
-            return false
-        }
-        guard let references = PendingTaskCredentialReferences.capture(modelContext: modelContext),
-              let archived = ConnectorCredentialGenerationJournal.retainedRecoveryCandidates(modelContext: modelContext),
-              let mirroredRequests = PluginCredentialMirrorReferences.capture(modelContext: modelContext, extraMirrors: extraMirrors),
-              let mirroredOwners = connectorsInStoredMirrors(modelContext: modelContext, extraMirrors: extraMirrors) else { return false }
-        let ready = cleanups.filter { !references.holdsAccount($0) && !mirroredRequests.holdsAccount($0) }
-        let ownership = Ownership(stored, retained: retained + mirroredOwners.owners + archived)
+        guard let inputs = PassInputs.read(modelContext: modelContext, extraMirrors: extraMirrors, cleanupCount: cleanups.count)
+        else { return false }
+        return run(cleanups, inputs: inputs, retained: retained, perform: perform)
+    }
+
+    /// `run` against what `PassInputs.read` returned, which a pass of
+    /// several records reads once for all of them.
+    private static func run(
+        _ cleanups: [ConnectorKeychainCleanup], inputs: PassInputs, retained: [ConnectorKeychainCleanup],
+        perform: (([ConnectorKeychainCleanup], Ownership) -> Bool)? = nil
+    ) -> Bool {
+        let ready = cleanups.filter { !inputs.references.holdsAccount($0) && !inputs.mirroredRequests.holdsAccount($0) }
+        let ownership = Ownership(inputs.stored, retained: retained + inputs.mirroredOwners + inputs.archived)
         guard !ownership.hasUnknownOAuthOwnership else { return false }
         let cleared = perform.map { $0(ready, ownership) } ?? run(ready, ownership: ownership)
         return ready.count == cleanups.count && cleared
+    }
+
+    /// What deciding a cleanup reads besides its own record and what pending
+    /// deletions retain: the stored connectors, what saved requests and
+    /// every recoverable mirror still hold, and the archived generations.
+    /// Running a cleanup deletes Keychain items, and an Outlook account's
+    /// registry entry, and none of this reads either, so `resumePending`
+    /// reads it once for all its records. Each read decodes every workspace
+    /// mirror twice, on the main actor at launch.
+    @MainActor
+    private struct PassInputs {
+        /// The context `stored` was fetched from, kept while its rows are read.
+        let context: ModelContext
+        let stored: [Connector]
+        let references: PendingTaskCredentialReferences
+        let archived: [ConnectorKeychainCleanup]
+        let mirroredRequests: PluginCredentialMirrorReferences
+        let mirroredOwners: [ConnectorKeychainCleanup]
+
+        /// Nil when any of it can't be read, which removes nothing.
+        static func read(modelContext: ModelContext, extraMirrors: [String]?, cleanupCount: Int) -> PassInputs? {
+            guard let stored = try? modelContext.fetch(FetchDescriptor<Connector>()) else {
+                AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+                    "scope": "connector_cleanup", "reason": "store_unreadable",
+                    "connector_count": String(cleanupCount)
+                ], level: .error)
+                return nil
+            }
+            guard let references = PendingTaskCredentialReferences.capture(modelContext: modelContext),
+                  let archived = ConnectorCredentialGenerationJournal.retainedRecoveryCandidates(modelContext: modelContext),
+                  let mirroredRequests = PluginCredentialMirrorReferences.capture(modelContext: modelContext, extraMirrors: extraMirrors),
+                  let mirroredOwners = connectorsInStoredMirrors(modelContext: modelContext, extraMirrors: extraMirrors)
+            else { return nil }
+            return PassInputs(context: modelContext, stored: stored, references: references, archived: archived,
+                              mirroredRequests: mirroredRequests, mirroredOwners: mirroredOwners.owners)
+        }
     }
 
     /// The connectors pending workspace deletions hold, whose mirrors startup
@@ -301,6 +337,8 @@ enum ConnectorCredentialCleanup {
             ], level: .error)
             return 0
         }
+        // With no record to judge, nothing runs, so nothing is read.
+        guard !pending.records.isEmpty else { return 0 }
         guard let storedIDs = (try? ModelContext(modelContext.container).fetch(FetchDescriptor<Connector>())).map({ Set($0.map(\.id)) })
         else {
             AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
@@ -346,6 +384,13 @@ enum ConnectorCredentialCleanup {
         for (workspace, listed) in mirrored.byWorkspace where !listed.isDisjoint(with: staleIDs) {
             WorkspaceConfigManager.autoExport(workspace: workspace, modelContext: modelContext)
         }
+        // Every record that runs is judged against one read of the saved
+        // state, taken before the first runs: what a run changes, Keychain
+        // items and an Outlook registry entry, is not part of that read.
+        let runnable = classified.filter { $0.committed && !staleIDs.contains($0.record.cleanup.connectorID) }.count
+        let saved = ModelContext(modelContext.container)
+        let passInputs = runnable > 0 && PluginOperationRecovery.permitsCredentialCleanup(modelContext: saved)
+            ? PassInputs.read(modelContext: saved, extraMirrors: extraMirrors, cleanupCount: runnable) : nil
         var cleared = 0
         for entry in classified {
             switch entry.verdict {
@@ -360,8 +405,8 @@ enum ConnectorCredentialCleanup {
                     "connector_id": entry.record.cleanup.connectorID.uuidString
                 ], level: .error)
             case .committed:
-                guard !staleIDs.contains(entry.record.cleanup.connectorID),
-                      run([entry.record.cleanup], modelContext: ModelContext(modelContext.container), retained: workspaceRetained + owners, extraMirrors: extraMirrors)
+                guard !staleIDs.contains(entry.record.cleanup.connectorID), let passInputs,
+                      run([entry.record.cleanup], inputs: passInputs, retained: workspaceRetained + owners)
                 else { continue }
             }
             store.remove([entry.record.url])
