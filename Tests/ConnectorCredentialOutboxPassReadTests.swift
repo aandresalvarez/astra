@@ -250,9 +250,9 @@ struct ConnectorCredentialOutboxPassReadTests {
         let deletions = WorkspaceDeletionCleanupStore(directory: root.appendingPathComponent("Deletions"))
         let connectors = ConnectorCredentialCleanupStore(directory: root.appendingPathComponent("Outbox"))
 
-        let before = CredentialRecoveryMirrors.readCount
         #expect(await WorkspaceDeletionCleanupService.decodeMirrorsAhead(
             modelContext: context, store: deletions, extraMirrors: []) == nil)
+        let before = CredentialRecoveryMirrors.readCount
         #expect(WorkspaceDeletionCleanupService.resumePending(
             modelContext: context, store: deletions, connectorOutbox: connectors, extraMirrors: []) == 0)
         #expect(CredentialRecoveryMirrors.readCount == before)

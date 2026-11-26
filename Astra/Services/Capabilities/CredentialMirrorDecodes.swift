@@ -58,7 +58,8 @@ struct CredentialMirrorDecodes: Sendable {
     }
 
     /// `decode`, reported in the performance log as `event` with what it
-    /// read and how long it took.
+    /// read and how long the main actor waited for it, as a pass awaits it.
+    @MainActor
     static func decode(_ candidates: [[String]], reportingAs event: String) async -> Self {
         let start = DispatchTime.now().uptimeNanoseconds
         let decodes = await decode(candidates)
