@@ -9,8 +9,10 @@ import ASTRAModels
 // Startup's connector outbox pass judges every pending record against one
 // read of what decides it. Each read decodes every workspace mirror on the
 // main actor, so reading again for each record froze launch for seconds.
-// Startup also decodes the mirrors off the main actor before the pass, which
-// uses a decode only for the bytes it reads itself.
+// Startup also decodes the mirrors off the main actor before the pass, and
+// walks the skill snapshots their tasks carry, which the pass uses only for
+// the bytes it reads itself. The workspace deletion pass before it reads
+// nothing when no deletion is pending, and the same decodes when one is.
 
 @Suite("Connector credential outbox pass reads", .serialized)
 @MainActor
@@ -19,12 +21,18 @@ struct ConnectorCredentialOutboxPassReadTests {
     func passReadsOncePerPass() async throws {
         let one = try await mirrorWork(ofPassWithExtraRecords: false)
         let three = try await mirrorWork(ofPassWithExtraRecords: true)
-        #expect(one.reads > 0)
+        // The pass's own read of what mirrors list, and one more for both
+        // readers of what decides the records.
+        #expect(one.reads == 2)
         #expect(three.reads == one.reads)
-        // Each read decodes the one mirror twice: its identity, and what the
-        // reader takes from it.
-        #expect(one.mainActorDecodes == one.reads * 2)
+        // Each read decodes the one mirror's identity. The first then decodes
+        // its connectors; the second its connectors once more and, for the
+        // other reader, its plugins, skills, and tasks, whose skill
+        // snapshots are walked once.
+        #expect(one.mainActorDecodes == 5)
         #expect(three.mainActorDecodes == one.mainActorDecodes)
+        #expect(one.mainActorWalks == 1)
+        #expect(three.mainActorWalks == one.mainActorWalks)
     }
 
     @Test("A pass given the mirrors decoded ahead decodes none on the main actor, and clears and keeps the same records")
@@ -34,6 +42,8 @@ struct ConnectorCredentialOutboxPassReadTests {
         #expect(ahead.reads == onMain.reads)
         #expect(onMain.mainActorDecodes > 0)
         #expect(ahead.mainActorDecodes == 0)
+        #expect(onMain.mainActorWalks > 0)
+        #expect(ahead.mainActorWalks == 0)
     }
 
     @Test("A pass with nothing pending reads no mirror, and nothing is decoded ahead for it")
@@ -121,9 +131,11 @@ struct ConnectorCredentialOutboxPassReadTests {
                 .write(to: mirror)
 
             let decodes = CredentialRecoveryMirrors.mainActorDecodeCount
+            let walks = PluginCredentialMirrorReferences.mainActorSnapshotWalkCount
             #expect(ConnectorCredentialCleanup.resumePending(
                 modelContext: context, store: outbox, extraMirrors: [], decodedAhead: decoded) == 0)
             #expect(CredentialRecoveryMirrors.mainActorDecodeCount > decodes)
+            #expect(PluginCredentialMirrorReferences.mainActorSnapshotWalkCount > walks)
             #expect(outbox.pending()?.records.map(\.cleanup) == [deleted.keychainCleanup])
             #expect(AstraSecureKeychainStore.load(service: own, account: "TOKEN") == "own")
             // Kept because the rewritten mirror holds the account, not
@@ -151,8 +163,8 @@ struct ConnectorCredentialOutboxPassReadTests {
             outbox.markCommitted([deleted.keychainCleanup])
             var decoded: CredentialMirrorDecodes?
             if decodingAhead {
-                decoded = try #require(await ConnectorCredentialCleanup.decodeMirrorsAhead(
-                    modelContext: context, store: outbox, extraMirrors: []))
+                decoded = await ConnectorCredentialCleanup.decodeMirrorsAhead(modelContext: context, store: outbox, extraMirrors: [])
+                #expect(decoded != nil)
             }
 
             #expect(ConnectorCredentialCleanup.resumePending(
@@ -162,15 +174,157 @@ struct ConnectorCredentialOutboxPassReadTests {
         }
     }
 
+    @Test("A task's skill snapshot in a mirror holds its account, whether walked ahead or on the main actor",
+          arguments: [false, true])
+    func taskSkillSnapshotHoldsItsAccount(decodingAhead: Bool) async throws {
+        let container = try ModelContainer(for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
+                                           configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-outbox-pass-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = container.mainContext
+        let (workspace, mirror) = try storeWorkspace(withMirrorUnder: root, in: context)
+        let outbox = ConnectorCredentialCleanupStore(directory: root.appendingPathComponent("Outbox"))
+        try await withTemporaryOutboxKeychain {
+            let deleted = Connector(name: "Jira", serviceType: "jira", baseURL: "https://plain.example.invalid")
+            let own = KeychainSecretStore.connectorEntityID(for: deleted.id)
+            #expect(AstraSecureKeychainStore.save(service: own, account: "TOKEN", value: "own", label: nil))
+            try writeMirror(mirror, of: workspace, withTaskSnapshotConnectorIDs: [deleted.id.uuidString])
+            _ = try outbox.record([deleted.keychainCleanup], storeIdentity: PersistentStoreIdentity.current(for: context))
+            outbox.markCommitted([deleted.keychainCleanup])
+            var decoded: CredentialMirrorDecodes?
+            if decodingAhead {
+                decoded = await ConnectorCredentialCleanup.decodeMirrorsAhead(modelContext: context, store: outbox, extraMirrors: [])
+                #expect(decoded != nil)
+            }
+
+            let decodes = CredentialRecoveryMirrors.mainActorDecodeCount
+            let walks = PluginCredentialMirrorReferences.mainActorSnapshotWalkCount
+            #expect(ConnectorCredentialCleanup.resumePending(
+                modelContext: context, store: outbox, extraMirrors: [], decodedAhead: decoded) == 0)
+            #expect(outbox.pending()?.records.map(\.cleanup) == [deleted.keychainCleanup])
+            #expect(AstraSecureKeychainStore.load(service: own, account: "TOKEN") == "own")
+            #expect((CredentialRecoveryMirrors.mainActorDecodeCount == decodes) == decodingAhead)
+            #expect((PluginCredentialMirrorReferences.mainActorSnapshotWalkCount == walks) == decodingAhead)
+        }
+    }
+
+    @Test("A skill snapshot naming an ID that isn't one stops the pass, whether walked ahead or on the main actor",
+          arguments: [false, true])
+    func malformedTaskSkillSnapshotStopsThePass(decodingAhead: Bool) async throws {
+        let container = try ModelContainer(for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
+                                           configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-outbox-pass-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = container.mainContext
+        let (workspace, mirror) = try storeWorkspace(withMirrorUnder: root, in: context)
+        let outbox = ConnectorCredentialCleanupStore(directory: root.appendingPathComponent("Outbox"))
+        try await withTemporaryOutboxKeychain {
+            let deleted = Connector(name: "Jira", serviceType: "jira", baseURL: "https://plain.example.invalid")
+            let own = KeychainSecretStore.connectorEntityID(for: deleted.id)
+            #expect(AstraSecureKeychainStore.save(service: own, account: "TOKEN", value: "own", label: nil))
+            try writeMirror(mirror, of: workspace, withTaskSnapshotConnectorIDs: ["not-an-account-id"])
+            _ = try outbox.record([deleted.keychainCleanup], storeIdentity: PersistentStoreIdentity.current(for: context))
+            outbox.markCommitted([deleted.keychainCleanup])
+            var decoded: CredentialMirrorDecodes?
+            if decodingAhead {
+                decoded = try #require(await ConnectorCredentialCleanup.decodeMirrorsAhead(
+                    modelContext: context, store: outbox, extraMirrors: []))
+            }
+
+            #expect(ConnectorCredentialCleanup.resumePending(
+                modelContext: context, store: outbox, extraMirrors: [], decodedAhead: decoded) == 0)
+            #expect(outbox.pending()?.records.map(\.cleanup) == [deleted.keychainCleanup])
+            #expect(AstraSecureKeychainStore.load(service: own, account: "TOKEN") == "own")
+            #expect(PluginCredentialMirrorReferences.capture(modelContext: context, extraMirrors: [], decodedAhead: decoded) == nil)
+        }
+    }
+
+    @Test("A workspace deletion pass with nothing pending reads no mirror, and nothing is decoded ahead for it")
+    func emptyDeletionOutboxReadsNoMirror() async throws {
+        let container = try ModelContainer(for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
+                                           configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-deletion-pass-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = container.mainContext
+        try storeWorkspace(withMirrorUnder: root, in: context)
+        let deletions = WorkspaceDeletionCleanupStore(directory: root.appendingPathComponent("Deletions"))
+        let connectors = ConnectorCredentialCleanupStore(directory: root.appendingPathComponent("Outbox"))
+
+        let before = CredentialRecoveryMirrors.readCount
+        #expect(await WorkspaceDeletionCleanupService.decodeMirrorsAhead(
+            modelContext: context, store: deletions, extraMirrors: []) == nil)
+        #expect(WorkspaceDeletionCleanupService.resumePending(
+            modelContext: context, store: deletions, connectorOutbox: connectors, extraMirrors: []) == 0)
+        #expect(CredentialRecoveryMirrors.readCount == before)
+    }
+
+    @Test("A workspace deletion pass given the mirrors decoded ahead settles the same, decoding nothing on the main actor",
+          arguments: [false, true])
+    func deletionPassWithDecodesMadeAhead(decodingAhead: Bool) async throws {
+        let container = try ModelContainer(for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
+                                           configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-deletion-pass-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let context = container.mainContext
+        let (workspace, mirror) = try storeWorkspace(withMirrorUnder: root, in: context)
+        let deletions = WorkspaceDeletionCleanupStore(directory: root.appendingPathComponent("Deletions"))
+        let connectors = ConnectorCredentialCleanupStore(directory: root.appendingPathComponent("Outbox"))
+        try await withTemporaryOutboxKeychain {
+            // The deleted workspace's connector goes; one a surviving
+            // workspace's task snapshot names stays.
+            let deleted = Connector(name: "Jira", serviceType: "jira", baseURL: "https://gone.example.invalid")
+            let held = Connector(name: "Jira", serviceType: "jira", baseURL: "https://held.example.invalid")
+            let deletedOwn = KeychainSecretStore.connectorEntityID(for: deleted.id)
+            let heldOwn = KeychainSecretStore.connectorEntityID(for: held.id)
+            for service in [deletedOwn, heldOwn] {
+                #expect(AstraSecureKeychainStore.save(service: service, account: "TOKEN", value: "value", label: nil))
+            }
+            try writeMirror(mirror, of: workspace, withTaskSnapshotConnectorIDs: [held.id.uuidString])
+            let record = WorkspaceDeletionCleanupRecord(
+                workspaceID: UUID(), primaryPath: root.appendingPathComponent("Deleted").path,
+                connectors: [deleted.keychainCleanup, held.keychainCleanup], skills: [])
+            try deletions.write(record)
+            try deletions.markCommitted(record)
+            let decoded = await WorkspaceDeletionCleanupService.decodeMirrorsAhead(
+                modelContext: context, store: deletions, extraMirrors: [])
+            #expect(decoded != nil)
+
+            let decodes = CredentialRecoveryMirrors.mainActorDecodeCount
+            let walks = PluginCredentialMirrorReferences.mainActorSnapshotWalkCount
+            // The record stays: a credential it names is still held.
+            #expect(WorkspaceDeletionCleanupService.resumePending(
+                modelContext: context, store: deletions, connectorOutbox: connectors, extraMirrors: [],
+                decodedAhead: decodingAhead ? decoded : nil) == 0)
+            #expect(deletions.pending() == [record])
+            #expect(AstraSecureKeychainStore.load(service: deletedOwn, account: "TOKEN") == nil)
+            #expect(AstraSecureKeychainStore.load(service: heldOwn, account: "TOKEN") == "value")
+            #expect((CredentialRecoveryMirrors.mainActorDecodeCount == decodes) == decodingAhead)
+            #expect((PluginCredentialMirrorReferences.mainActorSnapshotWalkCount == walks) == decodingAhead)
+        }
+    }
+
+    /// Rewrites `mirror` to list no connector and one task whose skill
+    /// snapshot names `connectorIDs`.
+    private func writeMirror(_ mirror: URL, of workspace: Workspace, withTaskSnapshotConnectorIDs connectorIDs: [String]) throws {
+        let snapshot = SkillSnapshotConfig(
+            id: nil, name: "Reports", icon: "", description: "", allowedTools: [], disallowedTools: [], customTools: [],
+            behaviorInstructions: "", environmentKeys: [], environmentValues: [], isGlobal: nil,
+            connectorIDs: connectorIDs, localToolIDs: nil, connectorSnapshots: nil, localToolSnapshots: nil,
+            createdAt: nil, updatedAt: nil)
+        let snapshotJSON = try #require(String(data: try JSONEncoder().encode(snapshot), encoding: .utf8))
+        try Data(#"{"id":"\#(workspace.id.uuidString)","connectors":[],"tasks":[{"skillSnapshots":[\#(snapshotJSON)]}]}"#.utf8)
+            .write(to: mirror)
+    }
+
     /// Runs one `resumePending` over a plain deleted connector and, with
     /// `extraRecords`, one whose stable namespace a live connector still
     /// reads and one whose ownership this build can't resolve, its mirrors
     /// decoded ahead when `decodingAhead`. Checks what each record's run did
-    /// and returns how many mirror reads, and decodes on the main actor, the
-    /// pass made.
+    /// and returns how many mirror reads, and decodes and snapshot walks on
+    /// the main actor, the pass made.
     private func mirrorWork(
         ofPassWithExtraRecords extraRecords: Bool, decodingAhead: Bool = false
-    ) async throws -> (reads: Int, mainActorDecodes: Int) {
+    ) async throws -> (reads: Int, mainActorDecodes: Int, mainActorWalks: Int) {
         let container = try ModelContainer(for: ASTRASchema.current, migrationPlan: ASTRAMigrationPlan.self,
                                            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("astra-outbox-pass-\(UUID().uuidString)")
@@ -214,10 +368,12 @@ struct ConnectorCredentialOutboxPassReadTests {
 
             let before = CredentialRecoveryMirrors.readCount
             let decodes = CredentialRecoveryMirrors.mainActorDecodeCount
+            let walks = PluginCredentialMirrorReferences.mainActorSnapshotWalkCount
             let cleared = ConnectorCredentialCleanup.resumePending(
                 modelContext: context, store: outbox, extraMirrors: [], decodedAhead: decoded)
             let work = (reads: CredentialRecoveryMirrors.readCount - before,
-                        mainActorDecodes: CredentialRecoveryMirrors.mainActorDecodeCount - decodes)
+                        mainActorDecodes: CredentialRecoveryMirrors.mainActorDecodeCount - decodes,
+                        mainActorWalks: PluginCredentialMirrorReferences.mainActorSnapshotWalkCount - walks)
 
             #expect(cleared == cleanups.count - held.count)
             #expect(outbox.pending()?.records.map(\.cleanup) == held)

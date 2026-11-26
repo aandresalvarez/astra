@@ -1023,9 +1023,17 @@ public struct ASTRAApp: App {
                         await StartupCleanupPathPreflight.run(StartupCleanupPathPreflight.paths(
                             modelContext: modelContext, movedMirrors: movedDeletionMirrors))
                         guard !Task.isCancelled, WorkspaceRecoveryTrust.allowsCleanup else { return }
-                        MainThreadPhase.tracking("startup_cleanup_workspace_deletions") {
-                            WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext,
-                                movedMirrors: movedDeletionMirrors, dropsUnconfirmed: false)
+                        do {
+                            // As for the outbox pass below: decoded off the main
+                            // actor first, and nothing at all when no deletion
+                            // is pending, for which the pass reads nothing.
+                            let deletionMirrors = await WorkspaceDeletionCleanupService.decodeMirrorsAhead(
+                                modelContext: modelContext)
+                            guard !Task.isCancelled, WorkspaceRecoveryTrust.allowsCleanup else { return }
+                            MainThreadPhase.tracking("startup_cleanup_workspace_deletions") {
+                                WorkspaceDeletionCleanupService.resumePending(modelContext: modelContext,
+                                    movedMirrors: movedDeletionMirrors, dropsUnconfirmed: false, decodedAhead: deletionMirrors)
+                            }
                         }
                         await ConnectorCredentialGenerationJournal.resumeAfterWorkspaceRecoveryAsync(modelContext: modelContext)
                         await SkillCredentialGenerationJournal.resumeAfterWorkspaceRecoveryAsync(modelContext: modelContext)
