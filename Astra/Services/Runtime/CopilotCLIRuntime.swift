@@ -17,7 +17,11 @@ struct CopilotCLICapabilities: Equatable, Sendable {
     var supportsExcludedTools: Bool
     var supportsLogDir: Bool
     var supportsNoAutoUpdate: Bool
-    var supportsReasoningEffort: Bool
+    /// The reasoning-effort option name this CLI's help lists, or nil when it
+    /// lists none. ASTRA sends back the name it read: 1.0.83 listed
+    /// `--effort, --reasoning-effort`, 1.0.114 lists only `--reasoning-effort`.
+    var reasoningEffortOption: String?
+    var supportsReasoningEffort: Bool { reasoningEffortOption != nil }
     var supportsAdditionalMCPConfig: Bool
 
     static let conservative = CopilotCLICapabilities(
@@ -36,7 +40,7 @@ struct CopilotCLICapabilities: Equatable, Sendable {
         supportsExcludedTools: false,
         supportsLogDir: false,
         supportsNoAutoUpdate: false,
-        supportsReasoningEffort: false,
+        reasoningEffortOption: nil,
         supportsAdditionalMCPConfig: false
     )
 
@@ -57,7 +61,7 @@ struct CopilotCLICapabilities: Equatable, Sendable {
         supportsExcludedTools = Self.hasOption("--excluded-tools", in: helpText)
         supportsLogDir = Self.hasOption("--log-dir", in: helpText)
         supportsNoAutoUpdate = Self.hasOption("--no-auto-update", in: helpText)
-        supportsReasoningEffort = Self.hasOption("--effort", in: helpText)
+        reasoningEffortOption = ["--reasoning-effort", "--effort"].first { Self.hasOption($0, in: helpText) }
         supportsAdditionalMCPConfig = Self.hasOption("--additional-mcp-config", in: helpText)
     }
 
@@ -77,7 +81,7 @@ struct CopilotCLICapabilities: Equatable, Sendable {
         supportsExcludedTools: Bool,
         supportsLogDir: Bool,
         supportsNoAutoUpdate: Bool,
-        supportsReasoningEffort: Bool,
+        reasoningEffortOption: String?,
         supportsAdditionalMCPConfig: Bool
     ) {
         self.supportsOutputFormatJSON = supportsOutputFormatJSON
@@ -95,7 +99,7 @@ struct CopilotCLICapabilities: Equatable, Sendable {
         self.supportsExcludedTools = supportsExcludedTools
         self.supportsLogDir = supportsLogDir
         self.supportsNoAutoUpdate = supportsNoAutoUpdate
-        self.supportsReasoningEffort = supportsReasoningEffort
+        self.reasoningEffortOption = reasoningEffortOption
         self.supportsAdditionalMCPConfig = supportsAdditionalMCPConfig
     }
 
@@ -218,9 +222,9 @@ enum CopilotCLIRuntime {
            !resumeSessionID.isEmpty {
             args.append("--resume=\(resumeSessionID)")
         }
-        if capabilities.supportsReasoningEffort,
+        if let option = capabilities.reasoningEffortOption,
            let reasoningEffort = normalizedReasoningEffort(reasoningEffort) {
-            args += ["--effort", reasoningEffort]
+            args += [option, reasoningEffort]
         }
         if capabilities.supportsNoAutoUpdate {
             args += ["--no-auto-update"]
@@ -430,10 +434,9 @@ enum CopilotCLIRuntime {
         }
     }
 
-    /// Mirrors `copilot --help`'s `--effort, --reasoning-effort <level>` choices
-    /// (GitHub Copilot CLI 1.0.83). Copilot exposes this as one CLI-wide list,
-    /// not a per-model capability like Codex's `model/list`, so every Copilot
-    /// model gets the same options.
+    /// Mirrors the choices `copilot --help` lists for `--reasoning-effort`
+    /// (GitHub Copilot CLI 1.0.114). Each model accepts only some of them; the
+    /// adapter narrows a task's choice to the selected model's.
     static let reasoningEffortChoices = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 
     private static func normalizedReasoningEffort(_ value: String?) -> String? {
