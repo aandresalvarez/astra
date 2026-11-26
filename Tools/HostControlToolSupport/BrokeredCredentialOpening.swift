@@ -46,6 +46,23 @@ extension HostControlToolConfiguration {
     }
 }
 
+/// How one read of a connector is served, and what getting there cost.
+struct BrokeredReadAccess {
+    var configuration: HostControlToolConfiguration
+    var connector: HostControlConnector
+    /// How long this call waited for ASTRA to allow the connector.
+    var waitedSeconds: TimeInterval = 0
+}
+
+extension HostControlProcessLimits {
+    /// A read's timeout when the call has already waited for ASTRA. Both come out
+    /// of one allowance: the caller stops listening shortly after the longest
+    /// read, so a wait added on top of it would cost the agent the answer.
+    func readTimeout(_ requested: TimeInterval, afterWaiting waited: TimeInterval) -> TimeInterval {
+        min(requested, clampedTimeout(maximumTimeoutSeconds - waited))
+    }
+}
+
 /// One broker session's held-back credentials and what ASTRA has opened of them.
 ///
 /// Calls reach the broker one at a time, so the set of opened connectors needs no
@@ -87,7 +104,8 @@ final class BrokeredCredentialOpener {
     func access(
         toRead connector: HostControlConnector,
         in launch: HostControlToolConfiguration
-    ) -> (configuration: HostControlToolConfiguration, connector: HostControlConnector) {
+    ) -> BrokeredReadAccess {
+        let heldBack = BrokeredReadAccess(configuration: launch, connector: connector)
         guard let withholding = launch.withheldCredentials(for: connector),
               let opened = launch.opening(withholding, from: sealed),
               let openedConnector = HostControlBrokeredServices.resolveConnector(
@@ -96,12 +114,15 @@ final class BrokeredCredentialOpener {
                   in: opened
               ).connector,
               openedConnector.id == connector.id else {
-            return (launch, connector)
+            return heldBack
         }
+        var access = BrokeredReadAccess(configuration: opened, connector: openedConnector)
         if !openedConnectorIDs.contains(connector.id) {
-            guard requester.allowHeldBackConnector(withholding) else { return (launch, connector) }
+            let startedAt = DispatchTime.now().uptimeNanoseconds
+            guard requester.allowHeldBackConnector(withholding) else { return heldBack }
+            access.waitedSeconds = Double(DispatchTime.now().uptimeNanoseconds - startedAt) / 1_000_000_000
             openedConnectorIDs.insert(connector.id)
         }
-        return (opened, openedConnector)
+        return access
     }
 }

@@ -1022,11 +1022,10 @@ public final class HostControlMCPServer {
         let opened = JiraHostControlOperations.readOperations.contains(operation)
             ? credentialOpener?.access(toRead: connector, in: configuration)
             : nil
-        let readConfiguration = opened?.configuration ?? configuration
-        let readConnector = opened?.connector ?? connector
+        let access = opened ?? BrokeredReadAccess(configuration: configuration, connector: connector)
         switch operation {
         case "status":
-            let status = jiraStatus(connector: readConnector, in: readConfiguration)
+            let status = jiraStatus(connector: access.connector, in: access.configuration)
             diagnosticsRecorder?.record(toolName: "jira", summary: "jira status \(connector.alias)", result: nil)
             return .result([
                 "content": [[
@@ -1036,9 +1035,7 @@ public final class HostControlMCPServer {
                 "isError": !status.ready
             ])
         case "get_issue", "search_jql", "get_comments", "get_transitions":
-            return handleJiraReadRequest(
-                operation: operation, connector: readConnector, in: readConfiguration, arguments: arguments
-            )
+            return handleJiraReadRequest(operation: operation, access: access, arguments: arguments)
         case _ where JiraHostControlOperations.proposalOperations.contains(operation):
             return handleJiraProposal(operation: operation, connector: connector, arguments: arguments)
         default:
@@ -1089,10 +1086,10 @@ public final class HostControlMCPServer {
 
     private func handleJiraReadRequest(
         operation: String,
-        connector: HostControlConnector,
-        in configuration: HostControlToolConfiguration,
+        access: BrokeredReadAccess,
         arguments: [String: Any]
     ) -> MCPServerReply {
+        let (configuration, connector) = (access.configuration, access.connector)
         let status = jiraStatus(connector: connector, in: configuration)
         guard status.ready else {
             diagnosticsRecorder?.record(toolName: "jira", summary: "jira \(operation) \(connector.alias) blocked: \(status.blockedDiagnosticReason)", result: nil)
@@ -1110,7 +1107,9 @@ public final class HostControlMCPServer {
         } catch {
             return .error(code: -32602, message: error.localizedDescription)
         }
-        let timeout = timeoutSeconds(from: arguments["timeout_seconds"])
+        let timeout = processLimits.readTimeout(
+            timeoutSeconds(from: arguments["timeout_seconds"]), afterWaiting: access.waitedSeconds
+        )
         let response = JiraHTTPClient(
             configuration: configuration,
             cancellationRegistry: cancellationRegistry

@@ -123,6 +123,34 @@ struct BrokeredCredentialOpeningTests {
         #expect(session.saves.count == 2)
     }
 
+    /// The relay stops listening 305 seconds after a call. A wait for ASTRA added
+    /// on top of a 300-second read would outlast it.
+    @Test("The time spent opening a connector comes out of the read's timeout", arguments: ["jira", "redcap"])
+    func openingTimeComesOutOfTheReadTimeout(tool: String) async throws {
+        HostControlURLSessionConfiguration.registerTestingProtocolClass(OpeningEchoURLProtocol.self)
+        defer { HostControlURLSessionConfiguration.unregisterTestingProtocolClass(OpeningEchoURLProtocol.self) }
+        let session = try Session(level: .autonomous, whileSaving: { Thread.sleep(forTimeInterval: 1.1) })
+        var arguments = tool == "jira" ? ["operation": "get_issue", "issue_key": "ABC-1"] : ["operation": "project"]
+        arguments["timeout_seconds"] = "300"
+
+        let opening = try await session.call(tool, arguments)
+        let afterwards = try await session.call(tool, arguments)
+
+        // A busier machine only waits longer, so the bound holds under load.
+        let shortened = try #require(Self.timeoutTheStubSaw(opening), "\(opening)")
+        #expect(shortened <= 298)
+        #expect(Self.timeoutTheStubSaw(afterwards) == 300, "\(afterwards)")
+
+        let limits = HostControlProcessLimits.standard
+        #expect(limits.readTimeout(300, afterWaiting: 60) == 240)
+        #expect(limits.readTimeout(120, afterWaiting: 60) == 120, "a shorter read still fits")
+        #expect(limits.readTimeout(300, afterWaiting: 400) == 1)
+    }
+
+    private static func timeoutTheStubSaw(_ reply: String) -> Int? {
+        reply.firstMatch(of: #/timeout (\d+)/#).flatMap { Int($0.1) }
+    }
+
     @Test("A second account of one service stays held back until it is read too")
     func openingOneAccountLeavesTheOtherHeldBack() async throws {
         let session = try Session(level: .autonomous, secondREDCapSecret: "second-redcap-secret-value")
@@ -322,7 +350,7 @@ struct BrokeredCredentialOpeningTests {
 }
 
 /// Answers this suite's two hosts, repeating back the credential the request
-/// carried so a reply that is not redacted shows it.
+/// carried, so a reply that is not redacted shows it, and its timeout.
 private final class OpeningEchoURLProtocol: URLProtocol {
     override class func canInit(with request: URLRequest) -> Bool {
         ["jira.opening.test", "redcap.opening.test"].contains(request.url?.host)
@@ -337,7 +365,7 @@ private final class OpeningEchoURLProtocol: URLProtocol {
         }
         let credential = url.host == "jira.opening.test" ? jiraToken() : redcapToken()
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: Data("echo \(credential)".utf8))
+        client?.urlProtocol(self, didLoad: Data("echo \(credential) timeout \(Int(request.timeoutInterval))".utf8))
         client?.urlProtocolDidFinishLoading(self)
     }
 

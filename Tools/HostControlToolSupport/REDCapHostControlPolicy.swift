@@ -72,8 +72,9 @@ public enum REDCapHostControlPolicy {
         withholdingObserver?.noteWithheldCredentials(for: launchConnector, configuration: launch)
         // Every REDCap operation is a read, so any of them may open a connector
         // the launch held back.
-        let (configuration, connector) = credentialOpener?.access(toRead: launchConnector, in: launch)
-            ?? (launch, launchConnector)
+        let access = credentialOpener?.access(toRead: launchConnector, in: launch)
+            ?? BrokeredReadAccess(configuration: launch, connector: launchConnector)
+        let (configuration, connector) = (access.configuration, access.connector)
 
         let status = status(connector: connector, configuration: configuration)
         if operation == "status" {
@@ -106,7 +107,10 @@ public enum REDCapHostControlPolicy {
             connector: connector,
             form: form,
             token: status.tokenValue,
-            timeoutSeconds: timeoutSeconds(from: arguments["timeout_seconds"], limits: processLimits),
+            timeoutSeconds: processLimits.readTimeout(
+                timeoutSeconds(from: arguments["timeout_seconds"], limits: processLimits),
+                afterWaiting: access.waitedSeconds
+            ),
             outputByteLimit: byteLimit
         )
         // The summary names the operation, never a parameter: `records` and
