@@ -1791,6 +1791,7 @@ struct AgentRuntimeAdapterTests {
             model: "gpt-5.3-codex",
             runtime: .copilotCLI
         )
+        task.reasoningEffort = "high"
         let manifest = Self.copilotManifest(
             task: task,
             workspacePath: workspace.primaryPath,
@@ -1814,7 +1815,7 @@ struct AgentRuntimeAdapterTests {
 
         let allowedEntries = Set(Self.argumentValues(after: "--allow-tool", in: plan.arguments))
         let availableEntries = Set(Self.argumentValues(after: "--available-tools", in: plan.arguments))
-        let effortIndex = try #require(plan.arguments.firstIndex(of: "--effort"))
+        let effortIndex = try #require(plan.arguments.firstIndex(of: "--reasoning-effort"))
 
         #expect(plan.commandPlannedFields["allowed_tools_count"] == "1")
         #expect(plan.commandPlannedFields["provider_launch_allowed_tool_count"] == "3")
@@ -1824,7 +1825,7 @@ struct AgentRuntimeAdapterTests {
         #expect(plan.commandPlannedFields["surfaced_ask_first_tool_count"] == "4")
         #expect(plan.commandPlannedFields["supports_reasoning_effort"] == "true")
         #expect(plan.commandPlannedFields["uses_reasoning_effort"] == "true")
-        #expect(plan.arguments[plan.arguments.index(after: effortIndex)] == "none")
+        #expect(plan.arguments[plan.arguments.index(after: effortIndex)] == "high")
         #expect(allowedEntries.contains("view"))
         #expect(allowedEntries.contains("grep"))
         #expect(allowedEntries.contains("glob"))
@@ -1886,7 +1887,7 @@ struct AgentRuntimeAdapterTests {
         #expect(plan.commandPlannedFields["artifact_bootstrap_tool_count"] == "0")
         #expect(plan.commandPlannedFields["surfaced_ask_first_tool_count"] == "4")
         #expect(plan.commandPlannedFields["uses_reasoning_effort"] == "false")
-        #expect(!plan.arguments.contains("--effort"))
+        #expect(!plan.arguments.contains("--reasoning-effort"))
         #expect(!allowedEntries.contains("write"))
         #expect(availableEntries.contains("create"))
         #expect(availableEntries.contains("edit"))
@@ -1935,9 +1936,10 @@ struct AgentRuntimeAdapterTests {
                 timeoutSeconds: 30
             ))
 
-        let effortIndex = try #require(plan.arguments.firstIndex(of: "--effort"))
+        let effortIndex = try #require(plan.arguments.firstIndex(of: "--reasoning-effort"))
         #expect(plan.arguments[plan.arguments.index(after: effortIndex)] == "high")
         #expect(plan.commandPlannedFields["reasoning_effort"] == "high")
+        #expect(plan.commandPlannedFields["uses_reasoning_effort"] == "true")
     }
 
     @Test("Claude launch surfaces ask-first tools without counting them as allowed task tools")

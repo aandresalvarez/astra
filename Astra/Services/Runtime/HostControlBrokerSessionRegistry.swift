@@ -85,6 +85,7 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
         let ownerID: PersistentIdentifier
     }
     private var historyReaders: [HistoryKey: any TaskHistoryReading] = [:]
+    private var storeContainers: [HistoryKey: ModelContainer] = [:]
     private var mailReaders: [SessionKey: any BrokeredMailReading] = [:]
     private var externalActionRequesters: [SessionKey: any BrokeredExternalActionRequesting] = [:]
 
@@ -102,10 +103,14 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
         reader?.closeMailAccess()
     }
 
-    /// Bind the durable store before handing a detached execution task to a provider.
+    /// Bind the durable store before handing a detached execution task to a
+    /// provider: the run's history, and the credential grants saved since its
+    /// launch copy was made, are read from it.
     func bindHistory(container: ModelContainer, taskID: UUID, runID: UUID, ownerID: PersistentIdentifier) {
+        let key = HistoryKey(session: sessionKey(taskID: taskID, runID: runID), ownerID: ownerID)
         lock.lock()
-        historyReaders[HistoryKey(session: sessionKey(taskID: taskID, runID: runID), ownerID: ownerID)] = TaskHistoryEvidenceReader(container: container, taskID: taskID, ownerID: ownerID)
+        historyReaders[key] = TaskHistoryEvidenceReader(container: container, taskID: taskID, ownerID: ownerID)
+        storeContainers[key] = container
         lock.unlock()
     }
 
@@ -116,9 +121,16 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
     }
 
     func unbindHistory(taskID: UUID, runID: UUID, ownerID: PersistentIdentifier) {
+        let key = HistoryKey(session: sessionKey(taskID: taskID, runID: runID), ownerID: ownerID)
         lock.lock()
-        historyReaders.removeValue(forKey: HistoryKey(session: sessionKey(taskID: taskID, runID: runID), ownerID: ownerID))
+        historyReaders.removeValue(forKey: key)
+        storeContainers.removeValue(forKey: key)
         lock.unlock()
+    }
+
+    private func storeContainer(taskID: UUID, runID: UUID?, ownerID: PersistentIdentifier) -> ModelContainer? {
+        let key = HistoryKey(session: sessionKey(taskID: taskID, runID: runID), ownerID: ownerID)
+        return lock.withLock { storeContainers[key] }
     }
 
     /// Bind ASTRA's side of this run's writes before the provider launches: the
@@ -155,7 +167,8 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
         requiredTools: [String],
         currentDirectory: String,
         sshRoute: RemoteWorkspaceSSHRoute? = nil,
-        expectedHelperPath: String = HostControlBrokerReadiness.helperPath
+        expectedHelperPath: String = HostControlBrokerReadiness.helperPath,
+        secretStore: SecretStore = KeychainSecretStore()
     ) -> Bool {
         guard !requiredTools.isEmpty else { return false }
         guard HostControlBrokerReadiness.isAvailable(
@@ -165,12 +178,23 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
         }
 
         let requester = externalActionRequester(taskID: task.id, runID: runID)
+        let ownerID = task.launchSourceTaskOwnerID ?? task.persistentModelID
+        // `task` is the run's launch copy. What was allowed after it was made,
+        // such as an open offer Auto answered during the preflight, is only on
+        // the saved task.
+        let savedCredentialLabels = storeContainer(taskID: task.id, runID: runID, ownerID: ownerID).map {
+            TaskRuntimePermissionGrants.savedCredentialLabels(
+                taskID: task.id, ownerID: ownerID, runtime: runtime, in: $0
+            )
+        } ?? []
         let connectors = Self.brokeredConnectorInputs(
             task: task,
             runtime: runtime,
             capabilityScope: capabilityScope,
             requiredTools: requiredTools,
-            opensWithoutApproval: requester?.mayAllowHeldBackConnectors == true
+            savedCredentialLabels: savedCredentialLabels,
+            opensWithoutApproval: requester?.mayAllowHeldBackConnectors == true,
+            secretStore: secretStore
         )
         let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: task)
         let hostEnvironment = HostControlPlaneMCPProjection.environmentVariables(
@@ -191,13 +215,12 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
         environment.merge(hostEnvironment) { _, brokerValue in brokerValue }
 
         let configuration = HostControlToolConfiguration.fromEnvironment(environment)
-        let historyOwnerID = task.launchSourceTaskOwnerID ?? task.persistentModelID
-        let reader = historyReader(taskID: task.id, runID: runID, ownerID: historyOwnerID)
+        let reader = historyReader(taskID: task.id, runID: runID, ownerID: ownerID)
         let session = HostControlBrokerSession(
             configuration: configuration,
             expectedHelperPath: expectedHelperPath,
             withholdingObserver: BrokeredCredentialWithholdingRecorder(taskID: task.id, runID: runID),
-            historyReader: reader ?? task.modelContext.map { TaskHistoryEvidenceReader(container: $0.container, taskID: task.id, ownerID: historyOwnerID) },
+            historyReader: reader ?? task.modelContext.map { TaskHistoryEvidenceReader(container: $0.container, taskID: task.id, ownerID: ownerID) },
             externalActionRequester: requester,
             mailReader: mailReader(taskID: task.id, runID: runID),
             sealedCredentials: connectors.sealed
@@ -233,7 +256,9 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
     /// does not reach here otherwise — so it keeps the full exposure the user
     /// approved. A connector that is reachable but not narrated never met that
     /// gate, so it may only unseal a credential an existing durable grant
-    /// already covers.
+    /// already covers: one `task` carries, or one of `savedCredentialLabels`,
+    /// which the saved task grants now. A run passes its launch copy as `task`,
+    /// whose grants miss any saved after the copy was made.
     ///
     /// What the unapproved offered route does *not* do is disappear. It stays in
     /// the manifest and the tool stays callable, because withdrawing a route
@@ -273,6 +298,7 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
         runtime: AgentRuntimeID?,
         capabilityScope: TaskCapabilityPromptScope,
         requiredTools: [String],
+        savedCredentialLabels: [String] = [],
         opensWithoutApproval: Bool = false,
         secretStore: SecretStore = KeychainSecretStore()
     ) -> BrokeredConnectorBrokerInputs {
@@ -289,7 +315,7 @@ final class HostControlBrokerSessionRegistry: @unchecked Sendable {
         let approvedLabels = Set(TaskRuntimePermissionGrants.approvedCredentialLabels(
             for: task,
             runtime: runtime
-        ))
+        )).union(savedCredentialLabels)
         // One projection over the whole set, not one per tier merged after the
         // fact. Two projections each emit an `ASTRA_CONNECTORS` manifest and
         // each compute aliases within their own subset, so merging them either

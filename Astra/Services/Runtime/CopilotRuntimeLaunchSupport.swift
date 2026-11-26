@@ -368,7 +368,9 @@ enum CopilotLaunchDiagnostics {
             "supports_available_tools": String(capabilities.supportsAvailableTools),
             "supports_excluded_tools": String(capabilities.supportsExcludedTools),
             "supports_reasoning_effort": String(capabilities.supportsReasoningEffort),
-            "reasoning_effort": AgentRuntimeArgumentInspector.argumentList(plan.arguments, after: "--effort").first ?? "none",
+            "reasoning_effort": capabilities.reasoningEffortOption.flatMap {
+                AgentRuntimeArgumentInspector.argumentList(plan.arguments, after: $0).first
+            } ?? "none",
             "supports_additional_mcp_config": String(capabilities.supportsAdditionalMCPConfig),
             "requires_allow_all_tools": String(capabilities.requiresAllowAllToolsForPrompt),
             "permission_policy": effectivePermissionPolicy.rawValue,
@@ -407,7 +409,7 @@ enum CopilotLaunchDiagnostics {
             "uses_output_format_json": String(plan.arguments.contains("--output-format=json")),
             "uses_stream_flag": String(plan.arguments.contains("--stream=on")),
             "uses_no_ask_user": String(plan.arguments.contains("--no-ask-user")),
-            "uses_reasoning_effort": String(plan.arguments.contains("--effort")),
+            "uses_reasoning_effort": String(capabilities.reasoningEffortOption.map(plan.arguments.contains) ?? false),
             "uses_private_env_filter": String(plan.arguments.contains("--secret-env-vars")),
             "uses_additional_mcp_config": String(plan.arguments.contains("--additional-mcp-config")),
             "uses_silent": String(plan.arguments.contains("--silent")),

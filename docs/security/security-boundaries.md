@@ -196,8 +196,11 @@ boundary. The full inventory is in
 - **Auto** asks nothing. Connector credentials are allowed for the task (the
   launch stops if that grant cannot be saved; an Auto launch answers an offer
   still open). A brokered connector the turn did not name starts the run held
-  back. A read of it saves the task grant first and then uses the credential in
-  that same run, and the grant stays if the run is later cancelled or fails.
+  back, unless the saved task holds its grant when the run's broker is
+  prepared: an offer this launch answered counts, and so does an approval given
+  while the message waited, at any level. A read of a held-back connector saves
+  the task grant first and then uses the credential in that same run, and the
+  grant stays if the run is later cancelled or fails.
   The held-back values are kept apart from the broker's environment, so no host
   process or other connector's call receives them. A write composed in that run
   stays held back; such a connector, or one whose grant could not be saved, is

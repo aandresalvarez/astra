@@ -77,6 +77,27 @@ enum TaskRuntimePermissionGrants {
             ?? "[]"
     }
 
+    /// The labels the saved task grants `runtime`, read through a context of
+    /// its own: only a grant the store holds counts, because no credential may
+    /// be used before its grant is saved.
+    @MainActor
+    static func savedCredentialLabels(
+        taskID: UUID,
+        ownerID: PersistentIdentifier,
+        runtime: AgentRuntimeID?,
+        in container: ModelContainer
+    ) -> [String] {
+        let context = ModelContext(container)
+        context.autosaveEnabled = false
+        defer { withExtendedLifetime(context) {} }
+        var descriptor = FetchDescriptor<AgentTask>(predicate: #Predicate {
+            $0.persistentModelID == ownerID && $0.id == taskID
+        })
+        descriptor.fetchLimit = 1
+        guard let task = try? context.fetch(descriptor).first else { return [] }
+        return approvedCredentialLabels(for: task, runtime: runtime)
+    }
+
     static func approvedCredentialLabels(
         for task: AgentTask,
         runtime: AgentRuntimeID? = nil,
