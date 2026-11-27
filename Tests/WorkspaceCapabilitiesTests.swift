@@ -203,16 +203,19 @@ struct WorkspaceCapabilitiesTests {
 
     /// A check of the sources, not of behaviour: the behaviour of the two
     /// helpers is pinned above; this only says which screens call them.
-    @Test("Source check: the workspace home, the workspace editor and the routine and template editors call the list rule")
+    @Test("Source check: the workspace editor, the routine and template editors, and the home through the rail's rule call the list rule")
     func skillListsCallTheListRule() throws {
         let views = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Astra/Views")
         func source(_ file: String) throws -> String {
             try String(contentsOf: views.appendingPathComponent(file), encoding: .utf8)
         }
-        for file in ["WorkspaceHomeView.swift", "WorkspaceDetailView.swift"] {
-            #expect(try source(file).contains("WorkspaceCapabilities.listedSkillRows(of: workspace)"), "\(file)")
-        }
+        #expect(try source("WorkspaceDetailView.swift").contains("WorkspaceCapabilities.listedSkillRows(of: workspace)"))
+        // The home's Capabilities tab lists what the rail lists, through the
+        // catalog inventory, which applies the rule (`listedWorkspaceSkills`).
+        #expect(try source("WorkspaceHomeView.swift").contains("WorkspaceHomeCapabilityRow.rows("))
+        #expect(try source("WorkspaceRightRailView.swift").contains("WorkspaceActiveCapabilities.entries("))
+        #expect(try source("WorkspaceActiveCapabilities.swift").contains("CapabilityCatalogInventory.packages("))
         for file in ["ScheduleEditorView.swift", "ConfigureView.swift"] {
             #expect(try source(file).contains("WorkspaceCapabilities.offeredForSelection("), "\(file)")
         }

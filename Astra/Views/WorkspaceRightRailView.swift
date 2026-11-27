@@ -915,14 +915,7 @@ struct WorkspaceRightRailView: View {
     }
 
     private func capabilityDisplayName(_ name: String) -> String {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.localizedCaseInsensitiveCompare("New Skill") == .orderedSame {
-            return "Untitled Capability"
-        }
-        return trimmed
-            .replacingOccurrences(of: " (Restored)", with: "")
-            .replacingOccurrences(of: "(Restored)", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        WorkspaceActiveCapabilities.displayName(name)
     }
 
     /// A passive trailing label. Blocked state is carried by the repair
@@ -993,44 +986,16 @@ struct WorkspaceRightRailView: View {
     private func makeCapabilityRailSnapshot() -> CapabilityRailSnapshot {
         let telemetryFields = capabilityRailTelemetryFields
         let currentCapabilities = capabilities
-        let resourceIndex = PerformanceTelemetry.measure(
-            "right_rail_capability_resources",
-            thresholdMilliseconds: 20,
-            fields: telemetryFields
-        ) {
-            CapabilityRailWorkspaceResourceIndex(
-                workspace: workspace,
-                capabilities: currentCapabilities
-            )
-        }
-        var cachedStates: [String: CapabilityRailPackageSnapshotState] = [:]
-
-        func state(for package: PluginPackage) -> CapabilityRailPackageSnapshotState {
-            if let cached = cachedStates[package.id] {
-                return cached
-            }
-            let state = PerformanceTelemetry.measure(
-                "right_rail_capability_package",
-                thresholdMilliseconds: 20,
-                fields: telemetryFields.merging(["package_id": package.id], uniquingKeysWith: { _, new in new })
-            ) {
-                CapabilityRailPackageSnapshotState(
-                    package: package,
-                    index: resourceIndex
-                )
-            }
-            cachedStates[package.id] = state
-            return state
-        }
-
-        let catalogPackages = PerformanceTelemetry.measure(
+        // The same rule the workspace home's Capabilities tab lists.
+        let activeEntries = PerformanceTelemetry.measure(
             "right_rail_capability_catalog",
             thresholdMilliseconds: 20,
             fields: telemetryFields
         ) {
-            CapabilityCatalogInventory.packages(
-                catalogPackages: approvedCapabilityPackages,
+            WorkspaceActiveCapabilities.entries(
+                workspace: workspace,
                 capabilities: currentCapabilities,
+                catalogPackages: approvedCapabilityPackages,
                 policyContext: catalogPolicyContext
             )
         }
@@ -1041,13 +1006,11 @@ struct WorkspaceRightRailView: View {
             fields: telemetryFields,
             resultFields: { ["item_count": PerformanceTelemetryFields.count($0.count)] }
         ) {
-            catalogPackages
-                .compactMap { package -> RailCapabilityItem? in
-                    let packageState = state(for: package)
-                    guard packageState.isEnabled else { return nil }
-                    return makePackageCapabilityItem(
-                        package,
-                        state: packageState,
+            activeEntries
+                .map { entry in
+                    makePackageCapabilityItem(
+                        entry.package,
+                        state: entry.state,
                         prerequisiteStatuses: capabilityPrerequisiteStatuses
                     )
                 }
