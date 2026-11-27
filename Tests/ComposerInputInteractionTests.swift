@@ -138,6 +138,36 @@ struct ComposerInputInteractionTests {
         #expect(fixture.focusedEditor?.selectedRange() == NSRange(location: 11, length: 0))
     }
 
+    @Test("A tap on the text keeps its selection; only the padding deselects")
+    func tapOnTheTextKeepsItsSelection() throws {
+        let fixture = ComposerFieldFixture()
+        defer { fixture.tearDown() }
+        let editor = try fixture.focusField()
+        fixture.type("hello world", into: editor)
+        // The word a double-click leaves selected.
+        let word = NSRange(location: 0, length: 5)
+        editor.setSelectedRange(word)
+
+        // The rule itself: this Mac's SwiftUI does not report a click on the
+        // text to the padding's gesture, so the event below cannot prove it.
+        let area = fixture.hostView
+        let text = editor.convert(editor.bounds, to: area)
+        ComposerFieldSelection.collapse(editor, forTapAt: CGPoint(x: text.midX, y: text.midY), in: area)
+        #expect(editor.selectedRange() == word)
+
+        // Through the gesture, wherever it does report it: whatever the editor
+        // makes of one more click on the word, the selection is not thrown to
+        // the end of the draft.
+        try fixture.clickText()
+        fixture.settle()
+        #expect(fixture.focusedEditor?.selectedRange() != NSRange(location: 11, length: 0))
+
+        editor.setSelectedRange(word)
+        let padding = CGPoint(x: text.midX, y: text.minY - TaskComposerPresentation.inputTopPadding / 2)
+        ComposerFieldSelection.collapse(editor, forTapAt: padding, in: area)
+        #expect(editor.selectedRange() == NSRange(location: 11, length: 0))
+    }
+
     @Test("Taking focus never leaves the draft selected for the next key to replace")
     func focusKeepsTheDraft() throws {
         let fixture = ComposerFieldFixture()
@@ -212,6 +242,7 @@ private final class ComposerFieldFixture {
     }
 
     var focusedEditor: NSTextView? { window.firstResponder as? NSTextView }
+    var hostView: NSView { host }
 
     /// Spin the run loop a few turns so pending updates land.
     func settle() {
@@ -268,7 +299,16 @@ private final class ComposerFieldFixture {
 
     func clickTopPadding() throws {
         let frame = try textField().convert(try textField().bounds, to: nil)
-        let location = NSPoint(x: frame.midX, y: frame.maxY + TaskComposerPresentation.inputTopPadding / 2)
+        try click(NSPoint(x: frame.midX, y: frame.maxY + TaskComposerPresentation.inputTopPadding / 2))
+    }
+
+    /// Inside the field, on its first word.
+    func clickText() throws {
+        let frame = try textField().convert(try textField().bounds, to: nil)
+        try click(NSPoint(x: frame.minX + 20, y: frame.midY))
+    }
+
+    private func click(_ location: NSPoint) throws {
         for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
             let event = try #require(NSEvent.mouseEvent(
                 with: type, location: location, modifierFlags: [],

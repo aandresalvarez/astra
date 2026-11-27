@@ -22,6 +22,20 @@ enum ComposerReturnKeyPolicy {
     }
 }
 
+@MainActor
+enum ComposerFieldSelection {
+    /// A tap on the padding around a focused field deselects, as a click
+    /// beside the text of any editor does. A bare caret stays where it is.
+    /// A tap on the text is the editor's own: where the gesture reports those
+    /// too, the second click of a double-click must keep its word. `location`
+    /// is in the coordinates of `area`, the view the gesture covers.
+    static func collapse(_ editor: NSTextView, forTapAt location: CGPoint, in area: NSView) {
+        guard editor.selectedRange().length > 0,
+              !editor.convert(editor.bounds, to: area).contains(location) else { return }
+        editor.moveToEndOfDocument(nil)
+    }
+}
+
 extension View {
     /// What a composer's text field does beyond typing. Apply it after the
     /// field's padding, which becomes part of its click target.
@@ -48,9 +62,9 @@ private struct ComposerInputInteraction: ViewModifier {
         content
             .background(ComposerFieldAnchorView(anchor: field).allowsHitTesting(false))
             .contentShape(Rectangle())
-            .onTapGesture {
+            .onTapGesture { location in
                 if focus.wrappedValue {
-                    field.collapseSelection()
+                    field.collapseSelection(tapAt: location)
                 } else {
                     focus.wrappedValue = true
                 }
@@ -118,11 +132,9 @@ private final class ComposerFieldAnchor {
         editor.moveToEndOfDocument(nil)
     }
 
-    /// A click on the padding of the focused field deselects, as a click
-    /// beside the text of any editor does. A bare caret stays where it is.
-    func collapseSelection() {
-        guard let editor, editor.selectedRange().length > 0 else { return }
-        editor.moveToEndOfDocument(nil)
+    func collapseSelection(tapAt location: CGPoint) {
+        guard let view, let editor else { return }
+        ComposerFieldSelection.collapse(editor, forTapAt: location, in: view)
     }
 
     private static func currentEventIsClick(in editor: NSTextView) -> Bool {
@@ -159,6 +171,9 @@ private struct ComposerFieldAnchorView: NSViewRepresentable {
     final class ResponderWatchingView: NSView {
         var onFirstResponderChange: (@MainActor () -> Void)?
         private var observation: NSKeyValueObservation?
+
+        /// Top-left origin, so its coordinates are the SwiftUI view's own.
+        override var isFlipped: Bool { true }
 
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
