@@ -185,6 +185,14 @@ struct WorkspaceHomeContainerView: View {
     }
 }
 
+/// When the workspace home reloads the capability catalog: another workspace,
+/// a pack change, or an approval written anywhere.
+private struct CapabilityCatalogLoadKey: Hashable {
+    let workspaceID: UUID
+    let packIDs: [String]
+    let reload: Int
+}
+
 struct WorkspaceHomeView: View {
     let workspace: Workspace
     let tasks: [AgentTask]
@@ -215,6 +223,19 @@ struct WorkspaceHomeView: View {
     @State private var isMemoryComposerVisible = false
     @State private var pendingSetupDeletion: PendingWorkspaceSetupDeletion?
     @State private var folderRefusal: String?
+    @Query(filter: #Predicate<Skill> { $0.isGlobal == true })
+    private var globalSkills: [Skill]
+    @Query(filter: #Predicate<Connector> { $0.isGlobal == true })
+    private var globalConnectors: [Connector]
+    @Query(filter: #Predicate<LocalTool> { $0.isGlobal == true })
+    private var globalTools: [LocalTool]
+    /// The capability catalog, loaded off the main actor (built-ins until then).
+    @State private var capabilityCatalog = ApprovedCapabilitiesSnapshot(
+        packages: PluginCatalog.builtInPackages, records: [], packPolicy: .empty
+    )
+    @State private var capabilityCatalogReloads = 0
+    /// Nil until first computed, so the tab never flashes "none active".
+    @State private var capabilityRows: [WorkspaceHomeCapabilityRow]?
     @AppStorage("kanbanBoardDensity") private var densityRaw = KanbanBoardDensity.spacious.rawValue
 
     // The skill/connector/tool aggregators previously rendered by the
@@ -269,6 +290,8 @@ struct WorkspaceHomeView: View {
         }
         .onChange(of: workspace.id) {
             initializedPresentationWorkspaceID = nil
+            // Show the loading state, not the previous workspace's rows.
+            capabilityRows = nil
             initializePresentationIfNeeded()
             loadSSHConnections()
         }
@@ -277,6 +300,20 @@ struct WorkspaceHomeView: View {
         }
         .onChange(of: sshReloadTrigger) {
             loadSSHConnections()
+        }
+        .task(id: capabilityCatalogLoadKey) {
+            await loadCapabilityCatalog(packIDs: capabilityCatalogLoadKey.packIDs)
+        }
+        .task(id: capabilityRowsSignature) {
+            rebuildCapabilityRows()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .capabilityApprovalsChanged)) { _ in
+            DispatchQueue.main.async { capabilityCatalogReloads += 1 }
+        }
+        // A package added, removed or updated in the library without an
+        // approval write.
+        .onReceive(NotificationCenter.default.publisher(for: .capabilityPackagesChanged)) { _ in
+            DispatchQueue.main.async { capabilityCatalogReloads += 1 }
         }
         .confirmationDialog(
             pendingSetupDeletion?.title ?? "",
@@ -356,7 +393,7 @@ struct WorkspaceHomeView: View {
         switch section {
         case .instructions: return nil
         case .board: return tasks.count
-        case .capabilities: return capabilityCount
+        case .capabilities: return capabilityRows == nil ? nil : capabilityCount
         case .memory: return workspace.memories.count
         case .access: return accessConfiguredCount
         case .apps: return workspaceApps.count
@@ -451,11 +488,11 @@ struct WorkspaceHomeView: View {
 
     // MARK: - Capabilities Tab
 
-    // Deliberately renders only what the Workspace model already holds
-    // (names + icons) — no capability-package or approval-record reads. The
-    // right rail once scanned those directories from `body` and it cost 68
-    // directory reads per evaluation; Manage remains the door to the full
-    // capability UI.
+    // Lists what the right rail lists (`WorkspaceActiveCapabilities`), from a
+    // catalog loaded off the main actor and rows cached by signature: `body`
+    // never scans the Capabilities or approvals folders (the rail once did,
+    // at 68 directory reads per evaluation). Manage remains the door to the
+    // full capability UI.
     private var capabilitiesTab: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 10) {
@@ -478,22 +515,27 @@ struct WorkspaceHomeView: View {
                 .help("Manage workspace capabilities")
             }
 
-            if capabilityRowCount > 0 {
+            if capabilityRows == nil {
+                // Not computed yet: say nothing rather than "none active".
+                EmptyView()
+            } else if !listedCapabilityRows.isEmpty {
                 VStack(alignment: .leading, spacing: 2) {
-                    ForEach(Array(listedSkills.enumerated()), id: \.offset) { _, skill in
-                        capabilityRow(icon: skill.icon, fallbackIcon: "sparkles", name: skill.name, kind: "Skill")
+                    ForEach(listedCapabilityRows) { row in
+                        capabilityRow(icon: row.icon, fallbackIcon: "puzzlepiece.extension", name: row.name, kind: row.summary)
                     }
-                    ForEach(Array(workspace.connectors.enumerated()), id: \.offset) { _, connector in
-                        capabilityRow(icon: connector.icon, fallbackIcon: "link", name: connector.name, kind: "Connector")
-                    }
-                    ForEach(Array(workspace.localTools.enumerated()), id: \.offset) { _, tool in
-                        capabilityRow(icon: tool.icon, fallbackIcon: "wrench.and.screwdriver", name: tool.name, kind: "Tool")
+                    if unlistedEnabledCount > 0 {
+                        // Counted above, so say where they went.
+                        // Not shown: its package left the library, or policy hides it.
+                        Text("\(unlistedEnabledCount) more enabled, not shown here. Open Manage to review.")
+                            .font(Stanford.caption(12))
+                            .foregroundStyle(.tertiary)
+                            .padding(.top, 4)
                     }
                 }
             } else if capabilityCount > 0 {
-                // enabledCapabilityIDs can be ahead of the materialized
-                // skill/connector/tool relations, so there is nothing to list
-                // here even though capabilities are enabled. Point at Manage
+                // A plugin can be on here while the catalog no longer has its
+                // package (removed from the library), so there is nothing to
+                // list even though capabilities are enabled. Point at Manage
                 // instead of claiming "none active".
                 sectionEmptyMessage(
                     icon: "checkmark.shield",
@@ -1245,38 +1287,76 @@ struct WorkspaceHomeView: View {
         return "\(words) word\(words == 1 ? "" : "s")"
     }
 
-    /// The workspace's own skill rows, without the universal skills and the
-    /// rows restored under their names.
-    private var listedSkills: [Skill] {
-        WorkspaceCapabilities.listedSkillRows(of: workspace)
+    /// The capabilities the right rail lists, by name.
+    private var listedCapabilityRows: [WorkspaceHomeCapabilityRow] {
+        capabilityRows ?? []
     }
 
-    private var capabilityRowCount: Int {
-        listedSkills.count + workspace.connectors.count + workspace.localTools.count
+    private var unlistedEnabledCount: Int {
+        WorkspaceHomeCapabilityRow.unlistedEnabledCount(
+            enabledIDs: workspace.enabledCapabilityIDs, rows: listedCapabilityRows
+        )
     }
 
+    /// The listed rows plus the enabled plugins they leave out, so a plugin
+    /// whose package left the catalog still counts.
     private var capabilityCount: Int {
-        max(workspace.enabledCapabilityIDs.count, capabilityRowCount)
+        listedCapabilityRows.count + unlistedEnabledCount
     }
 
     private var capabilitySubtitle: String {
-        let parts: [String] = [
-            countPhrase(listedSkills.count, singular: "skill", plural: "skills"),
-            countPhrase(workspace.connectors.count, singular: "connector", plural: "connectors"),
-            countPhrase(workspace.localTools.count, singular: "tool", plural: "tools")
-        ].compactMap { $0 }
-
-        guard !parts.isEmpty else {
-            return capabilityCount > 0
-                ? "\(capabilityCount) active"
-                : "None active — browse the library to add skills, connectors, and tools"
-        }
-        return "\(capabilityCount) active — \(parts.joined(separator: ", "))"
+        guard capabilityRows != nil else { return "" }
+        return capabilityCount > 0
+            ? "\(capabilityCount) active"
+            : "None active — browse the library to add skills, connectors, and tools"
     }
 
-    private func countPhrase(_ count: Int, singular: String, plural: String) -> String? {
-        guard count > 0 else { return nil }
-        return "\(count) \(count == 1 ? singular : plural)"
+    private var capabilityRowsSignature: CapabilityRailSnapshotSignature {
+        CapabilityRailSnapshotSignature(
+            workspace: workspace,
+            globalSkills: globalSkills,
+            globalConnectors: globalConnectors,
+            globalTools: globalTools,
+            packages: capabilityCatalog.packages,
+            approvalRecords: capabilityCatalog.records,
+            packPolicy: capabilityCatalog.packPolicy,
+            prerequisiteStatuses: [:]
+        )
+    }
+
+    private func rebuildCapabilityRows() {
+        guard workspace.isLive else { return }
+        capabilityRows = PerformanceTelemetry.measure("workspace_home_capability_rows", thresholdMilliseconds: 20) {
+            WorkspaceHomeCapabilityRow.rows(
+                workspace: workspace,
+                globalSkills: globalSkills,
+                globalConnectors: globalConnectors,
+                globalTools: globalTools,
+                catalog: capabilityCatalog
+            )
+        }
+    }
+
+    private var capabilityCatalogLoadKey: CapabilityCatalogLoadKey {
+        CapabilityCatalogLoadKey(
+            workspaceID: workspace.id,
+            packIDs: WorkspaceCapabilityActivation.state(of: workspace).packIDs,
+            reload: capabilityCatalogReloads
+        )
+    }
+
+    /// The catalog the rail loads (`refreshApprovedCapabilities`), read off
+    /// the main actor.
+    private func loadCapabilityCatalog(packIDs: [String]) async {
+        let snapshot = await Task.detached(priority: .userInitiated) {
+            ApprovedCapabilitiesSnapshot(
+                packages: CapabilityLibrary().installedPackages(),
+                records: CapabilityApprovalStore().records(),
+                packPolicy: PackWorkspacePolicyProvider.resolvedPolicy(enabledPackIDs: packIDs)
+            )
+        }.value
+        guard !Task.isCancelled else { return }
+        capabilityCatalog = snapshot
     }
 
     private func startEditingInstructions() {
