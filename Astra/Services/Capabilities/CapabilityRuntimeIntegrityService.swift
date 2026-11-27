@@ -85,6 +85,7 @@ enum CapabilityRuntimeIntegrityService {
             scope: requestedScope
         )
         let availableConnectors = availableConnectors(for: task)
+        let launchConnectorIDs = Set(resolvedConnectors.map(\.id))
 
         let contractIssues = PluginQueuedContractValidation.issues(in: workspace, packages: packages)
         let heldContracts = Set(contractIssues.map(\.packageID))
@@ -140,6 +141,7 @@ enum CapabilityRuntimeIntegrityService {
                 source: source,
                 reachableSkills: reachableSkills,
                 reachableConnectors: reachableConnectors,
+                launchConnectorIDs: launchConnectorIDs,
                 availableConnectors: availableConnectors,
                 reachableTools: reachableTools,
                 enabledBrowserAdapters: enabledBrowserAdapters,
@@ -191,6 +193,7 @@ enum CapabilityRuntimeIntegrityService {
         source: CapabilityRuntimeIntegrityIssue.Source,
         reachableSkills: [Skill],
         reachableConnectors: [Connector],
+        launchConnectorIDs: Set<UUID>,
         availableConnectors: [Connector],
         reachableTools: [LocalTool],
         enabledBrowserAdapters: Set<String>,
@@ -244,7 +247,15 @@ enum CapabilityRuntimeIntegrityService {
             let hasUsableCredentialSet = matches.contains {
                 connectorHasUsableCredentials($0, secretStore: secretStore)
             }
-            if !hasUsableCredentialSet {
+            // A key the Keychain refused to read is not known to be missing.
+            // After every ad-hoc rebuild macOS refuses the new binary until the
+            // value is saved again (docs/code-signing.md); an interactive open
+            // still pending refuses too. That blocks a launch that hands this
+            // connector to the agent. A launch that leaves the connector out
+            // never reads the key, so it must not fail over it.
+            let onlyUnreadable = !credentialGaps.isEmpty && credentialGaps.allSatisfy(\.isUnreadableOnly)
+            let connectorInLaunch = matches.contains { launchConnectorIDs.contains($0.id) }
+            if !hasUsableCredentialSet, !onlyUnreadable || connectorInLaunch {
                 issues.append(issue(
                     package: package,
                     source: source,
@@ -377,12 +388,21 @@ enum CapabilityRuntimeIntegrityService {
     private struct ConnectorCredentialGap {
         let connector: Connector
         let missingKeys: [String]
+        /// The Keychain refused to read them, so they are not known to be missing.
+        let unreadableKeys: [String]
         let hasDeclaredKeys: Bool
+
+        var isUnreadableOnly: Bool {
+            hasDeclaredKeys && missingKeys.isEmpty && !unreadableKeys.isEmpty
+        }
     }
 
     private struct ConnectorCredentialRequirements {
         let declaredKeys: [String]
         let missingKeys: [String]
+        let unreadableKeys: [String]
+
+        var isSatisfied: Bool { missingKeys.isEmpty && unreadableKeys.isEmpty }
     }
 
     private static func connectorHasUsableCredentials(
@@ -392,7 +412,7 @@ enum CapabilityRuntimeIntegrityService {
         guard connector.authMethod != "none" else { return true }
         let requirements = connectorCredentialRequirements(for: connector, secretStore: secretStore)
         guard !requirements.declaredKeys.isEmpty else { return false }
-        return requirements.missingKeys.isEmpty
+        return requirements.isSatisfied
     }
 
     private static func connectorCredentialGaps(
@@ -406,13 +426,15 @@ enum CapabilityRuntimeIntegrityService {
                 return ConnectorCredentialGap(
                     connector: connector,
                     missingKeys: [],
+                    unreadableKeys: [],
                     hasDeclaredKeys: false
                 )
             }
-            guard !requirements.missingKeys.isEmpty else { return nil }
+            guard !requirements.isSatisfied else { return nil }
             return ConnectorCredentialGap(
                 connector: connector,
                 missingKeys: requirements.missingKeys,
+                unreadableKeys: requirements.unreadableKeys,
                 hasDeclaredKeys: true
             )
         }
@@ -424,16 +446,28 @@ enum CapabilityRuntimeIntegrityService {
     ) -> ConnectorCredentialRequirements {
         let declaredKeys = normalizedCredentialKeys(for: connector)
         let entityIDs = KeychainSecretStore.connectorEntityIDs(for: connector)
-        let missingKeys = declaredKeys.filter { key in
-            !entityIDs.contains { entityID in
-                let value = secretStore.load(key: key, entityID: entityID)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                return !value.isEmpty
+        var missingKeys: [String] = []
+        var unreadableKeys: [String] = []
+        for key in declaredKeys {
+            var refused = false
+            let found = entityIDs.contains { entityID in
+                switch secretStore.read(key: key, entityID: entityID) {
+                case .value(let value):
+                    return !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                case .unavailable:
+                    refused = true
+                    return false
+                case .missing:
+                    return false
+                }
             }
+            guard !found else { continue }
+            if refused { unreadableKeys.append(key) } else { missingKeys.append(key) }
         }
         return ConnectorCredentialRequirements(
             declaredKeys: declaredKeys,
-            missingKeys: missingKeys
+            missingKeys: missingKeys,
+            unreadableKeys: unreadableKeys
         )
     }
 
@@ -464,17 +498,55 @@ enum CapabilityRuntimeIntegrityService {
             guard gap.hasDeclaredKeys else {
                 return "connector \(name) has no credentials configured"
             }
-            return "connector \(name) is missing Keychain value: \(gap.missingKeys.joined(separator: ", "))"
+            return credentialGapMessage(
+                subject: "connector \(name)",
+                plural: false,
+                missing: gap.missingKeys,
+                unreadable: gap.unreadableKeys
+            )
         }
 
         let names = CapabilityAudit.compactNames(
             gaps.map { connectorDisplayName($0.connector, fallback: pluginConnector.name) }
         )
         let missing = Set(gaps.flatMap(\.missingKeys)).sorted()
-        if missing.isEmpty {
+        // Not minus `missing`: a key absent on one connector and refused on
+        // another still needs the recovery step for the refused one.
+        let unreadable = Set(gaps.flatMap(\.unreadableKeys)).sorted()
+        if missing.isEmpty && unreadable.isEmpty {
             return "matching connectors \(names) have no credentials configured"
         }
-        return "matching connectors \(names) are missing Keychain values: \(missing.joined(separator: ", "))"
+        return credentialGapMessage(
+            subject: "matching connectors \(names)",
+            plural: true,
+            missing: missing,
+            unreadable: unreadable
+        )
+    }
+
+    private static func credentialGapMessage(
+        subject: String,
+        plural: Bool,
+        missing: [String],
+        unreadable: [String]
+    ) -> String {
+        var parts: [String] = []
+        if !missing.isEmpty {
+            let verb = plural ? "are missing Keychain values" : "is missing Keychain value"
+            parts.append("\(verb): \(missing.joined(separator: ", "))")
+        }
+        if !unreadable.isEmpty {
+            // `.unavailable` is any refused read, not proof of a saved value:
+            // retry first, re-entry is for the refusal an update leaves behind.
+            let one = unreadable.count == 1
+            parts.append(
+                "\(plural ? "have" : "has") \(one ? "a Keychain value" : "Keychain values") ASTRA could not read: "
+                    + "\(unreadable.joined(separator: ", ")). Retry; if it keeps failing after ASTRA was "
+                    + "rebuilt or updated, enter \(one ? "it" : "them") again in Connectors and save "
+                    + "before testing"
+            )
+        }
+        return "\(subject) \(parts.joined(separator: "; and "))"
     }
 
     private static func connectorDisplayName(
