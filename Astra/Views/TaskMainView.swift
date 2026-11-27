@@ -4246,12 +4246,12 @@ struct TaskMainView: View {
                     TextField(placeholder, text: Bindable(composerDraft).text, axis: .vertical)
                         .textFieldStyle(.plain)
                         .font(Stanford.chatBody())
-                        .lineLimit(2...10)
+                        .lineLimit(TaskComposerPresentation.inputLineLimit)
                         .padding(.horizontal, TaskComposerPresentation.inputHorizontalPadding)
                         .padding(.top, composerAttachments.isEmpty ? TaskComposerPresentation.inputTopPadding : TaskComposerPresentation.inputTopPaddingWithAttachments)
                         .padding(.bottom, TaskComposerPresentation.inputBottomPadding)
                         .focused(composerFocus)
-                        .onComposerSubmit {
+                        .composerInput(focus: composerFocus) {
                             if showSlashMenu && !visibleSlashOptions.isEmpty {
                                 selectSlashOption()
                             } else {
@@ -4286,9 +4286,6 @@ struct TaskMainView: View {
                         }
                         .disabled(taskIsRunning)
                 }
-
-                Color.clear
-                    .frame(height: 2)
 
                 ComposerSubmissionStatus(intent: composerDraft.submissionIntent)
 
@@ -4378,23 +4375,12 @@ struct TaskMainView: View {
         removePasteMonitor()
         pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             if isComposerFocused,
-               event.modifierFlags.contains(.shift),
-               Self.isReturnKey(event),
-               task.status != .running {
-                composerDraft.text.append("\n")
-                return nil
-            }
-            if isComposerFocused,
                event.modifierFlags.contains(.command),
                event.charactersIgnoringModifiers == "v" {
                 if smartPaste() { return nil }
             }
             return event
         }
-    }
-
-    private static func isReturnKey(_ event: NSEvent) -> Bool {
-        event.keyCode == 36 || event.keyCode == 76
     }
 
     private func removePasteMonitor() {

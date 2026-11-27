@@ -943,7 +943,7 @@ struct ChatPanelView: View {
                                 fileChip(file)
                             }
                         }
-                        .padding(.horizontal, 18)
+                        .padding(.horizontal, TaskComposerPresentation.inputHorizontalPadding)
                         .padding(.top, 16)
                         .padding(.bottom, 6)
                     }
@@ -952,12 +952,12 @@ struct ChatPanelView: View {
                 TextField("Describe a task or ask a question...", text: $messageText, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(Stanford.chatBody())
-                    .lineLimit(2...10)
+                    .lineLimit(TaskComposerPresentation.inputLineLimit)
                     .focused($isComposerFocused)
-                    .padding(.horizontal, 18)
-                    .padding(.top, attachedFiles.isEmpty ? 14 : 8)
-                    .padding(.bottom, 12)
-                    .onComposerSubmit {
+                    .padding(.horizontal, TaskComposerPresentation.inputHorizontalPadding)
+                    .padding(.top, attachedFiles.isEmpty ? TaskComposerPresentation.inputTopPadding : TaskComposerPresentation.inputTopPaddingWithAttachments)
+                    .padding(.bottom, TaskComposerPresentation.inputBottomPadding)
+                    .composerInput(focus: $isComposerFocused) {
                         submitComposer()
                     }
                     .accessibilityIdentifier("ComposerInput")
@@ -983,9 +983,6 @@ struct ChatPanelView: View {
                         messageText = ""
                         return .handled
                     }
-
-                Color.clear
-                    .frame(height: 2)
 
                 ComposerSubmissionStatus(intent: submissionIntent)
 
@@ -1776,22 +1773,12 @@ struct ChatPanelView: View {
         removePasteMonitor()
         pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             if isComposerFocused,
-               event.modifierFlags.contains(.shift),
-               Self.isReturnKey(event) {
-                messageText.append("\n")
-                return nil
-            }
-            if isComposerFocused,
                event.modifierFlags.contains(.command),
                event.charactersIgnoringModifiers == "v" {
                 if smartPaste() { return nil }
             }
             return event
         }
-    }
-
-    private static func isReturnKey(_ event: NSEvent) -> Bool {
-        event.keyCode == 36 || event.keyCode == 76
     }
 
     private func removePasteMonitor() {
