@@ -91,7 +91,7 @@ struct CapabilityRuntimeUnreadableCredentialTests {
         return store
     }
 
-    @Test("A saved key this build cannot read is reported as unreadable, not missing")
+    @Test("A key the Keychain refuses to read is reported as unreadable, not missing")
     func unreadableKeyIsNotReportedMissing() throws {
         let fixture = try makeFixture(goal: "List Jira tickets")
 
@@ -104,8 +104,37 @@ struct CapabilityRuntimeUnreadableCredentialTests {
 
         let issue = try #require(issues.first { $0.resourceKind == .credential })
         #expect(issue.resourceName == "Jira-new")
-        #expect(issue.message == "connector Jira-new has saved Keychain values this build of ASTRA cannot read: "
-            + "JIRA_EMAIL, JIRA_API_TOKEN. Enter them again in Connectors and press Test")
+        #expect(issue.message == "connector Jira-new has Keychain values ASTRA could not read: "
+            + "JIRA_EMAIL, JIRA_API_TOKEN. Retry; if it keeps failing after ASTRA was rebuilt or updated, "
+            + "enter them again in Connectors and save before testing")
+    }
+
+    @Test("A key absent on one connector and refused on another keeps the recovery step")
+    func mixedConnectorsKeepTheRefusedKeys() throws {
+        let fixture = try makeFixture(goal: "List Jira tickets")
+        let context = fixture.container.mainContext
+        let stale = Connector(
+            name: "Jira-old",
+            serviceType: "jira",
+            connectorDescription: "Old local Jira row",
+            baseURL: "https://other.atlassian.net",
+            authMethod: "basic"
+        )
+        stale.credentialKeys = ["JIRA_EMAIL", "JIRA_API_TOKEN"]
+        stale.workspace = fixture.task.workspace
+        context.insert(stale)
+        try context.save()
+
+        let issues = CapabilityRuntimeIntegrityService.issues(
+            for: fixture.task,
+            packages: [fixture.package],
+            checkExecutables: false,
+            secretStore: lockedStore(for: fixture.jira)
+        )
+
+        let issue = try #require(issues.first { $0.resourceKind == .credential })
+        #expect(issue.message.contains("are missing Keychain values: JIRA_API_TOKEN, JIRA_EMAIL"))
+        #expect(issue.message.contains("have Keychain values ASTRA could not read: JIRA_API_TOKEN, JIRA_EMAIL"))
     }
 
     @Test("A launch that leaves the connector out does not fail over its unreadable key")
@@ -158,7 +187,7 @@ struct CapabilityRuntimeUnreadableCredentialTests {
         )
 
         let issue = try #require(issues.first { $0.resourceKind == .credential })
-        #expect(issue.message.contains("cannot read: JIRA_EMAIL, JIRA_API_TOKEN"))
+        #expect(issue.message.contains("could not read: JIRA_EMAIL, JIRA_API_TOKEN"))
     }
 
     @Test("A key that is absent on one namespace and refused on another counts as unreadable")
@@ -177,7 +206,7 @@ struct CapabilityRuntimeUnreadableCredentialTests {
         )
 
         let issue = try #require(issues.first { $0.resourceKind == .credential })
-        #expect(issue.message.contains("cannot read"))
+        #expect(issue.message.contains("could not read"))
         #expect(!issue.message.contains("missing"))
     }
 }

@@ -247,11 +247,12 @@ enum CapabilityRuntimeIntegrityService {
             let hasUsableCredentialSet = matches.contains {
                 connectorHasUsableCredentials($0, secretStore: secretStore)
             }
-            // A value saved under a key this build cannot read is not missing.
+            // A key the Keychain refused to read is not known to be missing.
             // After every ad-hoc rebuild macOS refuses the new binary until the
-            // value is saved again (docs/code-signing.md). That blocks a launch
-            // that hands this connector to the agent. A launch that leaves the
-            // connector out never reads the key, so it must not fail over it.
+            // value is saved again (docs/code-signing.md); an interactive open
+            // still pending refuses too. That blocks a launch that hands this
+            // connector to the agent. A launch that leaves the connector out
+            // never reads the key, so it must not fail over it.
             let onlyUnreadable = !credentialGaps.isEmpty && credentialGaps.allSatisfy(\.isUnreadableOnly)
             let connectorInLaunch = matches.contains { launchConnectorIDs.contains($0.id) }
             if !hasUsableCredentialSet, !onlyUnreadable || connectorInLaunch {
@@ -387,7 +388,7 @@ enum CapabilityRuntimeIntegrityService {
     private struct ConnectorCredentialGap {
         let connector: Connector
         let missingKeys: [String]
-        /// Saved, but this build of ASTRA is refused when it reads them.
+        /// The Keychain refused to read them, so they are not known to be missing.
         let unreadableKeys: [String]
         let hasDeclaredKeys: Bool
 
@@ -509,7 +510,9 @@ enum CapabilityRuntimeIntegrityService {
             gaps.map { connectorDisplayName($0.connector, fallback: pluginConnector.name) }
         )
         let missing = Set(gaps.flatMap(\.missingKeys)).sorted()
-        let unreadable = Set(gaps.flatMap(\.unreadableKeys)).subtracting(missing).sorted()
+        // Not minus `missing`: a key absent on one connector and refused on
+        // another still needs the recovery step for the refused one.
+        let unreadable = Set(gaps.flatMap(\.unreadableKeys)).sorted()
         if missing.isEmpty && unreadable.isEmpty {
             return "matching connectors \(names) have no credentials configured"
         }
@@ -533,11 +536,14 @@ enum CapabilityRuntimeIntegrityService {
             parts.append("\(verb): \(missing.joined(separator: ", "))")
         }
         if !unreadable.isEmpty {
+            // `.unavailable` is any refused read, not proof of a saved value:
+            // retry first, re-entry is for the refusal an update leaves behind.
             let one = unreadable.count == 1
             parts.append(
-                "\(plural ? "have" : "has") \(one ? "a saved Keychain value" : "saved Keychain values") "
-                    + "this build of ASTRA cannot read: \(unreadable.joined(separator: ", ")). "
-                    + "Enter \(one ? "it" : "them") again in Connectors and press Test"
+                "\(plural ? "have" : "has") \(one ? "a Keychain value" : "Keychain values") ASTRA could not read: "
+                    + "\(unreadable.joined(separator: ", ")). Retry; if it keeps failing after ASTRA was "
+                    + "rebuilt or updated, enter \(one ? "it" : "them") again in Connectors and save "
+                    + "before testing"
             )
         }
         return "\(subject) \(parts.joined(separator: "; and "))"
