@@ -94,10 +94,11 @@ enum TaskLaunchAdmissionService {
         /// The others only when the requested runtime cannot launch. A
         /// snapshot always selects the requested runtime, so for an eligible
         /// one the other verdicts are never read; for a blocked one they name
-        /// the runtime its launch block suggests. Scoring all six held the
-        /// main actor for 320 ms of a send's launch on a production store
-        /// copy, against 53 ms for the requested one alone (2026-11-26,
-        /// debug build, before any Keychain read).
+        /// the runtime its launch block suggests. Each runtime scored re-reads
+        /// the capability library and approval records from disk on the main
+        /// actor: on a production store copy a send's launch made 42 such
+        /// reads in 362 ms, against 7 in 60 ms for the requested runtime alone
+        /// (2026-11-26, debug build, before any Keychain read).
         case othersOnlyWhenRequestedIsBlocked
     }
 
