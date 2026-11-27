@@ -15,10 +15,15 @@ extension WorkspaceConfigManager {
     /// Worktree events are the task's durable checkout binding; dropping them
     /// would turn a worktree pin into a legacy pin on recovery.
     static func isTaskRecoveryEvent(_ type: String) -> Bool {
-        if type.hasPrefix("astra.provider_session_usage_") { return true }
-        return ["runtime.", "execution.request.", "permission.", "plan.", "validation.", "task.worktree."]
-            .contains { type.hasPrefix($0) }
+        taskRecoveryEventTypePrefixes.contains { type.hasPrefix($0) }
     }
+
+    /// The kinds `isTaskRecoveryEvent` keeps. `TaskMirrorHistory` reads a
+    /// large task's recovery events by these same prefixes.
+    static let taskRecoveryEventTypePrefixes = [
+        "astra.provider_session_usage_", "runtime.", "execution.request.", "permission.", "plan.", "validation.",
+        "task.worktree."
+    ]
 
     /// Recovery authority is explicit and independent of schedule enablement.
     /// File imports remain quarantined; missing-store recovery opts in locally.

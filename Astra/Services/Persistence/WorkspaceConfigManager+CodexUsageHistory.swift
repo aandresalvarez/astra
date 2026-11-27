@@ -16,14 +16,15 @@ extension WorkspaceConfigManager {
 
     /// Completeness is derived from what this mirror actually retains. A later
     /// export must never turn a previously truncated import into a full history.
-    static func completeCodexUsageHistory(task: AgentTask, runs: [TaskRun], events: [EventConfig]) -> Bool? {
+    static func completeCodexUsageHistory(task: AgentTask, runs: [TaskRun], events: [EventConfig],
+                                          history: TaskMirrorHistory) -> Bool? {
         let codex = task.runs.filter { $0.runtimeID == AgentRuntimeID.codexCLI.rawValue && $0.providerSessionId != nil }
         guard !codex.isEmpty else { return nil }
-        guard !task.events.contains(where: { $0.type == CodexUsageHistory.incompleteEventType }) else { return false }
+        guard !history.containsEvent(ofType: CodexUsageHistory.incompleteEventType) else { return false }
         let ids = Set(codex.map(\.id))
         guard ids.count == codex.count, ids.isSubset(of: Set(runs.map(\.id))) else { return false }
-        let evidence = task.events.filter { !$0.isDeleted && $0.run.map { ids.contains($0.id) } == true
-            && ($0.type == "task.stats" || $0.type.hasPrefix("astra.provider_session_usage_")) }
+        let evidence = history.events(ofTypes: ["task.stats"], orTypePrefix: "astra.provider_session_usage_")
+            .filter { !$0.isDeleted && $0.run.map { ids.contains($0.id) } == true }
         let exported = Dictionary(events.compactMap { event in event.id.map { ($0, event) } },
             uniquingKeysWith: { first, _ in first })
         return evidence.allSatisfy { event in
