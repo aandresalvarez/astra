@@ -187,6 +187,22 @@ enum TaskFileIndex {
         return parent.isEmpty ? basename : "\(parent)/\(basename)"
     }
 
+    /// The `duplicateBasenames` that `displayName` takes: lowercased basenames
+    /// shared by two or more paths. No file-system access: the
+    /// `URL(fileURLWithPath:)` form stats each path to learn whether it is a
+    /// directory, which a 30,000-file task folder turns into a measurable wait.
+    static func duplicateBasenames(in paths: [String]) -> Set<String> {
+        var seen = Set<String>()
+        var duplicates = Set<String>()
+        for path in paths {
+            let basename = URL(filePath: path, directoryHint: .notDirectory).lastPathComponent.lowercased()
+            if !seen.insert(basename).inserted {
+                duplicates.insert(basename)
+            }
+        }
+        return duplicates
+    }
+
     private static func shouldIncludeUserFacingPath(
         _ path: String,
         source: String = "",
