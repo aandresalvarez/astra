@@ -165,7 +165,13 @@ final class TaskThreadViewModel {
     }
 
     private(set) var snapshot: TaskThreadSnapshot?
-    private(set) var generatedFilePaths: [String] = []
+    /// The task folder's displayable files. `refreshGeneratedFiles` is the only
+    /// writer, so the paths and the facts derived from them change together.
+    private(set) var generatedFileListing = TaskGeneratedFileListing.empty
+    var generatedFilePaths: [String] { generatedFileListing.paths }
+    /// Advances each time `generatedFilePaths` changes. `.task(id:)` keys read
+    /// this instead of the paths, which they used to join on every body pass.
+    private(set) var generatedFilePathsRevision = 0
     /// The folder `generatedFilePaths` was last listed from.
     private(set) var generatedFilesFolder = ""
     /// Advances only when a non-placeholder snapshot has been applied. Views use
@@ -1661,15 +1667,28 @@ final class TaskThreadViewModel {
         generatedFilesFolder = folder
 
         guard !folder.isEmpty else {
-            generatedFilePaths = []
+            applyGeneratedFileListing(.empty)
             return
         }
 
         generatedFilesTask = Task { [weak self] in
-            let paths = await TaskGeneratedFiles.filesAsync(in: folder)
+            let listing = await TaskGeneratedFiles.listingAsync(in: folder)
             guard !Task.isCancelled else { return }
-            self?.generatedFilePaths = paths
+            self?.applyGeneratedFileListing(listing)
         }
+    }
+
+    /// An unchanged listing is dropped: applying it would re-render every
+    /// observer of the paths and rerun every `.task(id:)` keyed on the revision,
+    /// all for the same files.
+    private func applyGeneratedFileListing(_ listing: TaskGeneratedFileListing) {
+        guard listing.paths != generatedFileListing.paths else { return }
+        generatedFileListing = listing
+        generatedFilePathsRevision &+= 1
+    }
+
+    func waitForGeneratedFilesForTesting() async {
+        await generatedFilesTask?.value
     }
 
     func cancelGeneratedFilesRefresh() {

@@ -20,7 +20,8 @@ extension TaskMainView {
     /// Deliberately coarse. Reading `task.artifacts` here would fault the whole
     /// relationship on every keystroke, and avoiding exactly that is most of
     /// the point — so this leans on the fact that artifacts are reconciled at
-    /// run finalize, which moves run identity and status with them.
+    /// run finalize, which moves run identity and status with them. Generated
+    /// files count by revision, never by joining every path in the folder.
     var decisionArtifactPathsInputSignature: String {
         let snapshot = threadViewModel.snapshot
         let latestRun = snapshot?.latestRun
@@ -29,7 +30,7 @@ extension TaskMainView {
             "\(snapshot?.totalRunCount ?? 0)",
             latestRun?.id.uuidString ?? "none",
             latestRun?.status.rawValue ?? "none",
-            threadViewModel.generatedFilePaths.joined(separator: ",")
+            "\(threadViewModel.generatedFilePathsRevision)"
         ].joined(separator: "|")
     }
 

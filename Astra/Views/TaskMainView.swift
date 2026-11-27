@@ -72,103 +72,6 @@ private struct CompletedAgentMarkdownView: View, Equatable {
     }
 }
 
-/// Generated-files attachment list rendered for a finished agent turn. Pulled
-/// into its own struct so the parent bubble does not re-evaluate this `ForEach`
-/// each time unrelated bubble state changes.
-private struct AgentGeneratedFilesListView: View {
-    let paths: [String]
-    let onOpen: ((String) -> Void)?
-    @State private var isExpanded = false
-
-    private var duplicateBasenames: Set<String> {
-        let basenames = paths.map { URL(fileURLWithPath: $0).lastPathComponent.lowercased() }
-        let counts = Dictionary(grouping: basenames, by: { $0 }).mapValues(\.count)
-        return Set(counts.filter { $0.value > 1 }.keys)
-    }
-
-    private var visiblePaths: [String] {
-        isExpanded ? paths : Array(paths.prefix(6))
-    }
-
-    private var groupedPaths: [(title: String, paths: [String])] {
-        let grouped = Dictionary(grouping: visiblePaths, by: groupTitle(for:))
-        return ["Task docs", "Project changes"].compactMap { title in
-            guard let paths = grouped[title], !paths.isEmpty else { return nil }
-            return (title, paths)
-        }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 6) {
-                Image(systemName: "doc.text")
-                    .font(Stanford.ui(11, weight: .semibold))
-                    .foregroundStyle(Stanford.coolGrey)
-                Text("Files")
-                    .font(Stanford.caption(12).weight(.semibold))
-                    .foregroundStyle(Stanford.black)
-                Text("\(paths.count)")
-                    .font(Stanford.caption(11).weight(.medium))
-                    .foregroundStyle(.secondary)
-            }
-
-            ForEach(groupedPaths, id: \.title) { group in
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(group.title)
-                        .font(Stanford.caption(10).weight(.semibold))
-                        .foregroundStyle(Stanford.coolGrey)
-
-                    ForEach(group.paths, id: \.self) { path in
-                        Button {
-                            if let onOpen {
-                                onOpen(path)
-                            } else {
-                                NSWorkspace.shared.open(URL(fileURLWithPath: path))
-                            }
-                        } label: {
-                            HStack(spacing: 5) {
-                                Image(systemName: Formatters.fileIcon(for: path))
-                                    .font(Stanford.ui(11))
-                                Text(TaskFileIndex.displayName(for: path, duplicateBasenames: duplicateBasenames))
-                                    .font(Stanford.caption(12))
-                                    .underline()
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                            }
-                            .foregroundStyle(Stanford.lagunita)
-                        }
-                        .buttonStyle(.plain)
-                        .help(TaskGeneratedFiles.shelfDestination(for: path)?.title ?? "Open file")
-                    }
-                }
-            }
-
-            if paths.count > visiblePaths.count {
-                Button {
-                    isExpanded = true
-                } label: {
-                    Text("Show all")
-                        .font(Stanford.caption(12).weight(.medium))
-                        .foregroundStyle(Stanford.lagunita)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.top, 2)
-    }
-
-    private func groupTitle(for path: String) -> String {
-        let url = URL(fileURLWithPath: path)
-        let name = url.lastPathComponent.lowercased()
-        let ext = url.pathExtension.lowercased()
-        if ["plan.md", "guidelines.md", "status_report.md", "pr_review_analysis.md", "pr_description.md"].contains(name) ||
-            ["md", "markdown", "qmd", "txt", "html", "htm", "pdf"].contains(ext) {
-            return "Task docs"
-        }
-        return "Project changes"
-    }
-}
-
 /// Leaf observer that watches the task's live thread/generated-file triggers in
 /// isolation. Building `TaskThreadSnapshotTrigger`/`TaskGeneratedFilesTrigger`
 /// reads the live `task.runs[].output` (an O(output-length) walk) — doing that
@@ -1050,12 +953,14 @@ struct TaskMainView: View {
 
     /// Cheap, syscall-free signature of the inputs that determine the header
     /// file list (candidate paths only). Gates the off-main recompute below.
+    /// The task folder's files count only by revision: joining them all was a
+    /// ~6 MB string per body pass on a 30,000-file folder.
     private var headerFileItemsInputSignature: String {
         let runChangePaths = currentThreadSnapshot.sortedRuns.flatMap { run in
             run.fileChanges.map(\.path)
         }
         return ([TaskAttachmentHistoryScope(task: task).signature] + runChangePaths
-            + threadViewModel.generatedFilePaths
+            + ["generated:\(threadViewModel.generatedFilePathsRevision)"]
             + task.inputs
             + currentThreadSnapshot.sortedEvents.filter {
                 TaskAttachmentLedger.userAuthoredMessageTypes.contains($0.type)
@@ -2190,8 +2095,9 @@ struct TaskMainView: View {
             // Generated files belong with the finished turn, not the live progress row.
             if showsGeneratedFiles {
                 AgentGeneratedFilesListView(
-                    paths: threadViewModel.generatedFilePaths,
-                    onOpen: onOpenGeneratedFile
+                    listing: threadViewModel.generatedFileListing,
+                    onOpen: onOpenGeneratedFile,
+                    onShowAllFiles: { isShowingFilesPopover = true }
                 )
             }
 
