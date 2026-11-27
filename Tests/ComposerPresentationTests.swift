@@ -12,8 +12,25 @@ struct ComposerPresentationTests {
         #expect(TaskComposerPresentation.usesCompactInputSpacing == true)
         #expect(TaskComposerPresentation.usesForcedExpandedInputHeight == false)
         #expect(TaskComposerPresentation.inputHorizontalPadding == 14)
-        #expect(TaskComposerPresentation.inputTopPadding == 12)
-        #expect(TaskComposerPresentation.inputBottomPadding == 9)
+        #expect(TaskComposerPresentation.inputTopPadding == 10)
+        #expect(TaskComposerPresentation.inputBottomPadding == 4)
+        // An empty composer is one line tall; it grows with the text.
+        #expect(TaskComposerPresentation.inputLineLimit == 1...10)
+    }
+
+    @Test("both composers share the input height and the field's key and focus handling")
+    func composersShareInputBehavior() throws {
+        for path in ["Astra/Views/ChatPanelView.swift", "Astra/Views/TaskMainView.swift"] {
+            let composer = try sourceFile(path)
+            #expect(composer.contains(".lineLimit(TaskComposerPresentation.inputLineLimit)"), "\(path)")
+            // After the padding, which is part of the field's click target.
+            let padding = try #require(composer.range(of: ".padding(.bottom, TaskComposerPresentation.inputBottomPadding)"))
+            let interaction = try #require(composer.range(of: ".composerInput(focus:"))
+            #expect(padding.lowerBound < interaction.lowerBound, "\(path)")
+            // Shift-Return used to be a key monitor that appended to the end
+            // of the text, wherever the caret was.
+            #expect(!composer.contains(".append(\"\\n\")"), "\(path)")
+        }
     }
 
     @Test("new task worktree choice sits in the composer dock strip with trailing controls")
@@ -172,9 +189,34 @@ struct ComposerPresentationTests {
         #expect(ComposerToolbarPresentation.menuControlsUsePlainButtonStyle == true)
         #expect(ComposerToolbarPresentation.addButtonSize == 30)
         #expect(ComposerToolbarPresentation.submitButtonSize == 30)
-        #expect(ComposerToolbarPresentation.verticalPadding == 7)
+        // Same total as the 7 + 7 it replaced: the room moved below the controls.
+        #expect(ComposerToolbarPresentation.topPadding == 4)
+        #expect(ComposerToolbarPresentation.bottomPadding == 10)
         #expect(ComposerToolbarPresentation.chipVerticalPadding == 6)
         #expect(ComposerToolbarPresentation.permissionModeUsesFlatChrome == true)
+    }
+
+    /// The add glyph sat left of centre in its bordered box: a borderless Menu
+    /// is an AppKit pop-up button and places its own icon. Like the chip
+    /// below, a hosted view does not show it, so this pins the chain and the
+    /// result is checked in ASTRA Dev.app.
+    @Test("add button centres its glyph and starts on the text margin")
+    func addButtonIsCentredAndAligned() throws {
+        let source = try sourceFile("Astra/Views/Components/ComposerToolbar.swift")
+        let start = try #require(source.range(of: "private var plusMenu: some View"))
+        let end = try #require(source.range(of: "// MARK: - Provider / Model Pill", range: start.upperBound..<source.endIndex))
+        let menu = String(source[start.lowerBound..<end.lowerBound])
+        #expect(menu.contains(".menuStyle(.button)"))
+        #expect(menu.contains(".buttonStyle(ComposerAddButtonStyle(isHovered: isPlusHovered))"))
+        #expect(!menu.contains(".menuStyle(.borderlessButton)"))
+
+        // One leading edge for the dock strip, the text and the first control.
+        #expect(ComposerToolbarPresentation.horizontalPadding == TaskComposerPresentation.inputHorizontalPadding)
+        #expect(TaskComposerPresentation.decisionDockHorizontalPadding == TaskComposerPresentation.inputHorizontalPadding)
+        let newTask = try sourceFile("Astra/Views/ChatPanelView.swift")
+        let composer = try #require(newTask.range(of: "private var composerView: some View"))
+        let actions = try #require(newTask.range(of: "// MARK: - Actions", range: composer.upperBound..<newTask.endIndex))
+        #expect(!newTask[composer.lowerBound..<actions.lowerBound].contains(".padding(.horizontal, 18)"))
     }
 
     /// The provider/model chip once stretched to about half the composer: a

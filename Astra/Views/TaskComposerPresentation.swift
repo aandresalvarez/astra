@@ -24,7 +24,10 @@ enum TaskComposerPresentation {
     static let decisionDetailsWidth: CGFloat = 540
     static let decisionDetailsMaxHeight: CGFloat = 460
     static let inputHorizontalPadding: CGFloat = 14
-    static let inputTopPadding: CGFloat = 12
+    static let inputTopPadding: CGFloat = 10
     static let inputTopPaddingWithAttachments: CGFloat = 8
-    static let inputBottomPadding: CGFloat = 9
+    static let inputBottomPadding: CGFloat = 4
+    /// An empty composer is one line tall and grows with its text. Past the
+    /// upper bound the field scrolls.
+    static let inputLineLimit: ClosedRange<Int> = 1...10
 }

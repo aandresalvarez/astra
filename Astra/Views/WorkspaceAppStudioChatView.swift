@@ -248,7 +248,7 @@ struct WorkspaceAppStudioChatView: View {
                 .font(Stanford.ui(13))
                 .focused($composerFocused)
                 .disabled(session.isGenerating)
-                .onSubmit { send(inputText) }
+                .composerInput(focus: $composerFocused) { send(inputText) }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 9)
                 .background(Color.primary.opacity(0.04))

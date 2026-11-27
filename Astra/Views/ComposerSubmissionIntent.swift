@@ -67,21 +67,8 @@ struct ComposerSubmissionStatus: View {
                     .buttonStyle(.plain)
             }
             .font(Stanford.caption(12))
-            .padding(.horizontal, 18)
+            .padding(.horizontal, TaskComposerPresentation.inputHorizontalPadding)
             .padding(.bottom, 6)
         }
-    }
-}
-
-extension View {
-    /// Consume Return before TextField's native commit selects its contents.
-    /// Shift-Return remains the composer's existing multiline editing gesture.
-    func onComposerSubmit(_ action: @escaping () -> Void) -> some View {
-        onSubmit(action)
-            .onKeyPress(.return, phases: .down) { press in
-                guard !press.modifiers.contains(.shift) else { return .ignored }
-                action()
-                return .handled
-            }
     }
 }

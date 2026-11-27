@@ -11,8 +11,14 @@ struct ComposerTaskStatusPresentation {
 }
 
 enum ComposerToolbarPresentation {
-    static let horizontalPadding: CGFloat = 10
-    static let verticalPadding: CGFloat = 7
+    /// The first and last controls sit on the text's margins, so the add
+    /// button, the text and the dock strip above share one leading edge.
+    static let horizontalPadding = TaskComposerPresentation.inputHorizontalPadding
+    /// Less above than below: the text's own bottom padding already separates
+    /// it from the controls, and the bordered add button needs room from the
+    /// card's corner.
+    static let topPadding: CGFloat = 4
+    static let bottomPadding: CGFloat = 10
     static let controlSpacing: CGFloat = 8
     static let addButtonSize: CGFloat = 30
     static let addButtonFrameSize: CGFloat = 32
@@ -221,7 +227,8 @@ struct ComposerToolbar: View {
             submitArea
         }
         .padding(.horizontal, ComposerToolbarPresentation.horizontalPadding)
-        .padding(.vertical, ComposerToolbarPresentation.verticalPadding)
+        .padding(.top, ComposerToolbarPresentation.topPadding)
+        .padding(.bottom, ComposerToolbarPresentation.bottomPadding)
         .sheet(isPresented: $isPolicySheetPresented) {
             AgentPolicySheet(
                 runtime: resolvedRuntime,
@@ -247,12 +254,7 @@ struct ComposerToolbar: View {
     // MARK: - Plus Menu
 
     private var plusMenu: some View {
-        let shape = RoundedRectangle(
-            cornerRadius: ComposerToolbarPresentation.addButtonCornerRadius,
-            style: .continuous
-        )
-
-        return Menu {
+        Menu {
             Button {
                 onAttachFile()
             } label: {
@@ -347,26 +349,18 @@ struct ComposerToolbar: View {
         } label: {
             Image(systemName: "plus")
                 .font(Stanford.ui(ComposerToolbarPresentation.addIconSize, weight: .semibold))
-                .foregroundStyle(isPlusHovered ? Stanford.black : Stanford.coolGrey)
                 .frame(
                     width: ComposerToolbarPresentation.addButtonSize,
                     height: ComposerToolbarPresentation.addButtonSize
                 )
-                .animation(.easeInOut(duration: 0.15), value: isPlusHovered)
         }
-        .menuStyle(.borderlessButton)
+        // A button-style menu, so SwiftUI lays the label out. A borderless
+        // menu is an AppKit pop-up button: it placed the glyph itself, left
+        // of centre in the bordered box.
+        .menuStyle(.button)
         .menuIndicator(.hidden)
-        .buttonStyle(.plain)
-        .frame(
-            width: ComposerToolbarPresentation.addButtonFrameSize,
-            height: ComposerToolbarPresentation.addButtonFrameSize
-        )
-        .background(shape.fill(Color.clear))
-        .overlay(
-            shape
-                .stroke(isPlusHovered ? Color.primary.opacity(Stanford.strokeActive) : Stanford.borderRest, lineWidth: 1)
-        )
-        .contentShape(shape)
+        .buttonStyle(ComposerAddButtonStyle(isHovered: isPlusHovered))
+        .fixedSize()
         .onHover { isPlusHovered = $0 }
         .help("Add files, paste from clipboard, or adjust task options")
         .accessibilityLabel("Composer actions")
@@ -1231,5 +1225,29 @@ struct ComposerToolbar: View {
         case .hardStop: "hand.raised.fill"
         case .warning: "exclamationmark.triangle"
         }
+    }
+}
+
+
+/// The bordered square around the composer's add glyph, which it centres.
+private struct ComposerAddButtonStyle: ButtonStyle {
+    let isHovered: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        let shape = RoundedRectangle(
+            cornerRadius: ComposerToolbarPresentation.addButtonCornerRadius,
+            style: .continuous
+        )
+        return configuration.label
+            .foregroundStyle(isHovered ? Stanford.black : Stanford.coolGrey)
+            .frame(
+                width: ComposerToolbarPresentation.addButtonFrameSize,
+                height: ComposerToolbarPresentation.addButtonFrameSize
+            )
+            .overlay(
+                shape.stroke(isHovered ? Color.primary.opacity(Stanford.strokeActive) : Stanford.borderRest, lineWidth: 1)
+            )
+            .contentShape(shape)
+            .animation(.easeInOut(duration: 0.15), value: isHovered)
     }
 }
