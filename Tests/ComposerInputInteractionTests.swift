@@ -148,21 +148,17 @@ struct ComposerInputInteractionTests {
         let word = NSRange(location: 0, length: 5)
         editor.setSelectedRange(word)
 
-        // The rule itself: this Mac's SwiftUI does not report a click on the
-        // text to the padding's gesture, so the event below cannot prove it.
+        // The rule itself, not a click: SwiftUI on macOS 27 does not report a
+        // click on the text to the padding's gesture, so an event would prove
+        // nothing here. And a synthetic mouse-down on the text enters AppKit's
+        // tracking loop, which waits for a mouse-up this synchronous test can
+        // only send after it returns: on the macOS 26 CI runner that wedged
+        // the serial suite until the job timed out.
         let area = fixture.hostView
         let text = editor.convert(editor.bounds, to: area)
         ComposerFieldSelection.collapse(editor, forTapAt: CGPoint(x: text.midX, y: text.midY), in: area)
         #expect(editor.selectedRange() == word)
 
-        // Through the gesture, wherever it does report it: whatever the editor
-        // makes of one more click on the word, the selection is not thrown to
-        // the end of the draft.
-        try fixture.clickText()
-        fixture.settle()
-        #expect(fixture.focusedEditor?.selectedRange() != NSRange(location: 11, length: 0))
-
-        editor.setSelectedRange(word)
         let padding = CGPoint(x: text.midX, y: text.minY - TaskComposerPresentation.inputTopPadding / 2)
         ComposerFieldSelection.collapse(editor, forTapAt: padding, in: area)
         #expect(editor.selectedRange() == NSRange(location: 11, length: 0))
@@ -302,12 +298,7 @@ private final class ComposerFieldFixture {
         try click(NSPoint(x: frame.midX, y: frame.maxY + TaskComposerPresentation.inputTopPadding / 2))
     }
 
-    /// Inside the field, on its first word.
-    func clickText() throws {
-        let frame = try textField().convert(try textField().bounds, to: nil)
-        try click(NSPoint(x: frame.minX + 20, y: frame.midY))
-    }
-
+    /// Only ever outside the text field: see `tapOnTheTextKeepsItsSelection`.
     private func click(_ location: NSPoint) throws {
         for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
             let event = try #require(NSEvent.mouseEvent(
