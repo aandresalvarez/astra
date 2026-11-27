@@ -42,7 +42,7 @@ struct SearchPanelOverlay: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var searchText = ""
-    @FocusState private var isFocused: Bool
+    @State private var keyboard = SearchPanelKeyboard()
     @State private var selectedIndex = 0
 
     private var presentationAnimation: Animation? {
@@ -50,6 +50,7 @@ struct SearchPanelOverlay: View {
     }
 
     private func dismiss() {
+        keyboard.release()
         withAnimation(presentationAnimation) {
             isActive = false
             searchText = ""
@@ -96,7 +97,7 @@ struct SearchPanelOverlay: View {
                     TextField("Search tasks and workspaces", text: $searchText)
                         .textFieldStyle(.plain)
                         .font(Stanford.ui(16))
-                        .focused($isFocused)
+                        .takesKeyboardWhenPresented(keyboard)
                         .onSubmit {
                             if let task = filteredTasks.first {
                                 selectedTask = task
@@ -241,7 +242,6 @@ struct SearchPanelOverlay: View {
             .padding(.top, 60)
             .frame(maxHeight: .infinity, alignment: .top)
             .onExitCommand { dismiss() }
-            .onAppear { isFocused = true }
             .onChange(of: searchText) { _, _ in selectedIndex = 0 }
         }
         .transition(.opacity)
