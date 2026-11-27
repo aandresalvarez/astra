@@ -87,6 +87,20 @@ enum TaskLaunchAdmissionService {
     ) -> Bool
     typealias HostControlBrokerAvailabilityProvider = () -> Bool
 
+    /// Which runtimes a pass scores beyond the requested one.
+    enum CandidateScoring: Equatable {
+        /// Every candidate. The provider menu and runtime comparisons need it.
+        case everyRuntime
+        /// The others only when the requested runtime cannot launch. A
+        /// snapshot always selects the requested runtime, so for an eligible
+        /// one the other verdicts are never read; for a blocked one they name
+        /// the runtime its launch block suggests. Scoring all six held the
+        /// main actor for 320 ms of a send's launch on a production store
+        /// copy, against 53 ms for the requested one alone (2026-11-26,
+        /// debug build, before any Keychain read).
+        case othersOnlyWhenRequestedIsBlocked
+    }
+
     static func evaluate(
         task: AgentTask,
         intent: TaskTurnIntentSnapshot,
@@ -105,7 +119,8 @@ enum TaskLaunchAdmissionService {
         },
         isHostControlBrokerAvailable: HostControlBrokerAvailabilityProvider = {
             HostControlBrokerReadiness.isAvailable()
-        }
+        },
+        scoring: CandidateScoring = .everyRuntime
     ) -> TaskRuntimeEligibilitySnapshot {
         let pass = AdmissionPass(
             task: task,
@@ -123,8 +138,13 @@ enum TaskLaunchAdmissionService {
             isHostControlBrokerAvailable: isHostControlBrokerAvailable
         )
         var candidates: [AgentRuntimeID: TaskRuntimeAdmissionCandidate] = [:]
+        // `runtimes` starts with the requested runtime.
         for runtime in pass.runtimes {
-            candidates[runtime] = pass.candidate(for: runtime)
+            let candidate = pass.candidate(for: runtime)
+            candidates[runtime] = candidate
+            if scoring == .othersOnlyWhenRequestedIsBlocked, runtime == requestedRuntime, candidate.isEligible {
+                break
+            }
         }
         return pass.snapshot(candidates: candidates)
     }
