@@ -71,6 +71,9 @@ struct WorkspaceHomeCapabilityRow: Equatable, Identifiable {
             globalConnectors: globalConnectors,
             globalTools: globalTools,
             packageDefinitions: packages,
+            // The loaded records, so projection never falls back to reading
+            // the approvals folder on the main actor.
+            approvalRecords: catalog.records,
             packPolicy: catalog.packPolicy
         )
         let policyContext = CapabilityCatalogPolicyContext.currentUser(
@@ -84,6 +87,12 @@ struct WorkspaceHomeCapabilityRow: Equatable, Identifiable {
             catalogPackages: packages,
             policyContext: policyContext
         ))
+    }
+
+    /// The enabled plugins `rows` does not show, such as one whose package
+    /// left the catalog. They count as active: the activation says so.
+    static func unlistedEnabledCount(enabledIDs: [String], rows: [WorkspaceHomeCapabilityRow]) -> Int {
+        Set(enabledIDs).subtracting(rows.map(\.id)).count
     }
 
     /// By name, as the rail's box orders its ready rows.

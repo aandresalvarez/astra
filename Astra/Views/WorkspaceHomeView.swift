@@ -290,6 +290,8 @@ struct WorkspaceHomeView: View {
         }
         .onChange(of: workspace.id) {
             initializedPresentationWorkspaceID = nil
+            // Show the loading state, not the previous workspace's rows.
+            capabilityRows = nil
             initializePresentationIfNeeded()
             loadSSHConnections()
         }
@@ -306,6 +308,11 @@ struct WorkspaceHomeView: View {
             rebuildCapabilityRows()
         }
         .onReceive(NotificationCenter.default.publisher(for: .capabilityApprovalsChanged)) { _ in
+            DispatchQueue.main.async { capabilityCatalogReloads += 1 }
+        }
+        // A package added, removed or updated in the library without an
+        // approval write.
+        .onReceive(NotificationCenter.default.publisher(for: .capabilityPackagesChanged)) { _ in
             DispatchQueue.main.async { capabilityCatalogReloads += 1 }
         }
         .confirmationDialog(
@@ -515,6 +522,14 @@ struct WorkspaceHomeView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(listedCapabilityRows) { row in
                         capabilityRow(icon: row.icon, fallbackIcon: "puzzlepiece.extension", name: row.name, kind: row.summary)
+                    }
+                    if unlistedEnabledCount > 0 {
+                        // Counted above, so say where they went.
+                        // Not shown: its package left the library, or policy hides it.
+                        Text("\(unlistedEnabledCount) more enabled, not shown here. Open Manage to review.")
+                            .font(Stanford.caption(12))
+                            .foregroundStyle(.tertiary)
+                            .padding(.top, 4)
                     }
                 }
             } else if capabilityCount > 0 {
@@ -1277,10 +1292,16 @@ struct WorkspaceHomeView: View {
         capabilityRows ?? []
     }
 
-    /// The listed rows; with none, the enabled IDs, so a plugin whose package
-    /// left the catalog still counts.
+    private var unlistedEnabledCount: Int {
+        WorkspaceHomeCapabilityRow.unlistedEnabledCount(
+            enabledIDs: workspace.enabledCapabilityIDs, rows: listedCapabilityRows
+        )
+    }
+
+    /// The listed rows plus the enabled plugins they leave out, so a plugin
+    /// whose package left the catalog still counts.
     private var capabilityCount: Int {
-        listedCapabilityRows.isEmpty ? workspace.enabledCapabilityIDs.count : listedCapabilityRows.count
+        listedCapabilityRows.count + unlistedEnabledCount
     }
 
     private var capabilitySubtitle: String {

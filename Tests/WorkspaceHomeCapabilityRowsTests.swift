@@ -100,6 +100,21 @@ struct WorkspaceHomeCapabilityRowsTests {
         #expect(rows.map(\.name) == ["Local Analyst"])
     }
 
+    @Test("An enabled plugin whose package left the catalog still counts beside the listed rows")
+    func unlistedEnabledPluginCounts() throws {
+        let github = Self.skillOnlyPackage(id: "github-workflow", name: "GitHub")
+        let workspace = try Self.makeWorkspace(enabled: [github.id, "removed-workflow"])
+
+        let rows = WorkspaceHomeCapabilityRow.rows(
+            workspace: workspace, globalSkills: [], globalConnectors: [], globalTools: [],
+            catalog: ApprovedCapabilitiesSnapshot(packages: [github], records: [], packPolicy: .empty)
+        )
+
+        #expect(rows.map(\.id) == [github.id])
+        #expect(WorkspaceHomeCapabilityRow.unlistedEnabledCount(enabledIDs: workspace.enabledCapabilityIDs, rows: rows) == 1)
+        #expect(WorkspaceHomeCapabilityRow.unlistedEnabledCount(enabledIDs: [github.id], rows: rows) == 0)
+    }
+
     @Test("Rows are ordered by name and drop the restored suffix")
     func rowsAreOrderedByDisplayName() throws {
         let zeta = Self.skillOnlyPackage(id: "zeta-workflow", name: "Zeta")
