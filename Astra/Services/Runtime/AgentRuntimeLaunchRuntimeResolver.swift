@@ -73,7 +73,8 @@ enum AgentRuntimeLaunchRuntimeResolver {
         defaultPolicyLevelRaw: String = AgentPolicyLevel.review.rawValue,
         isHostControlBrokerAvailable: TaskLaunchAdmissionService.HostControlBrokerAvailabilityProvider = {
             HostControlBrokerReadiness.isAvailable()
-        }
+        },
+        scoring: TaskLaunchAdmissionService.CandidateScoring = .othersOnlyWhenRequestedIsBlocked
     ) -> LaunchRuntimeResolution {
         let adapter = AgentRuntimeAdapterRegistry.adapter(for: requestedRuntime)
         let startPayload = startEventPayload ?? adapter.defaultStartEventPayload(task: task)
@@ -90,21 +91,34 @@ enum AgentRuntimeLaunchRuntimeResolver {
             acceptedTurn: sessionMessage ?? contextText,
             includeTaskInputs: phase == .run
         )
-        let admission = TaskLaunchAdmissionService.evaluate(
-            task: task,
-            intent: intent,
-            requestedRuntime: requestedRuntime,
-            runtimeConfiguration: runtimeConfiguration,
-            executionPolicy: executionPolicy.withTurnIntentSnapshot(intent),
-            fallbackPermissionPolicy: fallbackPermissionPolicy,
-            defaultPolicyLevelRaw: defaultPolicyLevelRaw,
-            phase: phase,
-            secretStore: KeychainSecretStore(),
-            isRuntimeUsable: { runtime, _ in
-                runtimeIsExecutable(runtime, configuration: runtimeConfiguration)
-            },
-            isHostControlBrokerAvailable: isHostControlBrokerAvailable
-        )
+        // Only the requested runtime's verdict decides a launch; the others
+        // matter only to suggest a switch when it is blocked.
+        let admission = PerformanceTelemetry.measure(
+            "launch_runtime_admission",
+            thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
+            fields: ["runtime": requestedRuntime.rawValue, "phase": phase.rawValue],
+            resultFields: { admission in [
+                "scored_runtime_count": String(admission.candidates.count),
+                "eligible": String(admission.launchBlock == nil)
+            ] }
+        ) {
+            TaskLaunchAdmissionService.evaluate(
+                task: task,
+                intent: intent,
+                requestedRuntime: requestedRuntime,
+                runtimeConfiguration: runtimeConfiguration,
+                executionPolicy: executionPolicy.withTurnIntentSnapshot(intent),
+                fallbackPermissionPolicy: fallbackPermissionPolicy,
+                defaultPolicyLevelRaw: defaultPolicyLevelRaw,
+                phase: phase,
+                secretStore: KeychainSecretStore(),
+                isRuntimeUsable: { runtime, _ in
+                    runtimeIsExecutable(runtime, configuration: runtimeConfiguration)
+                },
+                isHostControlBrokerAvailable: isHostControlBrokerAvailable,
+                scoring: scoring
+            )
+        }
         let selectedCandidate = admission.selectedCandidate
         return LaunchRuntimeResolution(
             requestedRuntime: admission.requestedRuntime,
