@@ -202,6 +202,24 @@ public struct HostFileAccessBroker {
         ) else {
             return nil
         }
+        // `shouldSkip` resolves the managed root's symlinks on every call; a
+        // walk asks it once per entry, so resolve the root once for the walk.
+        if case .astraManagedStorage(let root) = intent {
+            let rootPath = Self.normalizedPath(root)
+            // Listed under a base that is already its own resolved path, an
+            // entry that is not a symlink is named by its resolved path too:
+            // the enumerator never descends through a link. Its containment
+            // is then a string check instead of a dozen-syscall resolve. A
+            // symlink, or a name that is not plainly absolute, is resolved.
+            let listsResolvedPaths = !mask.contains(.producesRelativePathURLs)
+                && Self.normalizedPath(url) == url.standardizedFileURL.path
+            return FilteringDirectoryEnumerator(base: enumerator) { child in
+                if listsResolvedPaths, let path = Self.plainPathOfNonLink(child) {
+                    return !(path == rootPath || path.hasPrefix(rootPath + "/"))
+                }
+                return !Self.isPath(child, insideNormalizedRoot: rootPath)
+            }
+        }
         return FilteringDirectoryEnumerator(base: enumerator) { child in
             shouldSkip(child, intent: intent)
         }
@@ -214,13 +232,25 @@ public struct HostFileAccessBroker {
     }
 
     private static func isPath(_ url: URL, inside root: URL) -> Bool {
+        isPath(url, insideNormalizedRoot: normalizedPath(root))
+    }
+
+    private static func isPath(_ url: URL, insideNormalizedRoot rootPath: String) -> Bool {
         let path = normalizedPath(url)
-        let rootPath = normalizedPath(root)
         return path == rootPath || path.hasPrefix(rootPath + "/")
     }
 
     private static func normalizedPath(_ url: URL) -> String {
         url.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    /// `url.path` when it names something that is not a symlink and reads
+    /// as already standardized; nil when it must be resolved.
+    private static func plainPathOfNonLink(_ url: URL) -> String? {
+        let path = url.path
+        guard FilePathForm.isStandardizedAbsolute(path),
+              (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == false else { return nil }
+        return path
     }
 
     private func safeResourceKeys(

@@ -74,6 +74,27 @@ enum TaskGeneratedFiles: Sendable {
     }
 
     static func files(in folder: String, fileManager: FileManager, isCancelled: () -> Bool) -> [String]? {
+        entries(in: folder, fileManager: fileManager, isCancelled: isCancelled)?.map(\.path)
+    }
+
+    /// The listing's values the walk reads in bulk with each directory,
+    /// instead of one stat per entry.
+    private static let walkKeys: [URLResourceKey] = [.isDirectoryKey, .isSymbolicLinkKey, .contentModificationDateKey]
+
+    /// The walk behind `files(in:)`, sorted by path.
+    ///
+    /// Each entry the enumerator lists that is not a symlink is already named
+    /// by its resolved path: the root is resolved before the walk starts and
+    /// the enumerator never descends through a link. So its listing values
+    /// settle it, with no syscall of its own. Resolving, stat-ing and reading
+    /// the attributes of every entry again, several times over, was 9 s of
+    /// the 14 s a 30,000-file task folder spent opening. A symlink, or an
+    /// entry whose values cannot be read, is still resolved and checked one
+    /// at a time, and so is everything when `fileManager` is not the default
+    /// one, whose behaviour a test may have replaced.
+    static func entries(
+        in folder: String, fileManager: FileManager, isCancelled: () -> Bool
+    ) -> [TaskGeneratedFileEntry]? {
         guard !folder.isEmpty else { return [] }
         let rootURL = URL(fileURLWithPath: folder)
             .resolvingSymlinksInPath()
@@ -81,31 +102,39 @@ enum TaskGeneratedFiles: Sendable {
         let rootPath = rootURL.path.hasSuffix("/") ? rootURL.path : rootURL.path + "/"
         let hostFileAccess = HostFileAccessBroker(fileManager: fileManager)
         let accessIntent = HostFileAccessIntent.astraManagedStorage(root: rootURL)
+        let readsListing = fileManager === FileManager.default
         var rootIsDirectory: ObjCBool = false
         guard hostFileAccess.fileExists(at: rootURL, isDirectory: &rootIsDirectory, intent: accessIntent),
               rootIsDirectory.boolValue,
               let enumerator = hostFileAccess.enumerator(
                 at: rootURL,
-                includingPropertiesForKeys: [.isDirectoryKey],
+                includingPropertiesForKeys: walkKeys,
                 intent: accessIntent
               ) else {
             return []
         }
 
-        var files: [String] = []
+        var entries: [TaskGeneratedFileEntry] = []
+        // The broker's enumerator has already left out, with their subtrees,
+        // the entries `shouldSkip` refuses for this intent.
         while let url = enumerator.nextObject() as? URL {
             guard !isCancelled() else { return nil }
-            guard !hostFileAccess.shouldSkip(url, intent: accessIntent) else {
+            // Prune the whole subtree, before anything in it costs a syscall.
+            // An agent that runs `python -m venv` in its task folder adds
+            // ~15,000 entries that are all discarded by
+            // `shouldDisplayTaskFolderFile` anyway. Filtering them one at a
+            // time still walked every one.
+            guard !TaskOutputArtifactPathPolicy.isGeneratedDependencyDirectoryName(url.lastPathComponent) else {
                 enumerator.skipDescendants()
                 continue
             }
-            // Prune the whole subtree, before anything in it costs a syscall.
-            // The per-entry work below is a symlink resolve plus a stat, and an
-            // agent that runs `python -m venv` in its task folder adds ~15,000
-            // entries that are all discarded by `shouldDisplayTaskFolderFile`
-            // anyway. Filtering them one at a time still walked every one.
-            guard !TaskOutputArtifactPathPolicy.isGeneratedDependencyDirectoryName(url.lastPathComponent) else {
-                enumerator.skipDescendants()
+            if readsListing, let values = try? url.resourceValues(forKeys: Set(walkKeys)),
+               values.isSymbolicLink == false, let isDirectory = values.isDirectory {
+                let itemPath = FilePathForm.isStandardizedAbsolute(url.path) ? url.path : url.standardizedFileURL.path
+                guard itemPath.hasPrefix(rootPath),
+                      shouldDisplayTaskFolderFile(relativePath: String(itemPath.dropFirst(rootPath.count))),
+                      !isDirectory else { continue }
+                entries.append(TaskGeneratedFileEntry(verifiedPath: itemPath, modifiedAt: values.contentModificationDate))
                 continue
             }
             let itemURL = url
@@ -119,10 +148,10 @@ enum TaskGeneratedFiles: Sendable {
                 continue
             }
             if !isDir.boolValue {
-                files.append(itemURL.path)
+                entries.append(TaskGeneratedFileEntry(unverifiedPath: itemURL.path))
             }
         }
-        return files.sorted()
+        return entries.sorted { $0.path < $1.path }
     }
 
     static func shouldDisplayTaskFolderFile(relativePath: String) -> Bool {

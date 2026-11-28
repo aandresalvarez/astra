@@ -44,14 +44,25 @@ public struct TaskOutputObservation: Sendable {
         workspacePath: String,
         paths: [String]
     ) -> TaskOutputObservation? {
-        guard let discovered = TaskOutputDiscovery.files(
+        guard let walk = TaskOutputDiscovery.walk(
             in: taskFolder,
             isCancelled: { Task.isCancelled }
         ) else { return nil }
+        let discovered = walk.files
         let scope = TaskOutputVisibilityScope(taskFolder: taskFolder, workspacePath: workspacePath)
         var normalizedPaths: [String: String] = [:]
         var userFacingPaths: [String: Bool] = [:]
         var existingPaths: [String: Bool] = [:]
+        // The walk settled these from the listing: each is its own normalized
+        // form (already standardized and resolved), displayable under this
+        // task folder, and present. Asking again cost a resolve and a stat per
+        // file, for every file the folder holds. A name ending in whitespace
+        // is left to the normalizer, which trims it into another path.
+        for path in walk.verifiedPaths where path.trimmingCharacters(in: .whitespacesAndNewlines) == path {
+            normalizedPaths[path] = path
+            userFacingPaths[path] = true
+            existingPaths[path] = true
+        }
         for path in paths + discovered.map(\.path) where normalizedPaths[path] == nil {
             guard !Task.isCancelled else { return nil }
             let normalized = TaskArtifactPathNormalizer.normalizedPath(
