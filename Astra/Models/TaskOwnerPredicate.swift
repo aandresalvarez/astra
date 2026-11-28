@@ -98,6 +98,10 @@ public enum TaskOwnerPredicate {
         #Predicate<TaskEvent> { $0.task != nil && $0.task!.persistentModelID == owner && types.contains($0.type) }
     }
 
+    public static func events(ownedBy owner: PersistentIdentifier, typePrefix prefix: String) -> Predicate<TaskEvent> {
+        #Predicate<TaskEvent> { $0.task != nil && $0.task!.persistentModelID == owner && $0.type.starts(with: prefix) }
+    }
+
     public static func events(
         ownedBy owner: PersistentIdentifier,
         types: [String],

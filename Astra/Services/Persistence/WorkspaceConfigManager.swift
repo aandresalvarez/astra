@@ -1774,11 +1774,13 @@ public enum WorkspaceConfigManager {
     private static func taskConfig(
         _ task: AgentTask, owners: inout TaskTurnRequestOwnership.Resolver, modelContext: ModelContext
     ) throws -> TaskConfig {
-        // The task's rows are read from the store once and ordered once.
-        let events = task.events
+        // The task's rows are read from the store once and ordered once; a
+        // large task's events only as far as the mirror can keep them.
+        var history = TaskMirrorHistory(task: task, modelContext: modelContext)
         let sortedRuns = chronological(task.runs, time: \.startedAt, id: \.id)
         let recovery = try taskRecoveryMirror(
-            task: task, events: events, sortedRuns: sortedRuns, owners: &owners, modelContext: modelContext)
+            task: task, events: history.events, sortedRuns: sortedRuns, owners: &owners, modelContext: modelContext)
+        history.include(eventIDs: recovery.sourceEventIDs)
         let retainedRunIDs = Set(sortedRuns.suffix(MirrorLimits.maxRunsPerTask).map(\.id)).union(recovery.pendingRunIDs)
         let mirroredRuns = sortedRuns.filter { retainedRunIDs.contains($0.id) }
         let runIDToIndex = Dictionary(
@@ -1810,7 +1812,7 @@ public enum WorkspaceConfigManager {
 
         // Ordering first and filtering after gives the order filtering first
         // did: the order is total, since no two events share an ID.
-        let sortedEvents = chronological(events, time: \.timestamp, id: \.id)
+        let sortedEvents = chronological(history.events, time: \.timestamp, id: \.id)
         let presentationIDs = Set(sortedEvents.suffix(MirrorLimits.maxEventsPerTask).map(\.id))
         let mirroredEvents = sortedEvents.filter { !$0.isDeleted && (presentationIDs.contains($0.id)
             || recovery.sourceEventIDs.contains($0.id) || isTaskRecoveryEvent($0.type)) }
@@ -1888,7 +1890,7 @@ public enum WorkspaceConfigManager {
             request.state.isActive || request.runID.map { retainedRunIDs.contains($0) } == true
         }
         config.codexUsageHistoryComplete = completeCodexUsageHistory(
-            task: task, runs: mirroredRuns, events: eventConfigs)
+            task: task, runs: mirroredRuns, events: eventConfigs, history: history)
         return config
     }
 
