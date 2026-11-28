@@ -1191,7 +1191,7 @@ public enum TaskContextStateManager {
             contextFact($0, sourcePointers: [sourcePointer(kind: "plan", id: nil, summary: "Blocked plan step")])
         }
         let eventFacts = eventBlockers
-            .sorted(by: TaskContextEventIndex.newestFirst)
+            .sortedNewestFirst()
             .prefix(6)
             .map { event in
                 contextFact(
@@ -1212,135 +1212,12 @@ public enum TaskContextStateManager {
         guard mode == .blocked else { return [] }
         let blockingTypes = ["error", "permission.denied", "permission.approval.requested", "budget.exceeded"]
         let events = index.blocking.filter { blockingTypes.contains($0.type) }
-            .sorted(by: TaskContextEventIndex.newestFirst)
+            .sortedNewestFirst()
         guard let latestRun else {
             return Array(events.prefix(6))
         }
         let latestRunEvents = events.filter { $0.run?.id == latestRun.id }
         return Array((latestRunEvents.isEmpty ? events : latestRunEvents).prefix(6))
-    }
-
-    @MainActor
-    private static func changedFileReferences(
-        for task: AgentTask,
-        discoveredFiles: [TaskOutputDiscoveredFile],
-        outputs: TaskOutputPathResolver
-    ) -> [TaskContextState.ChangedFile] {
-        let sortedRuns = task.runs.sorted { $0.startedAt < $1.startedAt }
-        var output: [TaskContextState.ChangedFile] = []
-        var indexByPath: [String: Int] = [:]
-
-        for run in sortedRuns {
-            for change in run.fileChanges {
-                guard outputs.isUserFacing(change.path) else { continue }
-                let pointers = [
-                    sourcePointer(kind: "run", id: run.id.uuidString, summary: "Provider run"),
-                    sourcePointer(kind: "file_change", id: change.id.uuidString, path: change.path, summary: "\(change.changeType) file change")
-                ]
-                if let index = indexByPath[change.path] {
-                    output[index].changeType = change.changeType
-                    output[index].sourcePointers = dedupeSourcePointers(output[index].sourcePointers + pointers)
-                } else {
-                    indexByPath[change.path] = output.count
-                    output.append(TaskContextState.ChangedFile(
-                        path: change.path,
-                        changeType: change.changeType,
-                        sourcePointers: pointers
-                    ))
-                }
-            }
-        }
-        for file in discoveredFiles {
-            let pointer = sourcePointer(
-                kind: "task_output_file",
-                path: file.path,
-                summary: "Discovered task output file \(file.relativePath)"
-            )
-            if let index = indexByPath[file.path] {
-                output[index].sourcePointers = dedupeSourcePointers(output[index].sourcePointers + [pointer])
-            } else {
-                indexByPath[file.path] = output.count
-                output.append(TaskContextState.ChangedFile(
-                    path: file.path,
-                    changeType: "discovered",
-                    sourcePointers: [pointer]
-                ))
-            }
-        }
-        return Array(output.suffix(50))
-    }
-
-    @MainActor
-    private static func artifactReferences(
-        for task: AgentTask,
-        discoveredFiles: [TaskOutputDiscoveredFile],
-        outputs: TaskOutputPathResolver
-    ) -> [TaskContextState.ArtifactReference] {
-        var references: [TaskContextState.ArtifactReference] = []
-        var indexByPath: [String: Int] = [:]
-
-        for artifact in task.artifacts.sorted(by: { $0.createdAt < $1.createdAt }) {
-            let path = outputs.normalizedPath(artifact.path)
-            guard outputs.isUserFacingNormalized(path) else { continue }
-            let key = artifactReferenceKey(path)
-            guard !key.isEmpty else { continue }
-
-            let pointer = sourcePointer(
-                kind: "artifact",
-                id: artifact.id.uuidString,
-                path: path,
-                summary: "Generated artifact"
-            )
-            let incoming = TaskContextState.ArtifactReference(
-                type: ArtifactKind(rawValue: artifact.type).rawValue,
-                path: path,
-                version: artifact.version,
-                isStale: !outputs.fileExists(normalizedPath: path),
-                sourcePointers: [pointer]
-            )
-
-            if let index = indexByPath[key] {
-                let mergedSources = dedupeSourcePointers(references[index].sourcePointers + incoming.sourcePointers)
-                if incoming.version >= references[index].version {
-                    references[index] = TaskContextState.ArtifactReference(
-                        type: incoming.type,
-                        path: incoming.path,
-                        version: incoming.version,
-                        isStale: incoming.isStale,
-                        sourcePointers: mergedSources
-                    )
-                } else {
-                    references[index].sourcePointers = mergedSources
-                }
-            } else {
-                indexByPath[key] = references.count
-                references.append(incoming)
-            }
-        }
-
-        for file in discoveredFiles {
-            let key = artifactReferenceKey(file.path)
-            guard !key.isEmpty else { continue }
-
-            let pointer = sourcePointer(
-                kind: "task_output_file",
-                path: file.path,
-                summary: "Discovered task output artifact \(file.relativePath)"
-            )
-            if let index = indexByPath[key] {
-                references[index].sourcePointers = dedupeSourcePointers(references[index].sourcePointers + [pointer])
-            } else {
-                indexByPath[key] = references.count
-                references.append(TaskContextState.ArtifactReference(
-                    type: file.type,
-                    path: file.path,
-                    version: 1,
-                    isStale: false,
-                    sourcePointers: [pointer]
-                ))
-            }
-        }
-        return Array(references.suffix(30))
     }
 
     @MainActor
@@ -1412,7 +1289,7 @@ public enum TaskContextStateManager {
                  TaskValidationEventTypes.contractFailed,
                  TaskValidationEventTypes.contractOverridden].contains($0.type)
             }
-            .sorted(by: TaskContextEventIndex.newestFirst)
+            .sortedNewestFirst()
             .first
         let requiredTotal = contract.assertions.filter(\.required).count
         let hasStartedAssertions = assertions.contains { $0.status == "started" }
@@ -1439,7 +1316,7 @@ public enum TaskContextStateManager {
             status = "not_verified"
         }
         let eventPointers = contractEvents
-            .sorted(by: TaskContextEventIndex.newestFirst)
+            .sortedNewestFirst()
             .prefix(4)
             .map { eventSource($0, summary: "Validation contract event \($0.type)") }
 
@@ -1534,7 +1411,7 @@ public enum TaskContextStateManager {
             TaskValidationEventTypes.assertionReviewed
         ]
         for event in events.validationAssertions.filter({ validationEventTypes.contains($0.type) })
-            .sorted(by: TaskContextEventIndex.newestFirst) {
+            .sortedNewestFirst() {
             guard let payload = decodeAssertionPayload(event.payload),
                   payload.planID == planID,
                   results[payload.assertionID] == nil else {
@@ -1548,7 +1425,7 @@ public enum TaskContextStateManager {
     @MainActor
     private static func latestHandoffState(events: TaskContextEventIndex) -> TaskContextState.HandoffSummary? {
         guard let event = events.handoffs.filter({ TaskContextEventIndex.handoffTypes.contains($0.type) })
-            .sorted(by: TaskContextEventIndex.newestFirst)
+            .sortedNewestFirst()
             .first,
             let payload = TaskWorkerHandoffCodec.decode(event.payload) else {
             return nil
@@ -1596,11 +1473,11 @@ public enum TaskContextStateManager {
         let artifactStatus = artifactVerificationStatus(for: artifacts)
         let latestValidation = events.validation
             .filter(isValidationEvent)
-            .sorted(by: TaskContextEventIndex.newestFirst)
+            .sortedNewestFirst()
             .first
         let latestDeliverableVerification = events.deliverableVerification
             .filter(isDeliverableVerificationEvent)
-            .sorted(by: TaskContextEventIndex.newestFirst)
+            .sortedNewestFirst()
             .first
 
         if let event = latestValidation,
@@ -1757,7 +1634,7 @@ public enum TaskContextStateManager {
     @MainActor
     private static func recentQuestions(in events: TaskContextEventIndex) -> [String] {
         events.assistantReplies.filter { TaskContextEventIndex.assistantReplyTypes.contains($0.type) }
-            .sorted(by: TaskContextEventIndex.newestFirst)
+            .sortedNewestFirst()
             .prefix(6)
             .flatMap { questionSentences(in: $0.payload) }
     }
@@ -1929,7 +1806,7 @@ public enum TaskContextStateManager {
         "outputs/turn_\(String(format: "%03d", turn)).md"
     }
 
-    private static func sourcePointer(
+    static func sourcePointer(
         kind: String,
         id: String? = nil,
         path: String? = nil,
@@ -2360,13 +2237,6 @@ public enum TaskContextStateManager {
         return output
     }
 
-    private static func artifactReferenceKey(_ path: String) -> String {
-        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "" }
-        guard trimmed.hasPrefix("/") else { return trimmed }
-        return URL(fileURLWithPath: trimmed).standardizedFileURL.path
-    }
-
     private static func dedupeFacts(
         _ values: [TaskContextState.ContextFact],
         limit: Int
@@ -2383,7 +2253,7 @@ public enum TaskContextStateManager {
         return output
     }
 
-    private static func dedupeSourcePointers(
+    static func dedupeSourcePointers(
         _ values: [TaskContextState.SourcePointer]
     ) -> [TaskContextState.SourcePointer] {
         var seen = Set<String>()

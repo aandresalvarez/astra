@@ -23,11 +23,47 @@ public protocol TaskGeneratedFileQuerying: Sendable {
     /// `files(in:fileManager:)` that polls `isCancelled` per entry and gives
     /// up with nil. Opt-in, so no other caller ever sees a partial list.
     static func files(in folder: String, fileManager: FileManager, isCancelled: () -> Bool) -> [String]?
+    /// `files(in:fileManager:isCancelled:)` with what the walk already knows
+    /// about each file, so a caller need not ask the filesystem again.
+    static func entries(in folder: String, fileManager: FileManager, isCancelled: () -> Bool) -> [TaskGeneratedFileEntry]?
 }
 
 extension TaskGeneratedFileQuerying {
     public static func files(in folder: String, fileManager: FileManager, isCancelled: () -> Bool) -> [String]? {
         isCancelled() ? nil : files(in: folder, fileManager: fileManager)
+    }
+
+    public static func entries(
+        in folder: String, fileManager: FileManager, isCancelled: () -> Bool
+    ) -> [TaskGeneratedFileEntry]? {
+        files(in: folder, fileManager: fileManager, isCancelled: isCancelled)?.map(TaskGeneratedFileEntry.init(unverifiedPath:))
+    }
+}
+
+/// One file a task-folder walk found.
+///
+/// A verified entry is one the walk settled from the directory listing
+/// itself: `path` is standardized and already resolved, names something that
+/// is not a directory inside the walked root, and `modifiedAt` is its
+/// modification date. A caller can trust those instead of paying a stat, a
+/// symlink resolve and an attribute read per file again. An unverified entry
+/// (a symlink, or a walk that could not read the listing's values) carries
+/// only its path, and the caller checks it as it always has.
+public struct TaskGeneratedFileEntry: Equatable, Sendable {
+    public let path: String
+    public let modifiedAt: Date?
+    public let isVerified: Bool
+
+    public init(verifiedPath path: String, modifiedAt: Date?) {
+        self.path = path
+        self.modifiedAt = modifiedAt
+        isVerified = true
+    }
+
+    public init(unverifiedPath path: String) {
+        self.path = path
+        modifiedAt = nil
+        isVerified = false
     }
 }
 

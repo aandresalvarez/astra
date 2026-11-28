@@ -177,36 +177,61 @@ public enum TaskOutputDiscovery {
         fileManager: FileManager = .default,
         isCancelled: () -> Bool
     ) -> [TaskOutputDiscoveredFile]? {
-        guard !taskFolder.isEmpty else { return [] }
+        walk(in: taskFolder, fileManager: fileManager, isCancelled: isCancelled)?.files
+    }
+
+    /// What `files(in:isCancelled:)` finds, and which of those files the walk
+    /// settled from the directory listing: each such path is standardized,
+    /// resolved, displayable and present, so a caller asking those questions
+    /// about it already has the answers.
+    public struct Walk: Sendable {
+        public let files: [TaskOutputDiscoveredFile]
+        public let verifiedPaths: Set<String>
+    }
+
+    public static func walk(
+        in taskFolder: String,
+        fileManager: FileManager = .default,
+        isCancelled: () -> Bool
+    ) -> Walk? {
+        guard !taskFolder.isEmpty else { return Walk(files: [], verifiedPaths: []) }
         let folderURL = URL(fileURLWithPath: taskFolder)
         let folderPath = folderURL.standardizedFileURL.path
         let resolvedFolderPath = folderURL.resolvingSymlinksInPath().standardizedFileURL.path
-        guard fileManager.fileExists(atPath: folderPath) else { return [] }
+        guard fileManager.fileExists(atPath: folderPath) else { return Walk(files: [], verifiedPaths: []) }
 
         #if DEBUG
         walkCountsForTesting.withLock { counts in
             if let count = counts[folderPath] { counts[folderPath] = count + 1 }
         }
         #endif
-        guard let paths = TaskGeneratedFileQuerySeam.required.files(
+        guard let entries = TaskGeneratedFileQuerySeam.required.entries(
             in: folderPath,
             fileManager: fileManager,
             isCancelled: isCancelled
         ) else { return nil }
         var discovered: [TaskOutputDiscoveredFile] = []
-        for path in paths {
+        var verifiedPaths = Set<String>()
+        for entry in entries {
             guard !isCancelled() else { return nil }
-            guard let file = discoveredFile(
-                path: path,
+            if entry.isVerified {
+                guard let file = walkedFile(entry, taskFolderPath: folderPath, resolvedTaskFolderPath: resolvedFolderPath)
+                else { continue }
+                discovered.append(file)
+                verifiedPaths.insert(file.path)
+            } else if let file = discoveredFile(
+                path: entry.path,
                 taskFolderPath: folderPath,
                 resolvedTaskFolderPath: resolvedFolderPath,
                 fileManager: fileManager
-            ) else { continue }
-            discovered.append(file)
+            ) {
+                discovered.append(file)
+            }
         }
-        return discovered.sorted { lhs, rhs in
+        let files = discovered.sorted { lhs, rhs in
             lhs.relativePath.localizedStandardCompare(rhs.relativePath) == .orderedAscending
         }
+        return Walk(files: files, verifiedPaths: verifiedPaths)
     }
 
     #if DEBUG
@@ -243,6 +268,33 @@ public enum TaskOutputDiscovery {
             guard let modifiedAt = file.modifiedAt else { return false }
             return modifiedAt >= lowerBound && modifiedAt <= upperBound
         }
+    }
+
+    /// `discoveredFile` for an entry the walk verified. Its path is already
+    /// standardized and resolved and names something that is not a
+    /// directory, so of `discoveredFile`'s checks only the string ones are
+    /// left, made the same way, and the walk's modification date stands in
+    /// for the attribute read.
+    private static func walkedFile(
+        _ entry: TaskGeneratedFileEntry,
+        taskFolderPath: String,
+        resolvedTaskFolderPath: String
+    ) -> TaskOutputDiscoveredFile? {
+        let path = entry.path
+        guard path == taskFolderPath || path.hasPrefix(taskFolderPath + "/"),
+              let relative = TaskOutputArtifactPathPolicy.displayableUserArtifactRelativePath(
+                String(path.dropFirst(taskFolderPath.count)),
+                context: .taskFolder
+              ),
+              path == resolvedTaskFolderPath || path.hasPrefix(resolvedTaskFolderPath + "/") else {
+            return nil
+        }
+        return TaskOutputDiscoveredFile(
+            path: path,
+            relativePath: relative,
+            type: ArtifactKind.forPath(path).rawValue,
+            modifiedAt: entry.modifiedAt
+        )
     }
 
     private static func discoveredFile(

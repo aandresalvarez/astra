@@ -125,3 +125,17 @@ struct TaskContextEventIndex {
         return result
     }()
 }
+
+extension Sequence where Element == TaskEvent {
+    /// Sorted by `TaskContextEventIndex.newestFirst`, with each event's time
+    /// and ID read once: the comparator reads two SwiftData properties of each
+    /// side on every comparison. IDs are unique, so the order is the same.
+    func sortedNewestFirst() -> [TaskEvent] {
+        typealias Keyed = (event: TaskEvent, time: Date, id: String)
+        let keyed: [Keyed] = map { event in (event: event, time: event.timestamp, id: event.id.uuidString) }
+        let sorted: [Keyed] = keyed.sorted { (lhs: Keyed, rhs: Keyed) -> Bool in
+            lhs.time == rhs.time ? rhs.id < lhs.id : rhs.time < lhs.time
+        }
+        return sorted.map { (item: Keyed) -> TaskEvent in item.event }
+    }
+}
