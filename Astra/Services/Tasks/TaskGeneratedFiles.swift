@@ -51,6 +51,23 @@ extension TaskGeneratedFileShelfDestination {
     }
 }
 
+/// A task folder's displayable files, with what every transcript row needs
+/// from the whole list worked out once per listing instead of once per row.
+/// The list is the whole folder: 31,774 paths on one long task.
+struct TaskGeneratedFileListing: Equatable, Sendable {
+    static let empty = TaskGeneratedFileListing(paths: [])
+
+    let paths: [String]
+    /// Rows whose basename is in here lead with their parent folder
+    /// (`TaskFileIndex.displayName`).
+    let duplicateBasenames: Set<String>
+
+    init(paths: [String]) {
+        self.paths = paths
+        duplicateBasenames = TaskFileIndex.duplicateBasenames(in: paths)
+    }
+}
+
 enum TaskGeneratedFiles: Sendable {
     static func files(in folder: String, fileManager: FileManager = .default) -> [String] {
         files(in: folder, fileManager: fileManager, isCancelled: { false }) ?? []
@@ -118,6 +135,13 @@ enum TaskGeneratedFiles: Sendable {
     static func filesAsync(in folder: String) async -> [String] {
         await Task.detached(priority: .utility) {
             files(in: folder)
+        }.value
+    }
+
+    /// `filesAsync` with the listing's derived facts, all off the main actor.
+    static func listingAsync(in folder: String) async -> TaskGeneratedFileListing {
+        await Task.detached(priority: .utility) {
+            TaskGeneratedFileListing(paths: files(in: folder))
         }.value
     }
 
